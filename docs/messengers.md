@@ -1,7 +1,7 @@
 # Messengers: Slack (and others) as a two-way channel
 
-Status: **phase 1** — Slack adapter, typed answers for shared Codex, free-text
-prompts for every agent CLI. Written 2026-10-27.
+**Status:** phase 1 implemented — Slack adapter, typed answers for shared Codex,
+free-text prompts for every agent CLI. 2026-10-29.
 
 Connect a chat channel to one agent or to a whole group. The channel then gets a
 card when an agent **needs input** and when it **finishes a turn**, and you can
@@ -67,7 +67,8 @@ laptop and in a private Space.
 2. **Basic Information → App-Level Tokens**: create one with the
    `connections:write` scope. This is `SLACK_APP_TOKEN` (`xapp-…`).
 3. **Install App** to the workspace. The bot token is `SLACK_BOT_TOKEN` (`xoxb-…`).
-4. Give both tokens to the server and restart it:
+4. Give both tokens to the server as `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`
+   ([configuration table](development.md#configuration)) and restart it:
    - **VPS / local**: export them in the service environment, e.g. in a systemd
      unit `Environment=SLACK_BOT_TOKEN=xoxb-…` and `Environment=SLACK_APP_TOKEN=xapp-…`.
    - **Space**: add them as Space secrets.
@@ -110,26 +111,32 @@ channel does not replay old answers). Card records expire after 7 days.
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
-| `POST /api/messengers/bindings/:id/test` | Posts a test card |
+| `POST /api/messengers/bindings/:id/test` | Posts a test card; `409 messenger-offline` when the messenger is not connected |
+
+Invalid input is `400 invalid-input` with `details[].field`; an unknown binding
+is `404 not-found` ([error contract](api-errors.md)).
 
 ## Adding a messenger
 
-An adapter is a factory in `server/src/messengers/adapters/` registered in
-`ADAPTERS` (`server/src/messengers/index.js`). It knows nothing about agents:
+An adapter is a class in `server/src/messengers/adapters/`, registered in
+`ADAPTERS` (`server/src/messengers/index.js`) with a factory that receives its
+section of `MESSENGERS` from `config.js`. Its tokens are read there, like every
+operator-facing setting. It knows nothing about agents:
 
 ```js
-export function createXAdapter({ env }) {
-  return {
-    id: 'x',
-    capabilities: { buttons: true, threads: true, edit: true },
-    configured: () => !!env.X_TOKEN,
-    start({ onReply, onCommand, onStatus, log }) {},   // connect; call onStatus({connected, error})
-    async stop() {},
-    async post({ channel, thread }, card) { return { channel, ts } }, // ts: the message id
-    async update(ref, card) {},                         // re-render a posted card
-  };
+export class XAdapter {
+  constructor({ token = '' } = {}) { this.id = 'x'; this.token = token; }
+  configured() { return !!this.token; }
+  start({ onReply, onCommand, onStatus, log }) {}   // connect; call onStatus({connected, error})
+  async stop() {}
+  async post({ channel, thread }, card) { return { channel, ts }; } // ts: the message id
+  async update(ref, card) {}                         // re-render a posted card
 }
 ```
+
+The bridge itself is split by direction: `bridge.js` (`MessengerBridge`) watches
+sessions and posts cards, `replies.js` (`ReplyRouter`) turns chat events into
+answers and prompts, and `cards.js` builds the neutral cards both use.
 
 A **card** is `{kind, title, agent:{id,name,cli,group}, body, details, options:[{id,label,style}], hint, link, resolved}`.
 Render `options` as buttons whose callback carries `option.id`; when `resolved`
@@ -152,3 +159,6 @@ fake host (baselines, settle window, redelivery, allow-list, group addressing,
 typed questions, opt-in approvals, cards closed elsewhere, the lock, restart),
 and the Slack adapter with a fake socket and `fetch` (envelope acks, bot-message
 filtering, slash-command replies, token use).
+`server/test/messengers-http.test.mjs` exercises the routes on a real server:
+the error envelope, admission, and that tokens reach neither a response nor the
+API log. Neither suite talks to Slack.
