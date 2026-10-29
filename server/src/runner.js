@@ -1388,6 +1388,7 @@ export async function codexRolloutForId(id) {
 export function installClaudeRepinHook(
   hookCmd = shq(appScript('am-repin-hook.sh')),
   inputRequiredCmd = shq(appScript('am-input-required-hook.sh')),
+  approvalCmd = shq(appScript('am-claude-approval-hook.sh')),
 ) {
   const dir = process.env.CLAUDE_CONFIG_DIR;
   if (!dir) return false;
@@ -1414,7 +1415,11 @@ export function installClaudeRepinHook(
     return !eventEntries.some((m) => (m?.hooks || [])
       .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
   });
-  if (present && inputPresent && !missingClear) return true;
+  const hasApproval = (list) => Array.isArray(list) && list.some((m) => (m?.hooks || [])
+    .some((h) => String(h?.command || '').includes('am-claude-approval-hook.sh')));
+  const permissionPresent = hasApproval(cfg.hooks?.PermissionRequest);
+  const questionPresent = hasApproval(cfg.hooks?.PreToolUse);
+  if (present && inputPresent && !missingClear && permissionPresent && questionPresent) return true;
   // No matcher: fire for every source. `startup` replaces the "--session-id
   // not honoured" heuristic with a fact, `resume` is a proven no-op (same id),
   // and `clear` is the case this exists for. Filtering happens server-side.
@@ -1436,6 +1441,17 @@ export function installClaudeRepinHook(
     if (!clearPresent) cfg.hooks[event] = [...eventEntries, {
       hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
     }];
+  }
+  // Blocking decision hooks: the server decides per binding whether a chat
+  // answers; with no answer the script prints nothing and the terminal dialog
+  // stays. The timeout outlasts the server's 120 s decision window.
+  if (!permissionPresent) {
+    const list = Array.isArray(cfg.hooks.PermissionRequest) ? cfg.hooks.PermissionRequest : [];
+    cfg.hooks.PermissionRequest = [...list, { hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] }];
+  }
+  if (!questionPresent) {
+    const list = Array.isArray(cfg.hooks.PreToolUse) ? cfg.hooks.PreToolUse : [];
+    cfg.hooks.PreToolUse = [...list, { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] }];
   }
   try {
     const tmp = `${file}.am-tmp`;
