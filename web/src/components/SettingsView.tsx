@@ -1,4 +1,5 @@
 import CodexSharedSessions from './CodexSharedSessions';
+import { MessengersSection } from './MessengersSection';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { isPassive, isRemote, type Cli } from '../types';
 import * as api from '../api';
@@ -983,6 +984,8 @@ export default function SettingsView({
             <CodexSharedSessions />
 
             <PushRow />
+
+            <MessengersSection />
 
             <div className="setting-row" style={{ marginTop: 12 }}>
               <div>

@@ -67,6 +67,8 @@ import { Delegations, traceCheckpoint } from './delegations.js';
 import { findByName, filterAgentsByGroup, normalizeName } from './agent-list.js';
 import { fileLinkRoots, fileLinksRouter } from './file-links.js';
 import { checkAdoption, ADOPT_NOTE } from './claude-adopt.js';
+import { createMessengers } from './messengers/index.js';
+import { requestView } from './codex-view.js';
 // Absolute path of the repo's scripts/, for helpers the agent guide names.
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
 import { ApiError, apiRoutes, apiNotFound, apiErrorHandler, errorEnvelope, pipeResponse } from './api-errors.js';
@@ -3928,6 +3930,40 @@ api.post('/api/move', (req, res) => {
   }
   res.json({ ok: true });
 });
+
+// ---------- messengers (Slack, …): docs/messengers.md ----------
+// The bridge reaches the app only through this host. Replies from a chat count
+// as the operator's: the binding's allowed-users list is the gate, checked in
+// the bridge before anything here is called.
+const publicBase = (process.env.AM_PUBLIC_URL || '').replace(/\/+$/, '');
+const messengers = createMessengers({
+  dataDir: DATA_DIR,
+  scopeExists: (scope) => !!(scope.type === 'group' ? groups.get(scope.id) : store.get(scope.id)),
+  host: {
+    sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
+    groupOf: (id) => groups.groupOf(id),
+    locked: () => isLocked(),
+    link: (s) => (publicBase ? `${publicBase}/#session=${encodeURIComponent(s.id)}` : null),
+    async requests(s) {
+      if (!sessionRuntime.shared(s)) return [];
+      const { client } = await codexInput.attach(s.id);
+      return requestView(client).map(({ key, kind, details, questions, choices }) => ({ key, kind, details, questions, choices }));
+    },
+    async digest(s) {
+      const { digest } = await agentEvidence(s);
+      const out = outputOf(s, digest);
+      return out ? { id: `${out.src}:${out.seq}:${out.hash}`, text: digest.lastAssistantMd || digest.lastAssistantText } : null;
+    },
+    answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
+    async prompt(s, text, { requestId }) {
+      if (sessionRuntime.shared(s)) await sessionRuntime.send(s, { text, attachments: [], requestId });
+      else await deliver(s, { text }, undefined);
+      touchInput(s.id);
+    },
+  },
+});
+app.use(jsonBody, messengers.router);
+messengers.start();
 
 app.use(apiNotFound);
 // Serve the built frontend with SPA fallback.
