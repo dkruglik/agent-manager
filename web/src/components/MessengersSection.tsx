@@ -82,7 +82,7 @@ export function MessengersSection() {
                 </label>
               ))}
               <label>
-                <input type="checkbox" checked={b.approvals} onChange={() => run(() => messengers.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals
+                <input type="checkbox" checked={b.approvals} onChange={() => run(() => messengers.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals (Codex, Claude Code)
               </label>
               <div>Allowed users: <span className="mono">{b.allowedUsers.join(', ') || 'nobody'}</span></div>
             </div>
@@ -110,7 +110,7 @@ export function MessengersSection() {
             <input className="cfg-input" placeholder="Allowed user ids, e.g. U0123ABCD" value={draft.users}
               onChange={(e) => setDraft({ ...draft, users: e.target.value })} />
             <label className="s-help"><input type="checkbox" checked={draft.approvals}
-              onChange={(e) => setDraft({ ...draft, approvals: e.target.checked })} /> allow approving tool calls from chat</label>
+              onChange={(e) => setDraft({ ...draft, approvals: e.target.checked })} /> allow approving tool calls and answering Claude's questions from chat</label>
             {err && <div className="s-help s-err" role="alert">{err}</div>}
             {note && <div className="s-help">{note}</div>}
           </div>

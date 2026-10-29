@@ -1,7 +1,8 @@
 # Messengers: Slack (and others) as a two-way channel
 
-**Status:** phase 1 implemented — Slack adapter, typed answers for shared Codex,
-free-text prompts for every agent CLI. 2026-10-29.
+**Status:** phase 2 implemented — Slack adapter, typed answers for shared Codex,
+Claude Code permission prompts and questions answered from chat (opt-in per
+binding), free-text prompts for every agent CLI. 2026-10-29.
 
 Connect a chat channel to one agent or to a whole group. The channel then gets a
 card when an agent **needs input** and when it **finishes a turn**, and you can
@@ -29,7 +30,8 @@ where the CLI offers a typed answer path:
 | CLI | Needs-input card | Answer from chat |
 | --- | --- | --- |
 | Codex (shared) | Yes, with the questions and options | Questions; approvals when opted in. Secret questions are never sent to chat. |
-| Claude Code, Gemini, OpenCode | Yes (kind only) | Not yet — the card links to the terminal. Planned: Claude via a blocking `PermissionRequest` hook, opt-in per binding. |
+| Claude Code | Yes, with the tool call or the questions, for bindings with *allow approvals* | Permission prompts (approve once / deny) and single-select `AskUserQuestion`, when opted in — see [Claude Code approvals](#claude-code-approvals). Otherwise the kind only, with a terminal link. |
+| Gemini, OpenCode | Yes (kind only) | Not yet — the card links to the terminal. |
 | Hermes, OpenClaw | No signal exists | — |
 | Every agent CLI | Finished cards | Free-text follow-ups |
 
@@ -80,12 +82,49 @@ laptop and in a private Space.
 7. In **Settings → General → Messengers**, connect the channel to an agent or a
    group, list the allowed user IDs, and press **Send test**.
 
+## Claude Code approvals
+
+Claude Code exposes no typed answer path into a running TUI, but it does run
+*blocking* hooks before it shows a dialog. Agent Manager installs
+`scripts/am-claude-approval-hook.sh` as a `PermissionRequest` hook and as a
+`PreToolUse` hook for `AskUserQuestion`, next to its existing lifecycle hooks:
+
+1. Claude runs the hook with the pending tool call (or the questions).
+2. The hook — only in the pane's own `claude` process (`CLAUDE_PID` and
+   `AM_PANE_PID`, as the input-required hook checks) — calls
+   `POST /api/messengers/claude-hook?from=$AM_ID` with the payload and the
+   pane's `AM_RUN_ID`. Only that pane's live launch is answered.
+3. If no connected binding with *allow approvals* covers the session, the
+   server answers `{output:null}` at once and the hook prints nothing, so
+   Claude shows its normal dialog. Sessions without such a binding see no
+   change apart from that one local request.
+4. Otherwise a card goes to every such binding. The first allowed answer
+   becomes Claude's decision: approve once / deny with a message for a
+   permission, or `updatedInput.answers` for a question. The other channels'
+   cards close.
+5. With no answer within **120 s**, or if the hook is stopped, the cards say
+   *answer in the terminal* and the hook prints nothing: Claude falls back to
+   its dialog. The hook's own timeout is 150 s.
+
+Limits:
+
+- Multi-select questions stay in the terminal: Claude does not document the
+  answer format for them.
+- While the hook waits, the terminal shows no dialog. That is why it is opt-in
+  per binding and bounded.
+- Background subagents of the same `claude` process share its `CLAUDE_PID`, so
+  their permission requests reach chat too. Claude denies those when no hook
+  decides, so a chat answer can only add an approval that would otherwise not
+  happen.
+- "Approve once" never adds a permission rule; the next call asks again.
+
 ## Security model
 
 - **Allowed users only.** A click or reply from anyone not on the binding's
   list is ignored and logged. Being in the channel is not enough.
 - **Approvals are opt-in per binding.** Without it, permission cards show no
-  buttons and a forged button value is refused.
+  buttons and a forged button value is refused, and Claude's blocking hook
+  returns at once without a decision.
 - **The privacy lock stops both directions.** Nothing is posted and nothing is
   delivered while the instance is locked.
 - **Tokens live in the environment**, never in `messengers.json`.
@@ -112,6 +151,7 @@ channel does not replay old answers). Card records expire after 7 days.
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
 | `POST /api/messengers/bindings/:id/test` | Posts a test card; `409 messenger-offline` when the messenger is not connected |
+| `POST /api/messengers/claude-hook?from=<session>` | Used by the Claude hook: `{runId, payload}` → `{output}` after at most 120 s; `409 conflict` unless `runId` is the pane's live launch |
 
 Invalid input is `400 invalid-input` with `details[].field`; an unknown binding
 is `404 not-found` ([error contract](api-errors.md)).
@@ -161,4 +201,8 @@ and the Slack adapter with a fake socket and `fetch` (envelope acks, bot-message
 filtering, slash-command replies, token use).
 `server/test/messengers-http.test.mjs` exercises the routes on a real server:
 the error envelope, admission, and that tokens reach neither a response nor the
-API log. Neither suite talks to Slack.
+API log. `messengers-claude.test.mjs` covers the hook payload mapping and the
+bridge's wait (opt-in, timeout, abort, several channels), and
+`messengers-claude-hook.test.mjs` runs the hook script against a local server
+(guards, pass-through, silent failure) and its installation. No suite talks to
+Slack or runs a real Claude.
