@@ -3962,7 +3962,11 @@ const messengers = createMessengers({
     },
   },
 });
-app.use(jsonBody, messengers.router);
+api.get('/api/messengers', (_req, res) => res.json(messengers.list()));
+api.post('/api/messengers/bindings', (req, res) => res.status(201).json(messengers.create(req.body)));
+api.put('/api/messengers/bindings/:id', (req, res) => res.json(messengers.update(req.params.id, req.body)));
+api.delete('/api/messengers/bindings/:id', (req, res) => res.json(messengers.remove(req.params.id)));
+api.post('/api/messengers/bindings/:id/test', async (req, res) => res.json(await messengers.test(req.params.id)));
 messengers.start();
 
 app.use(apiNotFound);

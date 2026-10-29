@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { invalid } from '../api-errors.js';
 
 // Bindings connect one messenger target (a Slack channel, a Telegram chat) to a
 // session or a group. Delivery state lives beside them so a restart neither
@@ -15,33 +16,29 @@ const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 // A card posted for a request that never resolves would otherwise be kept forever.
 const POSTED_MAX_AGE_MS = 7 * 24 * 3600_000;
 
-export class BindingError extends Error {
-  constructor(message) { super(message); this.status = 400; this.code = 'invalid-input'; }
-}
-
 const text = (v, max) => typeof v === 'string' ? v.trim().slice(0, max) : '';
 
 export function validateBinding(input, { adapters, existing = null, scopeExists = () => true } = {}) {
   const b = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const adapter = existing?.adapter ?? text(b.adapter, 32);
-  if (!adapters.includes(adapter)) throw new BindingError(`unknown messenger "${adapter}"`);
+  if (!adapters.includes(adapter)) throw invalid('adapter', `unknown messenger "${adapter}"`);
   const target = b.target ?? existing?.target;
   const channel = text(target?.channel, 128);
-  if (!channel || !ID.test(channel)) throw new BindingError('target.channel is required');
+  if (!channel || !ID.test(channel)) throw invalid('target.channel', 'must be a channel id');
   const scope = b.scope ?? existing?.scope;
-  if (!scope || !SCOPES.has(scope.type) || !ID.test(scope.id || '')) throw new BindingError('scope must be {type:"session"|"group", id}');
-  if (!scopeExists(scope)) throw new BindingError(`${scope.type} "${scope.id}" does not exist`);
+  if (!scope || !SCOPES.has(scope.type) || !ID.test(scope.id || '')) throw invalid('scope', 'must be {type:"session"|"group", id}');
+  if (!scopeExists(scope)) throw invalid('scope', `${scope.type} "${scope.id}" does not exist`);
   const events = b.events ?? existing?.events ?? EVENTS;
   if (!Array.isArray(events) || !events.length || events.some((e) => !EVENTS.includes(e))) {
-    throw new BindingError(`events must be a non-empty subset of ${EVENTS.join(', ')}`);
+    throw invalid('events', `must be a non-empty subset of ${EVENTS.join(', ')}`);
   }
   const users = b.allowedUsers ?? existing?.allowedUsers ?? [];
   if (!Array.isArray(users) || users.some((u) => typeof u !== 'string' || !ID.test(u))) {
-    throw new BindingError('allowedUsers must be a list of messenger user ids');
+    throw invalid('allowedUsers', 'must be a list of messenger user ids');
   }
   // Approving a tool call from a chat message is opt-in for each binding.
   const approvals = b.approvals ?? existing?.approvals ?? false;
-  if (typeof approvals !== 'boolean') throw new BindingError('approvals must be true or false');
+  if (typeof approvals !== 'boolean') throw invalid('approvals', 'must be true or false');
   return {
     id: existing?.id ?? `b_${crypto.randomBytes(6).toString('hex')}`,
     adapter,

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import express from 'express';
+import { ApiError } from '../api-errors.js';
 import { createBridge } from './bridge.js';
-import { createStore, validateBinding, BindingError } from './store.js';
+import { createStore, validateBinding } from './store.js';
 import { createSlackAdapter } from './adapters/slack.js';
 
 // Built-in messengers. An adapter is a plain object — see docs/messengers.md —
@@ -10,6 +10,8 @@ import { createSlackAdapter } from './adapters/slack.js';
 export const ADAPTERS = {
   slack: createSlackAdapter,
 };
+
+const notFound = () => new ApiError(404, 'not-found', 'Binding not found.');
 
 export function createMessengers({ host, dataDir, config, scopeExists = () => true, factories = ADAPTERS, bridgeOptions = {} }) {
   const store = createStore(path.join(dataDir, 'messengers.json'));
@@ -21,38 +23,38 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
   };
   const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make(config[id] || {})]));
   const bridge = createBridge({ host, store, adapters, log, ...bridgeOptions });
-
-  const router = express.Router();
   const ids = [...adapters.keys()];
-  const fail = (res, e) => res.status(e.status || 500).json({ code: e.code || 'messenger-error', error: e.message });
+  const existing = (id) => {
+    const b = store.binding(id);
+    if (!b) throw notFound();
+    return b;
+  };
 
-  router.get('/api/messengers', (_req, res) => {
-    const status = bridge.status();
-    res.json({
-      adapters: ids.map((id) => ({ id, configured: adapters.get(id).configured(), ...status[id] })),
-      bindings: store.bindings(),
-    });
-  });
-  router.post('/api/messengers/bindings', (req, res) => {
-    try { res.status(201).json(store.putBinding(validateBinding(req.body, { adapters: ids, scopeExists }))); }
-    catch (e) { fail(res, e); }
-  });
-  router.put('/api/messengers/bindings/:id', (req, res) => {
-    const existing = store.binding(req.params.id);
-    if (!existing) return res.status(404).json({ code: 'not-found', error: 'binding not found' });
-    try { res.json(store.putBinding(validateBinding(req.body, { adapters: ids, existing, scopeExists }))); }
-    catch (e) { fail(res, e); }
-  });
-  router.delete('/api/messengers/bindings/:id', (req, res) => {
-    if (!store.removeBinding(req.params.id)) return res.status(404).json({ code: 'not-found', error: 'binding not found' });
-    res.json({ ok: true });
-  });
-  router.post('/api/messengers/bindings/:id/test', async (req, res) => {
-    const b = store.binding(req.params.id);
-    if (!b) return res.status(404).json({ code: 'not-found', error: 'binding not found' });
-    try { await bridge.testBinding(b); res.json({ ok: true }); }
-    catch (e) { fail(res, new BindingError(e.message)); }
-  });
-
-  return { bridge, store, router, start: () => bridge.start(), stop: () => bridge.stop() };
+  // The operations behind /api/messengers; index.js registers the routes so
+  // they pass the same admission and validation as every other route.
+  return {
+    bridge,
+    store,
+    start: () => bridge.start(),
+    stop: () => bridge.stop(),
+    list() {
+      const status = bridge.status();
+      return {
+        adapters: ids.map((id) => ({ id, configured: adapters.get(id).configured(), ...status[id] })),
+        bindings: store.bindings(),
+      };
+    },
+    create: (body) => store.putBinding(validateBinding(body, { adapters: ids, scopeExists })),
+    update: (id, body) => store.putBinding(validateBinding(body, { adapters: ids, existing: existing(id), scopeExists })),
+    remove(id) {
+      if (!store.removeBinding(id)) throw notFound();
+      return { ok: true };
+    },
+    async test(id) {
+      const b = existing(id);
+      if (!bridge.status()[b.adapter]?.connected) throw new ApiError(409, 'messenger-offline', `${b.adapter} is not connected.`);
+      await bridge.testBinding(b);
+      return { ok: true };
+    },
+  };
 }
