@@ -1054,19 +1054,10 @@ export default function App() {
     window.addEventListener(OPEN_SESSION_EVENT, on);
     return () => window.removeEventListener(OPEN_SESSION_EVENT, on);
   }, [tree]);
-  // Messenger cards link to `#session=<id>` (docs/messengers.md). Consumed once
-  // the tree knows that session, then dropped so a reload does not jump again.
+  // Messenger cards link to `#session=<id>` (docs/messengers.md). The handler
+  // is its own chunk: the entry has no room to carry it for every page load.
   useEffect(() => {
-    const read = () => {
-      const id = new URLSearchParams(location.hash.replace(/^#/, '')).get('session');
-      if (!id || !tree.sessions.some((x) => x.id === id)) return;
-      history.replaceState(history.state, '', location.pathname + location.search);
-      const g = tree.groups.find((x) => x.sessionIds.includes(id));
-      openRef.current(id, g?.id);
-    };
-    read();
-    window.addEventListener('hashchange', read);
-    return () => window.removeEventListener('hashchange', read);
+    if (location.hash.includes('session=')) import('./lib/sessionLink').then((m) => m.openLinkedSession(tree.sessions));
   }, [tree]);
   const activate = (ref: string) => {
     setActiveRef(ref);

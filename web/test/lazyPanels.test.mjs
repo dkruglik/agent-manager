@@ -137,7 +137,14 @@ try {
     // It cannot be lazy: it is shown exactly when HF's edge refuses every
     // request this tab makes, a chunk fetch included. Raised to 792, keeping
     // ~0.6 kB of headroom, as tight as main had.
-    assert.ok(entry.length <= 792 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 792 kB budget`);
+    //
+    // Messenger deep links (2026-10-29, docs/messengers.md): a Slack card opens
+    // its agent through `#session=<id>`. main measured 810,967 here, this branch
+    // 811,141 (+174), all of it the App.tsx hook that loads lib/sessionLink.ts
+    // when the hash names a session; the handler and the messenger API helpers
+    // are in their own chunks. The hook cannot be lazy, since it decides whether
+    // to load the handler. Raised to 793, keeping ~0.9 kB of headroom.
+    assert.ok(entry.length <= 793 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 793 kB budget`);
     // One literal only that panel's module contains — a dynamic import that
     // merely wraps an unchanged graph would leave these in the entry.
     for (const [panel, marker] of [

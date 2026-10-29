@@ -553,26 +553,6 @@ export const unsubscribePush = (endpoint: string) =>
 export const sendTestNotification = (): Promise<{ ok: boolean; sent: number; devices: number }> =>
   fetch('/api/notify', { method: 'POST', headers: HEADERS, body: JSON.stringify({ title: 'Agent Manager', body: 'Test notification — agents can reach this device.' }) }).then(json);
 
-// ---- messengers (docs/messengers.md) ----
-export type MessengerEvent = 'input-required' | 'finished';
-export interface MessengerBinding {
-  id: string; adapter: string; target: { channel: string };
-  scope: { type: 'session' | 'group'; id: string };
-  events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
-  label: string | null; createdAt: string;
-}
-export interface MessengerAdapter { id: string; configured: boolean; connected: boolean; error: string | null; }
-export const getMessengers = (): Promise<{ adapters: MessengerAdapter[]; bindings: MessengerBinding[] }> =>
-  fetch('/api/messengers').then(json);
-export const createMessengerBinding = (b: Omit<MessengerBinding, 'id' | 'createdAt' | 'label'>): Promise<MessengerBinding> =>
-  fetch('/api/messengers/bindings', { method: 'POST', headers: HEADERS, body: JSON.stringify(b) }).then(json);
-export const updateMessengerBinding = (id: string, patch: Partial<MessengerBinding>): Promise<MessengerBinding> =>
-  fetch(`/api/messengers/bindings/${encodeURIComponent(id)}`, { method: 'PUT', headers: HEADERS, body: JSON.stringify(patch) }).then(json);
-export const deleteMessengerBinding = (id: string) =>
-  fetch(`/api/messengers/bindings/${encodeURIComponent(id)}`, { method: 'DELETE', headers: HEADERS }).then(json);
-export const testMessengerBinding = (id: string) =>
-  fetch(`/api/messengers/bindings/${encodeURIComponent(id)}/test`, { method: 'POST', headers: HEADERS }).then(json);
-
 // ---- trace analytics ----
 export interface TraceStats {
   turns: number; prompts: number; toolCalls: number; tools: Record<string, number>;

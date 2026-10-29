@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api';
-import type { MessengerAdapter, MessengerBinding, MessengerEvent } from '../api';
+import * as messengers from '../lib/messengersApi';
+import type { MessengerAdapter, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
 import type { Tree } from '../types';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
@@ -17,7 +18,7 @@ export function MessengersSection() {
 
   const load = useCallback(async () => {
     try {
-      const [m, t] = await Promise.all([api.getMessengers(), api.getTree()]);
+      const [m, t] = await Promise.all([messengers.getMessengers(), api.getTree()]);
       setAdapters(m.adapters);
       setBindings(m.bindings);
       setTree(t);
@@ -35,7 +36,7 @@ export function MessengersSection() {
   };
   const add = () => run(async () => {
     const [type, id] = draft.scope.split(':');
-    await api.createMessengerBinding({
+    await messengers.createMessengerBinding({
       adapter: draft.adapter,
       target: { channel: draft.channel.trim() },
       scope: { type: type as 'session' | 'group', id },
@@ -47,7 +48,7 @@ export function MessengersSection() {
   }, 'Connected. Use “Send test” to check the channel.');
   const toggleEvent = (b: MessengerBinding, e: MessengerEvent) => {
     const events = b.events.includes(e) ? b.events.filter((x) => x !== e) : [...b.events, e];
-    if (events.length) run(() => api.updateMessengerBinding(b.id, { events }));
+    if (events.length) run(() => messengers.updateMessengerBinding(b.id, { events }));
   };
 
   const live = tree?.sessions.filter((s) => !s.archivedAt && s.cli !== 'shell' && s.cli !== 'files' && s.cli !== 'trace') ?? [];
@@ -81,14 +82,14 @@ export function MessengersSection() {
                 </label>
               ))}
               <label>
-                <input type="checkbox" checked={b.approvals} onChange={() => run(() => api.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals
+                <input type="checkbox" checked={b.approvals} onChange={() => run(() => messengers.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals
               </label>
               <div>Allowed users: <span className="mono">{b.allowedUsers.join(', ') || 'nobody'}</span></div>
             </div>
           </div>
           <span className="confirm-del">
-            <button className="btn-ghost" onClick={() => run(() => api.testMessengerBinding(b.id), 'Test card sent.')}>Send test</button>
-            <button className="btn-ghost" onClick={() => run(() => api.deleteMessengerBinding(b.id))}>Remove</button>
+            <button className="btn-ghost" onClick={() => run(() => messengers.testMessengerBinding(b.id), 'Test card sent.')}>Send test</button>
+            <button className="btn-ghost" onClick={() => run(() => messengers.deleteMessengerBinding(b.id))}>Remove</button>
           </span>
         </div>
       ))}
