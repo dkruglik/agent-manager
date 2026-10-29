@@ -1,20 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ApiError } from '../api-errors.js';
-import { createBridge } from './bridge.js';
-import { createStore, validateBinding } from './store.js';
-import { createSlackAdapter } from './adapters/slack.js';
+import { MessengerBridge } from './bridge.js';
+import { BindingStore, validateBinding } from './store.js';
+import { SlackAdapter } from './adapters/slack.js';
 
 // Built-in messengers. An adapter is a plain object — see docs/messengers.md —
 // so adding Telegram or Discord is one file here and nothing in the bridge.
 export const ADAPTERS = {
-  slack: createSlackAdapter,
+  slack: (config) => new SlackAdapter(config),
 };
 
 const notFound = () => new ApiError(404, 'not-found', 'Binding not found.');
 
 export function createMessengers({ host, dataDir, config, scopeExists = () => true, factories = ADAPTERS, bridgeOptions = {} }) {
-  const store = createStore(path.join(dataDir, 'messengers.json'));
+  const store = new BindingStore(path.join(dataDir, 'messengers.json'));
   const logFile = path.join(dataDir, 'messengers.log.jsonl');
   const log = (entry) => {
     const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
@@ -22,7 +22,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = createBridge({ host, store, adapters, log, ...bridgeOptions });
+  const bridge = new MessengerBridge({ host, store, adapters, log, ...bridgeOptions });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);

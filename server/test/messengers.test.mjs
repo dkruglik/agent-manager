@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createBridge } from '../src/messengers/bridge.js';
+import { MessengerBridge } from '../src/messengers/bridge.js';
 import { resolveMessengerConfig } from '../src/config.js';
-import { createStore, validateBinding } from '../src/messengers/store.js';
+import { BindingStore, validateBinding } from '../src/messengers/store.js';
 import { EventEmitter } from 'node:events';
-import { renderBlocks, toMrkdwn, createSlackAdapter } from '../src/messengers/adapters/slack.js';
+import { renderBlocks, toMrkdwn, SlackAdapter } from '../src/messengers/adapters/slack.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-'));
 let clock = 1_000_000;
@@ -58,10 +58,10 @@ try {
   assert.equal(valid.approvals, false, 'approvals are opt-in');
   assert.deepEqual(valid.events, ['input-required', 'finished']);
 
-  const store = createStore(path.join(root, 'messengers.json'), { now });
+  const store = new BindingStore(path.join(root, 'messengers.json'), { now });
   const host = fakeHost();
   const slack = fakeAdapter();
-  const bridge = createBridge({ host, store, adapters: new Map([['slack', slack]]), now, settleMs: 5000, digestEveryMs: 0, tickMs: 1e9 });
+  const bridge = new MessengerBridge({ host, store, adapters: new Map([['slack', slack]]), now, settleMs: 5000, digestEveryMs: 0, tickMs: 1e9 });
   const binding = store.putBinding({ ...valid, allowedUsers: ['U1'] });
   bridge.start();
 
@@ -179,9 +179,9 @@ try {
   host.isLocked = false;
 
   // ---------- restart: posted cards and baselines survive ----------
-  const store2 = createStore(path.join(root, 'messengers.json'), { now });
+  const store2 = new BindingStore(path.join(root, 'messengers.json'), { now });
   const slack2 = fakeAdapter();
-  const bridge2 = createBridge({ host, store: store2, adapters: new Map([['slack', slack2]]), now, settleMs: 0, digestEveryMs: 0, tickMs: 1e9 });
+  const bridge2 = new MessengerBridge({ host, store: store2, adapters: new Map([['slack', slack2]]), now, settleMs: 0, digestEveryMs: 0, tickMs: 1e9 });
   bridge2.start();
   setState(host, 's1', { inputRequired: { kind: 'permission', cli: 'claude', detectedAt: 'c1' } });
   await bridge2.tick();
@@ -214,7 +214,7 @@ try {
       'chat.postMessage': { ok: true, channel: 'C1', ts: '111.1' }, 'chat.update': { ok: true } }[method];
     return { status: 200, json: async () => out };
   };
-  const adapter = createSlackAdapter({ botToken: 'xoxb-1', appToken: 'xapp-1', fetchImpl, WebSocketImpl: FakeWs, setTimer: () => {} });
+  const adapter = new SlackAdapter({ botToken: 'xoxb-1', appToken: 'xapp-1', fetchImpl, WebSocketImpl: FakeWs, setTimer: () => {} });
   assert.equal(adapter.configured(), true);
   const got = [];
   const statuses = [];
@@ -242,8 +242,8 @@ try {
   assert.equal(calls.at(-1).body.thread_ts, '111.1');
   assert.equal(calls.at(-1).auth, 'Bearer xoxb-1');
   await adapter.stop();
-  assert.equal(createSlackAdapter({}).configured(), false);
-  assert.equal(createSlackAdapter({ botToken: 'xoxb-1' }).configured(), false, 'both tokens are needed');
+  assert.equal(new SlackAdapter({}).configured(), false);
+  assert.equal(new SlackAdapter({ botToken: 'xoxb-1' }).configured(), false, 'both tokens are needed');
 
   // ---------- configuration (read once, in config.js) ----------
   const cfg = resolveMessengerConfig({ SLACK_BOT_TOKEN: 'xoxb-2', SLACK_APP_TOKEN: 'xapp-2', AM_PUBLIC_URL: 'https://am.example.test/' });

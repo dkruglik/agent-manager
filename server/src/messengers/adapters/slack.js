@@ -48,15 +48,45 @@ export function renderBlocks(card) {
 
 const fallbackText = (card) => [card.title, card.body].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
 
-export function createSlackAdapter({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout } = {}) {
-  let socket = null;
-  let stopped = false;
-  let attempt = 0;
-  let hooks = null;
-  let botUser = null;
+// Slack's Socket Mode envelope types that carry something for us.
+function interactiveReply(p) {
+  const action = p.actions?.[0];
+  if (p.type !== 'block_actions' || !action?.action_id?.startsWith('am:')) return null;
+  return {
+    channel: p.channel?.id || p.container?.channel_id,
+    ts: p.message?.ts || p.container?.message_ts,
+    thread: null,
+    user: { id: p.user?.id, name: p.user?.username || p.user?.name },
+    messageId: `${p.trigger_id || ''}:${action.action_ts || ''}`,
+    optionId: action.value,
+  };
+}
 
-  async function call(method, body, token = botToken) {
-    const res = await fetchImpl(`${API}/${method}`, {
+function messageReply(p, botUser) {
+  const e = p.event || {};
+  if (e.type !== 'message' || e.subtype || e.bot_id || e.user === botUser || !e.user) return null;
+  return {
+    channel: e.channel, ts: e.ts, thread: e.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
+    user: { id: e.user }, messageId: p.event_id || `${e.channel}:${e.ts}`, text: e.text || '',
+  };
+}
+
+export class SlackAdapter {
+  constructor({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout } = {}) {
+    Object.assign(this, { botToken, appToken, fetchImpl, WebSocketImpl, setTimer });
+    this.id = 'slack';
+    this.capabilities = { buttons: true, threads: true, edit: true };
+    this.socket = null;
+    this.stopped = false;
+    this.attempt = 0;
+    this.hooks = null;
+    this.botUser = null;
+  }
+
+  configured() { return !!(this.botToken && this.appToken); }
+
+  async call(method, body, token = this.botToken) {
+    const res = await this.fetchImpl(`${API}/${method}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify(body || {}),
@@ -66,81 +96,68 @@ export function createSlackAdapter({ botToken = '', appToken = '', fetchImpl = g
     return json;
   }
 
-  function setStatus(connected, error = null) { hooks?.onStatus({ connected, error }); }
+  setStatus(connected, error = null) { this.hooks?.onStatus({ connected, error }); }
 
-  function reconnectLater(reason) {
-    if (stopped) return;
-    setStatus(false, reason);
-    const delay = Math.min(BACKOFF_MAX_MS, 1000 * 2 ** Math.min(attempt++, 6));
-    setTimer(() => { connect().catch((e) => reconnectLater(e.message)); }, delay);
+  reconnectLater(reason) {
+    if (this.stopped) return;
+    this.setStatus(false, reason);
+    const delay = Math.min(BACKOFF_MAX_MS, 1000 * 2 ** Math.min(this.attempt++, 6));
+    this.setTimer(() => { this.connect().catch((e) => this.reconnectLater(e.message)); }, delay);
   }
 
-  async function connect() {
-    if (stopped) return;
-    if (!botUser) botUser = (await call('auth.test', {})).user_id;
-    const { url } = await call('apps.connections.open', {}, appToken);
-    const ws = new WebSocketImpl(url);
-    socket = ws;
-    ws.on('message', (raw) => { onFrame(ws, raw).catch((e) => hooks.log({ event: 'frame-failed', error: e.message })); });
-    ws.on('close', () => { if (socket === ws) reconnectLater('socket closed'); });
-    ws.on('error', (e) => hooks.log({ event: 'socket-error', error: e.message }));
+  async connect() {
+    if (this.stopped) return;
+    if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
+    const { url } = await this.call('apps.connections.open', {}, this.appToken);
+    const ws = new this.WebSocketImpl(url);
+    this.socket = ws;
+    ws.on('message', (raw) => { this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.message })); });
+    ws.on('close', () => { if (this.socket === ws) this.reconnectLater('socket closed'); });
+    ws.on('error', (e) => this.hooks.log({ event: 'socket-error', error: e.message }));
   }
 
-  async function onFrame(ws, raw) {
+  async onFrame(ws, raw) {
     let msg;
     try { msg = JSON.parse(String(raw)); } catch { return; }
-    if (msg.type === 'hello') { attempt = 0; setStatus(true); return; }
-    if (msg.type === 'disconnect') { socket = null; ws.close(); reconnectLater('refresh requested'); return; }
+    if (msg.type === 'hello') { this.attempt = 0; this.setStatus(true); return; }
+    if (msg.type === 'disconnect') { this.socket = null; ws.close(); this.reconnectLater('refresh requested'); return; }
     if (!msg.envelope_id) return;
     const p = msg.payload || {};
     // Slack redelivers anything not acknowledged within 3 s, so ack first —
     // except slash commands, whose ack carries the reply.
     if (msg.type === 'slash_commands') {
-      const text = await hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' });
+      const text = await this.hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' });
       ws.send(JSON.stringify({ envelope_id: msg.envelope_id, payload: { response_type: 'ephemeral', text: toMrkdwn(text) } }));
       return;
     }
     ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
-    if (msg.type === 'interactive' && p.type === 'block_actions') {
-      const action = p.actions?.[0];
-      if (!action?.action_id?.startsWith('am:')) return;
-      await hooks.onReply({
-        channel: p.channel?.id || p.container?.channel_id,
-        ts: p.message?.ts || p.container?.message_ts,
-        thread: null,
-        user: { id: p.user?.id, name: p.user?.username || p.user?.name },
-        messageId: `${p.trigger_id || ''}:${action.action_ts || ''}`,
-        optionId: action.value,
-      });
-    } else if (msg.type === 'events_api') {
-      const e = p.event || {};
-      if (e.type !== 'message' || e.subtype || e.bot_id || e.user === botUser || !e.user) return;
-      await hooks.onReply({
-        channel: e.channel, ts: e.ts, thread: e.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
-        user: { id: e.user }, messageId: p.event_id || `${e.channel}:${e.ts}`, text: e.text || '',
-      });
-    }
+    const reply = msg.type === 'interactive' ? interactiveReply(p)
+      : msg.type === 'events_api' ? messageReply(p, this.botUser) : null;
+    if (reply) await this.hooks.onReply(reply);
   }
 
-  return {
-    id: 'slack',
-    capabilities: { buttons: true, threads: true, edit: true },
-    configured: () => !!(botToken && appToken),
-    start(h) {
-      hooks = h;
-      stopped = false;
-      connect().catch((e) => reconnectLater(e.message));
-    },
-    async stop() { stopped = true; const ws = socket; socket = null; ws?.close(); },
-    async post(target, card) {
-      const res = await call('chat.postMessage', {
-        channel: target.channel, ...(target.thread ? { thread_ts: target.thread } : {}),
-        text: fallbackText(card), blocks: renderBlocks(card), unfurl_links: false,
-      });
-      return { channel: res.channel, ts: res.ts };
-    },
-    async update(ref, card) {
-      await call('chat.update', { channel: ref.channel, ts: ref.ts, text: fallbackText(card), blocks: renderBlocks(card) });
-    },
-  };
+  start(hooks) {
+    this.hooks = hooks;
+    this.stopped = false;
+    this.connect().catch((e) => this.reconnectLater(e.message));
+  }
+
+  async stop() {
+    this.stopped = true;
+    const ws = this.socket;
+    this.socket = null;
+    ws?.close();
+  }
+
+  async post(target, card) {
+    const res = await this.call('chat.postMessage', {
+      channel: target.channel, ...(target.thread ? { thread_ts: target.thread } : {}),
+      text: fallbackText(card), blocks: renderBlocks(card), unfurl_links: false,
+    });
+    return { channel: res.channel, ts: res.ts };
+  }
+
+  async update(ref, card) {
+    await this.call('chat.update', { channel: ref.channel, ts: ref.ts, text: fallbackText(card), blocks: renderBlocks(card) });
+  }
 }

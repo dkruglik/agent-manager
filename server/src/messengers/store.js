@@ -52,53 +52,63 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   };
 }
 
-export function createStore(file, { now = () => Date.now() } = {}) {
-  let data = { bindings: [], posted: {}, seen: {} };
-  try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (raw && Array.isArray(raw.bindings)) {
-      data = { bindings: raw.bindings, posted: raw.posted || {}, seen: raw.seen || {} };
-    }
-  } catch {}
+// Persists to one JSON file, written whole and renamed into place, so a crash
+// mid-write leaves the previous version rather than half a file.
+export class BindingStore {
+  constructor(file, { now = () => Date.now() } = {}) {
+    this.file = file;
+    this.now = now;
+    this.data = { bindings: [], posted: {}, seen: {} };
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (raw && Array.isArray(raw.bindings)) this.data = { bindings: raw.bindings, posted: raw.posted || {}, seen: raw.seen || {} };
+    } catch {}
+  }
 
-  const persist = () => {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs.renameSync(tmp, file);
-  };
+  persist() {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+    fs.renameSync(tmp, this.file);
+  }
 
-  const prune = () => {
-    const cutoff = now() - POSTED_MAX_AGE_MS;
-    for (const [k, p] of Object.entries(data.posted)) if ((p.at || 0) < cutoff) delete data.posted[k];
-  };
+  bindings() { return this.data.bindings.slice(); }
+  binding(id) { return this.data.bindings.find((b) => b.id === id) || null; }
 
-  return {
-    bindings: () => data.bindings.slice(),
-    binding: (id) => data.bindings.find((b) => b.id === id) || null,
-    putBinding(b) {
-      const i = data.bindings.findIndex((x) => x.id === b.id);
-      if (i >= 0) data.bindings[i] = b; else data.bindings.push(b);
-      persist();
-      return b;
-    },
-    removeBinding(id) {
-      const before = data.bindings.length;
-      data.bindings = data.bindings.filter((b) => b.id !== id);
-      for (const k of Object.keys(data.posted)) if (data.posted[k].bindingId === id) delete data.posted[k];
-      for (const k of Object.keys(data.seen)) if (k.startsWith(`${id}|`)) delete data.seen[k];
-      if (data.bindings.length !== before) persist();
-      return data.bindings.length !== before;
-    },
-    // posted: `${bindingId}|${sessionId}|${key}` → {bindingId, sessionId, key, kind, ref, status, at, ...}
-    posted: (k) => data.posted[k] || null,
-    allPosted: () => Object.entries(data.posted),
-    putPosted(k, value) { data.posted[k] = { ...value, at: value.at ?? now() }; prune(); persist(); },
-    findPostedByRef(adapter, channel, ts) {
-      return Object.entries(data.posted).find(([, p]) => p.adapter === adapter && p.ref?.channel === channel && p.ref?.ts === ts) || null;
-    },
-    // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
-    seen: (k) => data.seen[k] ?? null,
-    putSeen(k, v) { data.seen[k] = v; persist(); },
-  };
+  putBinding(b) {
+    const i = this.data.bindings.findIndex((x) => x.id === b.id);
+    if (i >= 0) this.data.bindings[i] = b; else this.data.bindings.push(b);
+    this.persist();
+    return b;
+  }
+
+  removeBinding(id) {
+    const { data } = this;
+    const before = data.bindings.length;
+    data.bindings = data.bindings.filter((b) => b.id !== id);
+    if (data.bindings.length === before) return false;
+    for (const k of Object.keys(data.posted)) if (data.posted[k].bindingId === id) delete data.posted[k];
+    for (const k of Object.keys(data.seen)) if (k.startsWith(`${id}|`)) delete data.seen[k];
+    this.persist();
+    return true;
+  }
+
+  // posted: `${bindingId}|${sessionId}|${key}` → {bindingId, sessionId, key, kind, ref, status, at, ...}
+  posted(k) { return this.data.posted[k] || null; }
+  allPosted() { return Object.entries(this.data.posted); }
+
+  putPosted(k, value) {
+    this.data.posted[k] = { ...value, at: value.at ?? this.now() };
+    const cutoff = this.now() - POSTED_MAX_AGE_MS;
+    for (const [key, p] of Object.entries(this.data.posted)) if ((p.at || 0) < cutoff) delete this.data.posted[key];
+    this.persist();
+  }
+
+  findPostedByRef(adapter, channel, ts) {
+    return Object.entries(this.data.posted).find(([, p]) => p.adapter === adapter && p.ref?.channel === channel && p.ref?.ts === ts) || null;
+  }
+
+  // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
+  seen(k) { return this.data.seen[k] ?? null; }
+  putSeen(k, v) { this.data.seen[k] = v; this.persist(); }
 }
