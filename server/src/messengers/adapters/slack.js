@@ -4,7 +4,8 @@ import { WebSocket } from 'ws';
 // NAT, on a VPS without a public URL, and in a private Space — none of which
 // can receive Slack's HTTP callbacks. Posting uses the Web API.
 //
-// Needs SLACK_BOT_TOKEN (xoxb-…) and SLACK_APP_TOKEN (xapp-…, connections:write).
+// Needs a bot token (xoxb-…) and an app-level token (xapp-…, connections:write),
+// read from SLACK_BOT_TOKEN and SLACK_APP_TOKEN in config.js.
 // docs/messengers.md has the app manifest with the exact scopes and events.
 
 const API = 'https://slack.com/api';
@@ -47,9 +48,7 @@ export function renderBlocks(card) {
 
 const fallbackText = (card) => [card.title, card.body].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
 
-export function createSlackAdapter({ env = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout } = {}) {
-  const botToken = env.SLACK_BOT_TOKEN || '';
-  const appToken = env.SLACK_APP_TOKEN || '';
+export function createSlackAdapter({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout } = {}) {
   let socket = null;
   let stopped = false;
   let attempt = 0;

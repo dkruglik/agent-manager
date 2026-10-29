@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createBridge } from '../src/messengers/bridge.js';
+import { resolveMessengerConfig } from '../src/config.js';
 import { createStore, validateBinding } from '../src/messengers/store.js';
 import { EventEmitter } from 'node:events';
 import { renderBlocks, toMrkdwn, createSlackAdapter } from '../src/messengers/adapters/slack.js';
@@ -213,7 +214,7 @@ try {
       'chat.postMessage': { ok: true, channel: 'C1', ts: '111.1' }, 'chat.update': { ok: true } }[method];
     return { status: 200, json: async () => out };
   };
-  const adapter = createSlackAdapter({ env: { SLACK_BOT_TOKEN: 'xoxb-1', SLACK_APP_TOKEN: 'xapp-1' }, fetchImpl, WebSocketImpl: FakeWs, setTimer: () => {} });
+  const adapter = createSlackAdapter({ botToken: 'xoxb-1', appToken: 'xapp-1', fetchImpl, WebSocketImpl: FakeWs, setTimer: () => {} });
   assert.equal(adapter.configured(), true);
   const got = [];
   const statuses = [];
@@ -241,7 +242,14 @@ try {
   assert.equal(calls.at(-1).body.thread_ts, '111.1');
   assert.equal(calls.at(-1).auth, 'Bearer xoxb-1');
   await adapter.stop();
-  assert.equal(createSlackAdapter({ env: {} }).configured(), false);
+  assert.equal(createSlackAdapter({}).configured(), false);
+  assert.equal(createSlackAdapter({ botToken: 'xoxb-1' }).configured(), false, 'both tokens are needed');
+
+  // ---------- configuration (read once, in config.js) ----------
+  const cfg = resolveMessengerConfig({ SLACK_BOT_TOKEN: 'xoxb-2', SLACK_APP_TOKEN: 'xapp-2', AM_PUBLIC_URL: 'https://am.example.test/' });
+  assert.deepEqual(cfg, { publicUrl: 'https://am.example.test', slack: { botToken: 'xoxb-2', appToken: 'xapp-2' } });
+  assert.deepEqual(resolveMessengerConfig({}), { publicUrl: '', slack: { botToken: '', appToken: '' } });
+  assert.throws(() => resolveMessengerConfig({ AM_PUBLIC_URL: 'am.example.test' }), /AM_PUBLIC_URL/, 'a bad URL fails at startup');
 
   console.log('messengers: all assertions passed');
 } finally {

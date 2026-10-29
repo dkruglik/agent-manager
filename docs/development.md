@@ -131,6 +131,9 @@ sets the window (1 / 3 / 7 days, or off).
 | `GEMINI_API_KEY` | — | Gemini CLI (Space secret) |
 | `AI_GATEWAY_API_KEY` | — | fx (Space secret) |
 | `HF_TOKEN` | — | Hub operations and mounted-bucket discovery; access requirements depend on the operation |
+| `SLACK_BOT_TOKEN` | — | Slack bot token (`xoxb-…`) for [messengers](messengers.md) (secret) |
+| `SLACK_APP_TOKEN` | — | Slack app-level token (`xapp-…`, `connections:write`) for Socket Mode (secret) |
+| `AM_PUBLIC_URL` | — | Browser-facing base URL; messenger cards link to `<url>/#session=<id>`. Must be http(s) or startup fails |
 
 The backend binds `127.0.0.1` by default because Agent Manager has no login of
 its own. If you set `BIND_HOST` to another interface, put an authenticated

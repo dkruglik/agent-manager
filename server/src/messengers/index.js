@@ -11,7 +11,7 @@ export const ADAPTERS = {
   slack: createSlackAdapter,
 };
 
-export function createMessengers({ host, dataDir, scopeExists = () => true, env = process.env, factories = ADAPTERS, bridgeOptions = {} }) {
+export function createMessengers({ host, dataDir, config, scopeExists = () => true, factories = ADAPTERS, bridgeOptions = {} }) {
   const store = createStore(path.join(dataDir, 'messengers.json'));
   const logFile = path.join(dataDir, 'messengers.log.jsonl');
   const log = (entry) => {
@@ -19,7 +19,7 @@ export function createMessengers({ host, dataDir, scopeExists = () => true, env 
     try { fs.appendFileSync(logFile, `${line}\n`); } catch {}
     if (entry.error) console.error('[messengers]', line);
   };
-  const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make({ env })]));
+  const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make(config[id] || {})]));
   const bridge = createBridge({ host, store, adapters, log, ...bridgeOptions });
 
   const router = express.Router();

@@ -38,6 +38,16 @@ export const SKILLS_DIR = path.join(DATA_DIR, 'workspaces', 'skills');
 export const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 export const PUBLIC_DIR = process.env.PUBLIC_DIR || path.resolve(process.cwd(), '..', 'web', 'dist');
 
+// Messengers (docs/messengers.md). The tokens never leave the server: the API
+// reports only whether they are set. A malformed public URL would put broken
+// links into every card, so it stops startup instead.
+export function resolveMessengerConfig(env = process.env) {
+  const publicUrl = (env.AM_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (publicUrl && !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(publicUrl)) throw new Error('AM_PUBLIC_URL must be an http(s) URL');
+  return { publicUrl, slack: { botToken: env.SLACK_BOT_TOKEN || '', appToken: env.SLACK_APP_TOKEN || '' } };
+}
+export const MESSENGERS = resolveMessengerConfig();
+
 // A CLI's presence on PATH doesn't change while the process runs, but
 // cliCatalog() (called on every /api/clis) probed every CLI each time — ~16
 // synchronous `command -v` subprocess spawns per request, blocking the event

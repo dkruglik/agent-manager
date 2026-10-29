@@ -19,7 +19,7 @@ import { WebSocketServer } from 'ws';
 import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS } from './request-admission.js';
 import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
-  PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
+  PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
   ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote,
 } from './config.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
@@ -3935,15 +3935,15 @@ api.post('/api/move', (req, res) => {
 // The bridge reaches the app only through this host. Replies from a chat count
 // as the operator's: the binding's allowed-users list is the gate, checked in
 // the bridge before anything here is called.
-const publicBase = (process.env.AM_PUBLIC_URL || '').replace(/\/+$/, '');
 const messengers = createMessengers({
   dataDir: DATA_DIR,
+  config: MESSENGERS,
   scopeExists: (scope) => !!(scope.type === 'group' ? groups.get(scope.id) : store.get(scope.id)),
   host: {
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
     groupOf: (id) => groups.groupOf(id),
     locked: () => isLocked(),
-    link: (s) => (publicBase ? `${publicBase}/#session=${encodeURIComponent(s.id)}` : null),
+    link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];
       const { client } = await codexInput.attach(s.id);
