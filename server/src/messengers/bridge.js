@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { inputCard, finishedCard, noticeCard } from './cards.js';
 import { ReplyRouter } from './replies.js';
 
@@ -17,8 +18,10 @@ export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {},
     settleMs = 8000, digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
+    decisionTimeoutMs = 120_000, setTimer = setTimeout, clearTimer = clearTimeout,
   }) {
-    Object.assign(this, { host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs });
+    Object.assign(this, { host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
+    this.pending = new Map();      // hook key → {resolve, timer, sessionId, session, detach}
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
@@ -26,6 +29,7 @@ export class MessengerBridge {
     this.ticking = false;
     this.replies = new ReplyRouter({
       host, store, adapters, log,
+      answerer: (session, item, response, by, ctx) => this.answerItem(session, item, response, by, ctx),
       scope: (binding, sessions) => this.sessionsFor(binding, sessions),
       cards: {
         refresh: (p, session, partial) => this.refreshCard(p, session, partial),
@@ -64,7 +68,10 @@ export class MessengerBridge {
 
   async checkInput(binding, s) {
     const items = await this.inputItems(s);
+    const hooked = [...this.pending.values()].some((p) => p.sessionId === s.id);
     for (const item of items) {
+      // A Claude hook item already has its own card; the dialog it mirrors needs no second one.
+      if (hooked && item.generic) continue;
       const k = `${binding.id}|${s.id}|${item.key}`;
       if (this.store.posted(k)) continue;
       const ref = await this.post(binding, this.inputCardFor(binding, s, item));
@@ -79,8 +86,67 @@ export class MessengerBridge {
     const live = new Set(items.map((i) => i.key));
     for (const [k, p] of this.store.allPosted()) {
       if (p.bindingId !== binding.id || p.sessionId !== s.id || p.kind !== 'input' || p.status !== 'open') continue;
-      if (!live.has(p.key)) await this.closeCard(k, p, s, 'Answered or dismissed outside this chat.');
+      if (!live.has(p.key) && !this.pending.has(p.key)) await this.closeCard(k, p, s, 'Answered or dismissed outside this chat.');
     }
+  }
+
+  // Waits for a chat decision on a Claude hook item. Resolves {response, by}
+  // when someone answers in chat, or null when nothing qualifies, nobody
+  // answers in time, or the hook's request went away (the terminal took over).
+  async awaitDecision(sessionId, item, { timeoutMs = this.decisionTimeoutMs, signal } = {}) {
+    const session = this.host.sessions().find((x) => x.id === sessionId);
+    if (!session || this.host.locked()) return null;
+    const bindings = this.store.bindings().filter((b) => b.approvals === true
+      && this.statuses.get(b.adapter)?.connected && this.sessionsFor(b, [session]).length);
+    if (!bindings.length) return null;
+    const key = `hook:${crypto.randomUUID()}`;
+    const withKey = { ...item, key };
+    return new Promise((resolve) => {
+      const entry = { resolve, sessionId, session, timer: null, detach: () => {} };
+      this.pending.set(key, entry);
+      const timer = this.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
+      const onAbort = () => this.settle(key, null, 'Answered in the terminal.');
+      signal?.addEventListener('abort', onAbort, { once: true });
+      Object.assign(entry, { timer, detach: () => signal?.removeEventListener('abort', onAbort) });
+      this.postHookCards(bindings, session, withKey)
+        .then(() => { if (signal?.aborted) onAbort(); })
+        .catch((e) => { this.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); });
+    });
+  }
+
+  async postHookCards(bindings, session, item) {
+    for (const binding of bindings) {
+      const ref = await this.post(binding, this.inputCardFor(binding, session, item));
+      this.store.putPosted(`${binding.id}|${session.id}|${item.key}`, {
+        bindingId: binding.id, sessionId: session.id, key: item.key, kind: 'input', status: 'open',
+        adapter: binding.adapter, ref, item, partial: {},
+      });
+      this.log({ event: 'posted', binding: binding.id, session: session.id, kind: 'input', key: item.key });
+    }
+  }
+
+  // Settles a pending hook item once; `answeredBy` is the binding whose card the
+  // reply router closes itself, every other open card for the key is closed here.
+  settle(key, result, text, answeredBy = null) {
+    const entry = this.pending.get(key);
+    if (!entry) return;
+    this.pending.delete(key);
+    this.clearTimer(entry.timer);
+    entry.detach();
+    entry.resolve(result);
+    for (const [k, p] of this.store.allPosted()) {
+      if (p.key !== key || p.status !== 'open' || p.bindingId === answeredBy) continue;
+      this.closeCard(k, p, entry.session, text).catch(() => {});
+    }
+  }
+
+  answerItem(session, item, response, by, { binding, text } = {}) {
+    if (this.pending.has(item.key)) {
+      this.settle(item.key, { response, by }, text, binding?.id);
+      return undefined;
+    }
+    if (item.key.startsWith('hook:')) throw new Error('This request is no longer waiting — answer in the terminal.');
+    return this.host.answer(session, item.key, response);
   }
 
   async refreshCard(p, s, partial) {

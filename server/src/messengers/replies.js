@@ -12,13 +12,16 @@ export class ReplyRouter {
   /**
    * @param cards `{ refresh(posted, session, partial), close(key, posted, session, text) }`
    *   from the outbound side, which owns how a posted card is re-rendered.
+   * @param answerer `(session, item, response, by, {binding, text})` delivers a typed answer: to a waiting
+   *   hook, or to the session.
    */
-  constructor({ host, store, adapters, cards, scope, log }) {
+  constructor({ host, store, adapters, cards, scope, log, answerer }) {
     this.host = host;
     this.store = store;
     this.adapters = adapters;
     this.cards = cards;
     this.scope = scope;
+    this.answerer = answerer;
     this.log = log;
     this.handled = [];
   }
@@ -140,7 +143,7 @@ export class ReplyRouter {
       await this.cards.refresh(p, session, outcome.partial);
       return { partial: true };
     }
-    await this.host.answer(session, p.item.key, outcome.response);
+    await this.answerer(session, p.item, outcome.response, by, { binding, text: outcome.text });
     this.log({ event: 'answered', binding: binding.id, session: session.id, key: p.item.key, user: r.user.id });
     await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text);
     return { answered: p.item.key };
