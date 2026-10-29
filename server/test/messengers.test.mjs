@@ -6,7 +6,7 @@ import { MessengerBridge } from '../src/messengers/bridge.js';
 import { resolveMessengerConfig } from '../src/config.js';
 import { BindingStore, validateBinding } from '../src/messengers/store.js';
 import { EventEmitter } from 'node:events';
-import { renderBlocks, toMrkdwn, SlackAdapter } from '../src/messengers/adapters/slack.js';
+import { renderBlocks, toMrkdwn, fromMrkdwn, SlackAdapter } from '../src/messengers/adapters/slack.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-'));
 let clock = 1_000_000;
@@ -199,6 +199,11 @@ try {
   const closed = renderBlocks({ title: 't', body: 'b', options: [{ id: 'x', label: 'y' }], resolved: { text: 'done' } });
   assert.ok(!closed.some((b) => b.type === 'actions'), 'a resolved card has no buttons');
 
+  assert.equal(fromMrkdwn('run a &amp;&amp; b &lt;x&gt;'), 'run a && b <x>');
+  assert.equal(fromMrkdwn('see <https://x.test|docs> and <https://y.test>'), 'see https://x.test and https://y.test');
+  assert.equal(fromMrkdwn('<@U123> <@U123|dk> <#C1|general> <!here> <!channel>'), '@U123 @dk #general @here @channel');
+  assert.equal(fromMrkdwn('&amp;lt;'), '&lt;', 'ampersand is unescaped last');
+
   // ---------- Slack Socket Mode protocol ----------
   const calls = [];
   const sockets = [];
@@ -231,6 +236,8 @@ try {
   await frame({ type: 'events_api', envelope_id: 'env2', payload: { event_id: 'Ev1', event: { type: 'message', channel: 'C1', user: 'U1', text: 'hello', ts: '222.2', thread_ts: '111.1' } } });
   assert.equal(got.at(-1).thread, '111.1');
   assert.equal(got.at(-1).text, 'hello');
+  await frame({ type: 'events_api', envelope_id: 'env2b', payload: { event_id: 'Ev2', event: { type: 'message', channel: 'C1', user: 'U1', text: 'run a &amp;&amp; b &lt;x&gt; <https://x.test|docs>', ts: '223.2' } } });
+  assert.equal(got.at(-1).text, 'run a && b <x> https://x.test', 'inbound text is unescaped');
   const count = got.length;
   await frame({ type: 'events_api', envelope_id: 'env3', payload: { event: { type: 'message', channel: 'C1', bot_id: 'B1', text: 'own card', ts: '3' } } });
   await frame({ type: 'events_api', envelope_id: 'env4', payload: { event: { type: 'message', subtype: 'message_changed', channel: 'C1', ts: '4' } } });

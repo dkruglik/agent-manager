@@ -21,6 +21,15 @@ export function toMrkdwn(md) {
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<$2|$1>');
 }
 
+// The inverse for inbound text: Slack wraps links and mentions in <…> and
+// escapes &, < and >. The agent should read plain text.
+export function fromMrkdwn(text) {
+  return String(text || '')
+    .replace(/<([@#!])([^>|]*)(?:\|([^>]*))?>/g, (_, kind, id, label) => (kind === '!' ? `@${label || id}` : `${kind}${label || id}`))
+    .replace(/<([^>|]+)(?:\|[^>]*)?>/g, '$1')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
 export function renderBlocks(card) {
   const blocks = [];
   if (card.title) {
@@ -67,7 +76,7 @@ function messageReply(p, botUser) {
   if (e.type !== 'message' || e.subtype || e.bot_id || e.user === botUser || !e.user) return null;
   return {
     channel: e.channel, ts: e.ts, thread: e.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
-    user: { id: e.user }, messageId: p.event_id || `${e.channel}:${e.ts}`, text: e.text || '',
+    user: { id: e.user }, messageId: p.event_id || `${e.channel}:${e.ts}`, text: fromMrkdwn(e.text),
   };
 }
 
