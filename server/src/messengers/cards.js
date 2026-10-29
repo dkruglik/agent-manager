@@ -10,6 +10,10 @@ export function clip(s, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
+// A decision may only be taken from chat when the approver saw all of the request.
+export const reviewable = (item) => String(item.details || '').trim().length <= DETAILS_MAX;
+export const TOO_LONG = 'Too long to review here — answer in the terminal.';
+
 function questionOptions(questions, partial) {
   const options = [];
   questions.forEach((q, qi) => {
@@ -35,6 +39,7 @@ function inputActions(item, approvals, partial) {
     };
   }
   if (item.choices?.length) {
+    if (!reviewable(item)) return { options: [], hint: TOO_LONG };
     return approvals
       ? { options: decisionOptions(item.choices), hint: null }
       : { options: [], hint: 'Approvals from chat are off for this binding — answer in the terminal.' };

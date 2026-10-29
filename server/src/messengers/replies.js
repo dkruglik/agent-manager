@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { noticeCard } from './cards.js';
+import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 
 // Inbound side of the bridge: a button press or a chat message becomes a typed
 // answer to an open dialog, or an ordinary prompt. Every path checks the
@@ -151,6 +151,7 @@ export class ReplyRouter {
 
   decision(binding, item, decision, by) {
     if (!binding.approvals) return { refused: 'approvals-off', say: 'Approvals from chat are off for this binding.' };
+    if (!reviewable(item)) return { refused: 'too-long', say: TOO_LONG };
     const choice = item.choices?.find((c) => c.value === decision);
     if (!choice) return { refused: 'unknown-option' };
     return { response: { decision }, text: `${choice.label} — by ${by}` };
