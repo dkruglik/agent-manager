@@ -272,6 +272,27 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   assert.equal(pre.bridge.pending.size, 0);
   assert.ok([...pre.store.allPosted()].every(([, p]) => p.status === 'closed'));
   assert.equal(pre.clock.timers.size, 0);
+  assert.equal(pre.slack.posts.length, 0, 'a pre-aborted signal posts nothing');
+
+  // Settled while the post is in flight: the late card is closed, not left open.
+  for (const how of ['abort', 'timeout']) {
+    const fl = setup();
+    let release;
+    fl.slack.post = (target) => new Promise((res) => { release = () => res({ channel: target.channel, ts: 'late1' }); });
+    const stop = new AbortController();
+    const inflight = fl.bridge.awaitDecision('s1', hookItem(perm), { signal: stop.signal });
+    await new Promise((r) => setImmediate(r));
+    if (how === 'abort') stop.abort(); else fl.clock.fire([...fl.clock.timers.keys()][0]);
+    assert.equal(await inflight, null);
+    release();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const [[, posted]] = [...fl.store.allPosted()];
+    assert.equal(posted.status, 'closed', `${how}: the late card is closed`);
+    assert.equal(fl.slack.updates.length, 1);
+    assert.equal(fl.slack.updates[0].ref.ts, 'late1');
+    assert.equal(fl.slack.updates[0].card.resolved.text, how === 'abort' ? 'Answered in the terminal.' : 'No answer in time — answer in the terminal.');
+  }
 }
 
 console.log('messengers-claude: all assertions passed');

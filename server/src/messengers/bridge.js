@@ -22,6 +22,7 @@ export class MessengerBridge {
   }) {
     Object.assign(this, { host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
     this.pending = new Map();      // hook key → {resolve, timer, sessionId, session, detach}
+    this.settledText = new Map();  // hook key → the text its cards were closed with
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
@@ -95,7 +96,7 @@ export class MessengerBridge {
   // answers in time, or the hook's request went away (the terminal took over).
   async awaitDecision(sessionId, item, { timeoutMs = this.decisionTimeoutMs, signal } = {}) {
     const session = this.host.sessions().find((x) => x.id === sessionId);
-    if (!session || this.host.locked()) return null;
+    if (signal?.aborted || !session || this.host.locked()) return null;
     const bindings = this.store.bindings().filter((b) => b.approvals === true
       && this.statuses.get(b.adapter)?.connected && this.sessionsFor(b, [session]).length);
     if (!bindings.length) return null;
@@ -110,18 +111,26 @@ export class MessengerBridge {
       Object.assign(entry, { timer, detach: () => signal?.removeEventListener('abort', onAbort) });
       this.postHookCards(bindings, session, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
-        .catch((e) => { this.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); });
+        .catch((e) => { this.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); })
+        .finally(() => this.settledText.delete(key));
     });
   }
 
   async postHookCards(bindings, session, item) {
     for (const binding of bindings) {
       const ref = await this.post(binding, this.inputCardFor(binding, session, item));
-      this.store.putPosted(`${binding.id}|${session.id}|${item.key}`, {
+      const k = `${binding.id}|${session.id}|${item.key}`;
+      const p = {
         bindingId: binding.id, sessionId: session.id, key: item.key, kind: 'input', status: 'open',
         adapter: binding.adapter, ref, item, partial: {},
-      });
+      };
+      this.store.putPosted(k, p);
       this.log({ event: 'posted', binding: binding.id, session: session.id, kind: 'input', key: item.key });
+      // Settled while this post was in flight: settle() could not see the card yet.
+      if (!this.pending.has(item.key)) {
+        await this.closeCard(k, p, session, this.settledText.get(item.key) || 'No longer waiting — answer in the terminal.');
+        return;
+      }
     }
   }
 
@@ -131,6 +140,7 @@ export class MessengerBridge {
     const entry = this.pending.get(key);
     if (!entry) return;
     this.pending.delete(key);
+    this.settledText.set(key, text);
     this.clearTimer(entry.timer);
     entry.detach();
     entry.resolve(result);
