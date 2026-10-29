@@ -96,6 +96,27 @@ try {
   assert.equal(r.status, 404);
   assert.equal(r.body.code, 'not-found');
 
+  // The Claude hook long-poll: only the live launch of a Claude pane may ask.
+  const hook = (from, body) => api(`/api/messengers/claude-hook?from=${encodeURIComponent(from)}`, { method: 'POST', body });
+  const permission = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } };
+  r = await api('/api/sessions', { method: 'POST', body: { cli: 'claude', name: 'hooked' } });
+  assert.equal(r.status, 201);
+  const hooked = r.body.id;
+  r = await hook(hooked, { runId: 'stale', payload: permission });
+  assert.equal(r.status, 409, 'no live launch, so a stale runId gets nothing');
+  assert.equal(r.body.code, 'conflict');
+  r = await hook(hooked, { runId: 'stale' });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'invalid-input');
+  assert.equal(r.body.details?.[0]?.field, 'payload');
+  r = await hook(hooked, { payload: permission });
+  assert.equal(r.body.details?.[0]?.field, 'runId');
+  r = await hook('s_unknown', { runId: 'x', payload: permission });
+  // The origin middleware resolves ?from first and refuses an unknown session
+  // before the route's own 404 can be reached.
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'unknown-origin');
+
   const ops = fs.readFileSync(path.join(DATA_DIR, 'operations.jsonl'), 'utf8');
   assert.ok(ops.includes('/api/messengers/bindings'), 'binding changes are in the API log');
   assert.ok(!ops.includes(BOT) && !ops.includes(APP), 'tokens never reach the API log');

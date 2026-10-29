@@ -3,6 +3,7 @@ import path from 'node:path';
 import { ApiError } from '../api-errors.js';
 import { MessengerBridge } from './bridge.js';
 import { BindingStore, validateBinding } from './store.js';
+import { hookItem, hookOutput } from './claude-approvals.js';
 import { SlackAdapter } from './adapters/slack.js';
 
 // Built-in messengers. An adapter is a plain object — see docs/messengers.md —
@@ -49,6 +50,13 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     remove(id) {
       if (!store.removeBinding(id)) throw notFound();
       return { ok: true };
+    },
+    // A Claude hook asks for a chat decision; { output: null } means none.
+    async claudeHook({ sessionId, payload, signal }) {
+      const item = hookItem(payload);
+      if (!item) return { output: null };
+      const decision = await bridge.awaitDecision(sessionId, item, { signal });
+      return { output: decision ? hookOutput(item, decision.response, { by: decision.by }) : null };
     },
     async test(id) {
       const b = existing(id);

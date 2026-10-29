@@ -154,6 +154,11 @@ function djb2(s) {
   return h;
 }
 
+// The runId of the pane's live PTY launch, or null when nothing is running.
+export function runIdOf(id) {
+  return hosts.get(id)?.runId ?? null;
+}
+
 export function isRunning(id) {
   return hosts.has(id) && !stopping.has(id);
 }

@@ -38,7 +38,7 @@ import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js'
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
   waitForInputReady, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
-  installClaudeRepinHook, installOpencodeRepinPlugin,
+  installClaudeRepinHook, installOpencodeRepinPlugin, runIdOf,
 } from './runner.js';
 
 // Control frames ride the terminal socket behind a leading NUL pair, which real
@@ -71,7 +71,7 @@ import { createMessengers } from './messengers/index.js';
 import { requestView } from './codex-view.js';
 // Absolute path of the repo's scripts/, for helpers the agent guide names.
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
-import { ApiError, apiRoutes, apiNotFound, apiErrorHandler, errorEnvelope, pipeResponse } from './api-errors.js';
+import { ApiError, invalid, apiRoutes, apiNotFound, apiErrorHandler, errorEnvelope, pipeResponse } from './api-errors.js';
 import { createValidator } from './api-validation.js';
 import { remoteStream } from './api-streams.js';
 import { fileWriteError, receiveWorkspaceFile, replaceWorkspaceText } from './safe-write.js';
@@ -3967,6 +3967,18 @@ api.post('/api/messengers/bindings', (req, res) => res.status(201).json(messenge
 api.put('/api/messengers/bindings/:id', (req, res) => res.json(messengers.update(req.params.id, req.body)));
 api.delete('/api/messengers/bindings/:id', (req, res) => res.json(messengers.remove(req.params.id)));
 api.post('/api/messengers/bindings/:id/test', async (req, res) => res.json(await messengers.test(req.params.id)));
+api.post('/api/messengers/claude-hook', async (req, res) => {
+  const { runId, payload } = req.body || {};
+  if (typeof runId !== 'string' || !runId) throw invalid('runId', 'must be a non-empty string.');
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid('payload', 'must be an object.');
+  const session = store.get(String(req.query.from || '').trim());
+  if (!session) throw new ApiError(404, 'not-found', 'Session not found.');
+  if (session.cli !== 'claude') return res.json({ output: null });
+  if (runIdOf(session.id) !== runId) throw new ApiError(409, 'conflict', 'This launch is no longer running.');
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  res.json(await messengers.claudeHook({ sessionId: session.id, payload, signal: controller.signal }));
+});
 messengers.start();
 
 app.use(apiNotFound);
