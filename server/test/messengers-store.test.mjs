@@ -165,3 +165,22 @@ test('a failed write leaves memory as it was and is a 500 ApiError', (t) => {
   assert.equal(store.posted('b1|s1|k').status, 'open');
   assert.equal(store.seen('b1|s1'), 'a:1');
 });
+
+test('a messengers.json that cannot be read (not missing) is set aside like a corrupt one', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-unreadable-'));
+  const file = path.join(dir, 'messengers.json');
+  fs.writeFileSync(file, JSON.stringify({ bindings: [] }));
+  const warnings = [];
+  t.mock.method(console, 'warn', (...a) => warnings.push(a.join(' ')));
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (p, ...rest) => {
+    if (p === file) throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
+    return read(p, ...rest);
+  });
+  const store = new BindingStore(file, { now: () => 5 });
+  assert.deepEqual(store.bindings(), []);
+  assert.ok(fs.existsSync(`${file}.corrupt-5`), 'kept aside');
+  assert.match(warnings.join('\n'), /EACCES.*kept as .*corrupt-5/);
+  store.putSeen('k', 'v');
+  assert.ok(fs.existsSync(`${file}.corrupt-5`), 'a later write leaves the copy alone');
+});
