@@ -10,10 +10,19 @@ export function clip(s, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-// A decision may only be taken from chat when the approver saw all of the request:
-// not clipped, and without a code fence, which a chat message cannot show as written.
+// Invisible and reordering characters (U+202E, U+2066-2069, U+200B, …) could
+// make a chat show a different command from the one asked about: the approver
+// sees them as \uXXXX instead. Escaped before trimming, which would drop some.
+const INVISIBLE = /[\p{Cf}\u2028\u2029]/gu;
+const hex = (c) => c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+const shownDetails = (details) => String(details || '')
+  .replace(INVISIBLE, (c) => (c.codePointAt(0) > 0xffff ? `\\u{${hex(c)}}` : `\\u${hex(c)}`)).trim();
+
+// A decision may only be taken from chat when the approver saw all of the request
+// (as shown, escapes included): not clipped, and without a code fence, which a
+// chat message cannot show as written. inputCard clips the same shown text.
 export const reviewable = (item) => {
-  const details = String(item.details || '').trim();
+  const details = shownDetails(item.details);
   return details.length <= DETAILS_MAX && !details.includes('```');
 };
 export const TOO_LONG = 'Too long to review here — answer in the terminal.';
@@ -73,7 +82,7 @@ export function inputCard({ agent, link, item, approvals, partial = {}, resolved
     title: `${item.kind === 'permission' ? '🔐' : '❓'} ${agent.name} needs input`,
     agent,
     body: inputBody(agent.name, item, partial),
-    details: item.details ? clip(item.details, DETAILS_MAX) : null,
+    details: item.details ? clip(shownDetails(item.details), DETAILS_MAX) : null,
     ...inputActions(item, approvals, partial),
     link,
     resolved,

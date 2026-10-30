@@ -142,6 +142,11 @@ Limits:
 - **Approvals are opt-in per binding.** Without it, permission cards show no
   buttons and a forged button value is refused, and Claude's blocking hook
   returns at once without a decision.
+- **An approval shows the whole request.** Invisible and reordering
+  characters in a tool call (Unicode format characters such as U+202E or
+  U+200B, and U+2028/U+2029) are shown as `\uXXXX`, so the card cannot read
+  differently from the call. Details longer than 1800 characters as shown, or
+  containing a code fence, get no buttons and a pressed one is refused.
 - **The privacy lock stops cards and deliveries.** No card is posted and no
   reply, answer or approval is delivered to an agent while the instance is
   locked; refusal notices and `/am status` still reply in the channel, and
@@ -237,8 +242,8 @@ real Claude.
   adapter with a fake socket and `fetch` (acks, bot filtering, slash commands).
 - `messengers-bridge.test.mjs`: failure paths (lookups, posts, transcript
   reads), escaping and review limits of approval details, back-off.
-- `messengers-cards.test.mjs`: which buttons a card carries, and the
-  unreviewable-details refusal.
+- `messengers-cards.test.mjs`: which buttons a card carries, invisible
+  characters shown escaped, and the unreviewable-details refusal.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
 - `messengers-store.test.mjs`: binding validation and what is kept on disk.
