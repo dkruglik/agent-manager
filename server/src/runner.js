@@ -1404,21 +1404,16 @@ export function installClaudeRepinHook(
     console.warn(`[claude] not installing lifecycle hooks: ${file} hooks is not an object`);
     return false;
   }
+  const hasHook = (list, script) => Array.isArray(list) && list.some((m) => (m?.hooks || [])
+    .some((h) => String(h?.command || '').includes(script)));
   const entries = Array.isArray(cfg.hooks?.SessionStart) ? cfg.hooks.SessionStart : [];
-  const present = entries.some((m) => (m?.hooks || []).some((h) => String(h?.command || '').includes('am-repin-hook.sh')));
+  const present = hasHook(entries, 'am-repin-hook.sh');
   const notifications = Array.isArray(cfg.hooks?.Notification) ? cfg.hooks.Notification : [];
-  const inputPresent = notifications.some((m) => (m?.hooks || [])
-    .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
+  const inputPresent = hasHook(notifications, 'am-input-required-hook.sh');
   const clearEvents = ['PostToolBatch', 'Stop', 'SessionEnd', 'ElicitationResult', 'UserPromptSubmit'];
-  const missingClear = clearEvents.some((event) => {
-    const eventEntries = Array.isArray(cfg.hooks?.[event]) ? cfg.hooks[event] : [];
-    return !eventEntries.some((m) => (m?.hooks || [])
-      .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
-  });
-  const hasApproval = (list) => Array.isArray(list) && list.some((m) => (m?.hooks || [])
-    .some((h) => String(h?.command || '').includes('am-claude-approval-hook.sh')));
-  const permissionPresent = hasApproval(cfg.hooks?.PermissionRequest);
-  const questionPresent = hasApproval(cfg.hooks?.PreToolUse);
+  const missingClear = clearEvents.some((event) => !hasHook(cfg.hooks?.[event], 'am-input-required-hook.sh'));
+  const permissionPresent = hasHook(cfg.hooks?.PermissionRequest, 'am-claude-approval-hook.sh');
+  const questionPresent = hasHook(cfg.hooks?.PreToolUse, 'am-claude-approval-hook.sh');
   if (present && inputPresent && !missingClear && permissionPresent && questionPresent) return true;
   // No matcher: fire for every source. `startup` replaces the "--session-id
   // not honoured" heuristic with a fact, `resume` is a proven no-op (same id),
@@ -1436,9 +1431,7 @@ export function installClaudeRepinHook(
   // remove a marker carrying this pane launch's nonce; hook output stays empty.
   for (const event of clearEvents) {
     const eventEntries = Array.isArray(cfg.hooks[event]) ? cfg.hooks[event] : [];
-    const clearPresent = eventEntries.some((m) => (m?.hooks || [])
-      .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
-    if (!clearPresent) cfg.hooks[event] = [...eventEntries, {
+    if (!hasHook(eventEntries, 'am-input-required-hook.sh')) cfg.hooks[event] = [...eventEntries, {
       hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
     }];
   }
