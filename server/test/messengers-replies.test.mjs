@@ -75,3 +75,23 @@ test('a notice that cannot be posted is logged, not lost silently', async () => 
   const failed = t.logs.find((e) => e.event === 'notice-failed');
   assert.deepEqual([failed.adapter, failed.channel, failed.error], ['slack', 'C0', 'slack chat.postMessage: channel_not_found']);
 });
+
+test('every refusal is logged once, without the message text', async () => {
+  const closed = setup();
+  closed.store.putPosted('b0|s1|req1', { ...closed.store.posted('b0|s1|req1'), status: 'closed' });
+  await closed.bridge.handleReply('slack', press(1));
+  const off = setup({ approvals: false });
+  await off.bridge.handleReply('slack', press(2));
+  const locked = setup();
+  locked.host.isLocked = true;
+  await locked.bridge.handleReply('slack', press(3));
+  const gone = setup();
+  gone.host.gone = true;
+  await gone.bridge.handleReply('slack', text(4, 'secret words'));
+  const tooLong = setup();
+  tooLong.store.putPosted('b0|s1|req1', { ...tooLong.store.posted('b0|s1|req1'), item: { ...typed, details: 'x'.repeat(2000) } });
+  await tooLong.bridge.handleReply('slack', press(5));
+  const reasons = [closed, off, locked, gone, tooLong].map((t) => t.logs.filter((e) => e.event === 'refused').map((e) => e.reason));
+  assert.deepEqual(reasons, [['closed'], ['approvals-off'], ['locked'], ['no-session'], ['too-long']]);
+  assert.ok(!JSON.stringify(gone.logs).includes('secret words'));
+});

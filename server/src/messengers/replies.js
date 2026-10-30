@@ -33,6 +33,12 @@ export class ReplyRouter {
     }
   }
 
+  // One log line per refusal, never the message text.
+  refused(reason, binding, session) {
+    this.log({ event: 'refused', reason, binding: binding.id, ...(session ? { session: session.id } : {}) });
+    return { refused: reason };
+  }
+
   allowed(binding, user) {
     return !!user?.id && binding.allowedUsers.includes(user.id);
   }
@@ -110,11 +116,11 @@ export class ReplyRouter {
     }
     if (!session) {
       await reply('That agent no longer exists.');
-      return { refused: 'no-session' };
+      return this.refused('no-session', binding);
     }
     if (this.host.locked()) {
       await reply('Agent Manager is locked; nothing was sent.');
-      return { refused: 'locked' };
+      return this.refused('locked', binding, session);
     }
     return null;
   }
@@ -129,10 +135,10 @@ export class ReplyRouter {
   }
 
   async answer([k, p], binding, session, r, text, reply) {
-    if (p.status !== 'open') { await reply('This request is already closed.'); return { refused: 'closed' }; }
+    if (p.status !== 'open') { await reply('This request is already closed.'); return this.refused('closed', binding, session); }
     if (p.item.generic) {
       await reply('This dialog cannot be answered from chat yet — open the terminal.');
-      return { refused: 'untyped' };
+      return this.refused('untyped', binding, session);
     }
     const by = r.user.name || r.user.id;
     const outcome = r.optionId?.startsWith('d:')
@@ -140,7 +146,7 @@ export class ReplyRouter {
       : this.questions(p, r.optionId, text, by);
     if (outcome.refused) {
       if (outcome.say) await reply(outcome.say);
-      return { refused: outcome.refused };
+      return this.refused(outcome.refused, binding, session);
     }
     if (outcome.partial) {
       this.store.putPosted(k, { ...p, partial: outcome.partial });
