@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { inputCard, finishedCard, noticeCard } from './cards.js';
+import { inputCard, finishedCard, noticeCard, reviewable } from './cards.js';
 import { ReplyRouter } from './replies.js';
 
 // The bridge between Agent Manager sessions and chat messengers.
@@ -102,6 +102,8 @@ export class MessengerBridge {
   async awaitDecision(sessionId, item, { timeoutMs = this.decisionTimeoutMs, signal } = {}) {
     const session = this.host.sessions().find((x) => x.id === sessionId);
     if (signal?.aborted || !session || this.host.locked()) return null;
+    // A card the approver cannot read in full has no buttons, so waiting would only stall the hook.
+    if (item.choices?.length && !reviewable(item)) return null;
     const bindings = this.store.bindings().filter((b) => b.approvals === true
       && this.statuses.get(b.adapter)?.connected && this.sessionsFor(b, [session]).length);
     if (!bindings.length) return null;

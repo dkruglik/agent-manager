@@ -131,3 +131,15 @@ test('details containing a code fence are not reviewable from chat', () => {
   assert.equal(card.hint, TOO_LONG);
   assert.equal(reviewable({ ...item, details: 'echo x' }), true);
 });
+
+test('awaitDecision leaves a too-long permission request to the terminal at once', async () => {
+  const t = setup();
+  const timers = [];
+  t.bridge.setTimer = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  const long = { ...permission, details: 'x'.repeat(2000) };
+  const outcome = await Promise.race([t.bridge.awaitDecision('s1', long), new Promise((r) => setTimeout(r, 200, 'still waiting'))]);
+  assert.equal(outcome, null, 'resolves at once');
+  assert.equal(t.slack.posts.length, 0);
+  assert.equal(timers.length, 0, 'no timer was started');
+  assert.equal(t.bridge.pending.size, 0);
+});
