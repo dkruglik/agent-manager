@@ -48,6 +48,15 @@ function fakeHost() {
   return h;
 }
 
+// Polls a condition with a bounded deadline instead of sleeping a fixed time.
+async function waitFor(predicate, what) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
 const setState = (host, id, patch) => Object.assign(host.list.find((s) => s.id === id), patch);
 
 try {
@@ -224,10 +233,14 @@ try {
   const got = [];
   const statuses = [];
   adapter.start({ onReply: async (x) => got.push(x), onCommand: async () => 'pong', onStatus: (s) => statuses.push(s), log: () => {} });
-  await new Promise((r) => setTimeout(r, 10));
+  await waitFor(() => sockets.length === 1, 'the socket to open');
   assert.equal(calls.find((c) => c.method === 'apps.connections.open').auth, 'Bearer xapp-1', 'the app token opens the socket');
   const ws = sockets[0];
-  const frame = async (m) => { ws.emit('message', Buffer.from(JSON.stringify(m))); await new Promise((r) => setTimeout(r, 5)); };
+  // A frame is handled once the adapter's own handler for it has settled.
+  const handled = [];
+  const onFrame = adapter.onFrame.bind(adapter);
+  adapter.onFrame = (...a) => { const p = onFrame(...a); handled.push(p); return p; };
+  const frame = async (m) => { ws.emit('message', Buffer.from(JSON.stringify(m))); await Promise.all(handled.splice(0)); };
   await frame({ type: 'hello' });
   assert.deepEqual(statuses.at(-1), { connected: true, error: null });
   await frame({ type: 'interactive', envelope_id: 'env1', payload: { type: 'block_actions', trigger_id: 'tr', user: { id: 'U1', username: 'dk' }, channel: { id: 'C1' }, message: { ts: '111.1' }, actions: [{ action_id: 'am:d:accept', value: 'd:accept', action_ts: '1' }] } });
