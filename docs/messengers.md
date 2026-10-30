@@ -161,8 +161,9 @@ Limits:
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
   `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
   `hook-post-failed`, `digest-failed`, `requests-failed`, plus the Slack
-  socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error` and
-  `socket-silent`.
+  socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error`,
+  `socket-silent` and `command-failed` (a `/am` command that failed is still
+  answered, with a generic line).
 - Agent Manager still has no login of its own: anything that can reach the API
   can change bindings. The messenger does not widen that boundary — the bridge
   only answers dialogs and sends prompts for sessions a binding covers.

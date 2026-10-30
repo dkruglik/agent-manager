@@ -173,3 +173,19 @@ test('no reconnect is scheduled after stop()', async () => {
   assert.equal(reconnects(t).length, 0);
   assert.equal(FakeWs.all.length, 1);
 });
+
+test('a slash command whose handler throws is still acked, with a generic reply', async () => {
+  const t = setup();
+  t.hooks.onCommand = async () => { throw new Error('EACCES /home/op/.am/data'); };
+  t.adapter.start(t.hooks);
+  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  const ws = FakeWs.all[0];
+  const sent = [];
+  ws.send = (s) => sent.push(JSON.parse(s));
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'slash_commands', envelope_id: 'e1', payload: { channel_id: 'C1', user_id: 'U1', text: 'status' } })));
+  await waitFor(() => sent.length === 1, 'the ack');
+  assert.equal(sent[0].envelope_id, 'e1');
+  assert.equal(sent[0].payload.response_type, 'ephemeral');
+  assert.doesNotMatch(sent[0].payload.text, /EACCES|home/, 'the error text stays out of chat');
+  assert.deepEqual(t.logs.find((e) => e.event === 'command-failed'), { event: 'command-failed', error: 'EACCES /home/op/.am/data' });
+});

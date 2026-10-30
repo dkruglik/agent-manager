@@ -196,7 +196,12 @@ export class SlackAdapter {
     // Slack redelivers anything not acknowledged within 3 s, so ack first —
     // except slash commands, whose ack carries the reply.
     if (msg.type === 'slash_commands') {
-      const text = await this.hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' });
+      let text;
+      try { text = await this.hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' }); } catch (e) {
+        // Unacked, Slack shows the user a timeout; the error may carry paths, so chat gets a generic line.
+        this.hooks.log({ event: 'command-failed', error: e.message });
+        text = 'Something went wrong — see the Agent Manager server log.';
+      }
       ws.send(JSON.stringify({ envelope_id: msg.envelope_id, payload: { response_type: 'ephemeral', text: toMrkdwn(text) } }));
       return;
     }
