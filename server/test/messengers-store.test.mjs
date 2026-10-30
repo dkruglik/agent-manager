@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BindingStore, validateBinding } from '../src/messengers/store.js';
+import { ApiError } from '../src/api-errors.js';
 
 // Binding validation and what the store keeps on disk.
 
@@ -141,4 +142,26 @@ test('posted and seen that are not plain objects load as empty', () => {
     store.putSeen('k', 'v');
     assert.equal(store.seen('k'), 'v');
   }
+});
+
+test('a failed write leaves memory as it was and is a 500 ApiError', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-rollback-'));
+  const file = path.join(dir, 'messengers.json');
+  const store = new BindingStore(file, { now: () => 1 });
+  const b = { ...validateBinding(base, { adapters: ['slack'] }), id: 'b1' };
+  store.putBinding(b);
+  store.putPosted('b1|s1|k', { bindingId: 'b1', status: 'open' });
+  store.putSeen('b1|s1', 'a:1');
+  t.mock.method(fs, 'writeFileSync', () => { throw new Error(`ENOSPC: no space, write '${file}.tmp'`); });
+  const fails = (fn) => assert.throws(fn, (e) => e instanceof ApiError && e.statusCode === 500 && !e.message.includes(dir));
+  fails(() => store.putBinding({ ...b, id: 'b2' }));
+  fails(() => store.putBinding({ ...b, approvals: true }));
+  fails(() => store.putPosted('b1|s1|k2', { bindingId: 'b1', status: 'open' }));
+  fails(() => store.putPosted('b1|s1|k', { bindingId: 'b1', status: 'closed' }));
+  fails(() => store.putSeen('b1|s1', 'a:2'));
+  fails(() => store.removeBinding('b1'));
+  assert.deepEqual(store.bindings().map((x) => [x.id, x.approvals]), [['b1', false]], 'no binding added or changed');
+  assert.equal(store.posted('b1|s1|k2'), null, 'an unsaved card is not recorded');
+  assert.equal(store.posted('b1|s1|k').status, 'open');
+  assert.equal(store.seen('b1|s1'), 'a:1');
 });

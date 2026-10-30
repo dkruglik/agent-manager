@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { invalid } from '../api-errors.js';
+import { ApiError, invalid } from '../api-errors.js';
 
 // Bindings connect one messenger target (a Slack channel, a Telegram chat) to a
 // session or a group. Delivery state lives beside them so a restart neither
@@ -82,7 +82,7 @@ export class BindingStore {
   }
 
   // A missing file is a first run. Anything else unreadable is kept aside, so
-  // the next persist() cannot overwrite what the operator might still recover.
+  // the next commit() cannot overwrite what the operator might still recover.
   load() {
     let text;
     try { text = fs.readFileSync(this.file, 'utf8'); } catch (e) {
@@ -99,7 +99,7 @@ export class BindingStore {
     } catch (e) { this.setAside(e); }
   }
 
-  // The next persist() would remove dropped bindings from disk for good: copy the file first.
+  // The next commit() would remove dropped bindings from disk for good: copy the file first.
   keepDropped(count) {
     const aside = `${this.file}.dropped-${this.now()}`;
     const problem = `messengers: ignored ${count} malformed binding(s) in ${this.file}`;
@@ -123,34 +123,42 @@ export class BindingStore {
     console.warn(`${problem}. It could not be kept aside (${kept}), so nothing will be saved until it is moved by hand.`);
   }
 
-  persist() {
-    if (this.readOnly) throw new Error(`messengers: ${this.file} could not be kept aside; not overwriting it`);
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    // Open cards hold tool inputs: owner-only, including a tmp file left by an earlier crash.
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, this.file);
+  // Writes `next` and only then makes it the store's state, so a failed write
+  // changes nothing: a card that was not saved is not taken as posted.
+  commit(next) {
+    if (this.readOnly) throw new ApiError(500, 'internal-error', `messengers: ${this.file} could not be kept aside; not overwriting it`);
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      // Open cards hold tool inputs: owner-only, including a tmp file left by an earlier crash.
+      fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, this.file);
+    } catch (e) {
+      console.error(`[messengers] could not save ${this.file}: ${e.message}`);
+      throw new ApiError(500, 'internal-error', 'Could not save the messenger bindings.');
+    }
+    this.data = next;
   }
 
   bindings() { return this.data.bindings.slice(); }
   binding(id) { return this.data.bindings.find((b) => b.id === id) || null; }
 
   putBinding(b) {
-    const i = this.data.bindings.findIndex((x) => x.id === b.id);
-    if (i >= 0) this.data.bindings[i] = b; else this.data.bindings.push(b);
-    this.persist();
+    const bindings = this.data.bindings.slice();
+    const i = bindings.findIndex((x) => x.id === b.id);
+    if (i >= 0) bindings[i] = b; else bindings.push(b);
+    this.commit({ ...this.data, bindings });
     return b;
   }
 
   removeBinding(id) {
     const { data } = this;
-    const before = data.bindings.length;
-    data.bindings = data.bindings.filter((b) => b.id !== id);
-    if (data.bindings.length === before) return false;
-    for (const k of Object.keys(data.posted)) if (data.posted[k].bindingId === id) delete data.posted[k];
-    for (const k of Object.keys(data.seen)) if (k.startsWith(`${id}|`)) delete data.seen[k];
-    this.persist();
+    const bindings = data.bindings.filter((b) => b.id !== id);
+    if (bindings.length === data.bindings.length) return false;
+    const posted = Object.fromEntries(Object.entries(data.posted).filter(([, p]) => p.bindingId !== id));
+    const seen = Object.fromEntries(Object.entries(data.seen).filter(([k]) => !k.startsWith(`${id}|`)));
+    this.commit({ bindings, posted, seen });
     return true;
   }
 
@@ -159,10 +167,10 @@ export class BindingStore {
   allPosted() { return Object.entries(this.data.posted); }
 
   putPosted(k, value) {
-    this.data.posted[k] = { ...value, at: value.at ?? this.now() };
     const cutoff = this.now() - POSTED_MAX_AGE_MS;
-    for (const [key, p] of Object.entries(this.data.posted)) if ((p.at || 0) < cutoff) delete this.data.posted[key];
-    this.persist();
+    const all = { ...this.data.posted, [k]: { ...value, at: value.at ?? this.now() } };
+    const posted = Object.fromEntries(Object.entries(all).filter(([, p]) => (p.at || 0) >= cutoff));
+    this.commit({ ...this.data, posted });
   }
 
   findPostedByRef(adapter, channel, ts) {
@@ -171,5 +179,5 @@ export class BindingStore {
 
   // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
   seen(k) { return this.data.seen[k] ?? null; }
-  putSeen(k, v) { this.data.seen[k] = v; this.persist(); }
+  putSeen(k, v) { this.commit({ ...this.data, seen: { ...this.data.seen, [k]: v } }); }
 }
