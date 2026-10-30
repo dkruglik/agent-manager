@@ -184,3 +184,13 @@ test('a messengers.json that cannot be read (not missing) is set aside like a co
   store.putSeen('k', 'v');
   assert.ok(fs.existsSync(`${file}.corrupt-5`), 'a later write leaves the copy alone');
 });
+
+test('a binding read from the store is a copy', () => {
+  const store = new BindingStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-copy-')), 'messengers.json'));
+  store.putBinding({ ...validateBinding(base, { adapters: ['slack'] }), id: 'b1' });
+  const one = store.binding('b1');
+  one.allowedUsers.push('U9');
+  one.approvals = true;
+  store.bindings()[0].target.channel = 'C9';
+  assert.deepEqual([store.binding('b1').allowedUsers, store.binding('b1').approvals, store.binding('b1').target.channel], [['U1'], false, 'C1']);
+});

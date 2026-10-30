@@ -141,8 +141,12 @@ export class BindingStore {
     this.data = next;
   }
 
-  bindings() { return this.data.bindings.slice(); }
-  binding(id) { return this.data.bindings.find((b) => b.id === id) || null; }
+  // Copies: a caller that changes one cannot change the store without putBinding().
+  bindings() { return structuredClone(this.data.bindings); }
+  binding(id) {
+    const b = this.data.bindings.find((x) => x.id === id);
+    return b ? structuredClone(b) : null;
+  }
 
   putBinding(b) {
     const bindings = this.data.bindings.slice();
