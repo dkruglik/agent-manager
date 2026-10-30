@@ -144,7 +144,7 @@ export class SlackAdapter {
 
   async onFrame(ws, raw) {
     let msg;
-    try { msg = JSON.parse(String(raw)); } catch { return; }
+    try { msg = JSON.parse(String(raw)); } catch { this.hooks.log({ event: 'bad-frame' }); return; }
     if (msg.type === 'hello') { this.attempt = 0; this.setStatus(true); return; }
     if (msg.type === 'disconnect') { this.socket = null; ws.close(); this.reconnectLater('refresh requested'); return; }
     if (!msg.envelope_id) return;

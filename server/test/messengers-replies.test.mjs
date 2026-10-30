@@ -66,3 +66,12 @@ test('internal error text stays out of chat; user-facing errors are shown', asyn
   await t.bridge.handleReply('slack', { ...press(3), ts: 'card2' });
   assert.match(t.posts.at(-1).card.body, /no longer waiting — answer in the terminal/);
 });
+
+test('a notice that cannot be posted is logged, not lost silently', async () => {
+  const t = setup({ allowedUsers: ['U1'] });
+  t.slack.failPosts = true;
+  const out = await t.bridge.handleReply('slack', press(1, 'd:accept', { id: 'U9', name: 'mallory' }));
+  assert.deepEqual(out, { refused: 'user-not-allowed' });
+  const failed = t.logs.find((e) => e.event === 'notice-failed');
+  assert.deepEqual([failed.adapter, failed.channel, failed.error], ['slack', 'C0', 'slack chat.postMessage: channel_not_found']);
+});

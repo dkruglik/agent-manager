@@ -28,7 +28,9 @@ export class ReplyRouter {
   }
 
   async say(adapterId, channel, thread, text) {
-    try { await this.adapters.get(adapterId)?.post({ channel, thread }, noticeCard(text)); } catch {}
+    try { await this.adapters.get(adapterId)?.post({ channel, thread }, noticeCard(text)); } catch (e) {
+      this.log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
+    }
   }
 
   allowed(binding, user) {

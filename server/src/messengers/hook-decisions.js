@@ -69,7 +69,7 @@ export class HookDecisions {
     entry.resolve(result);
     for (const [k, p] of this.bridge.store.allPosted()) {
       if (p.key !== key || p.status !== 'open' || p.bindingId === answeredBy) continue;
-      this.bridge.closeCard(k, p, entry.session, text).catch(() => {});
+      this.bridge.closeCard(k, p, entry.session, text).catch((e) => this.bridge.log({ event: 'close-failed', key, error: e.message }));
     }
   }
 

@@ -17,9 +17,13 @@ const notFound = () => new ApiError(404, 'not-found', 'Binding not found.');
 export function createMessengers({ host, dataDir, config, scopeExists = () => true, factories = ADAPTERS, bridgeOptions = {} }) {
   const store = new BindingStore(path.join(dataDir, 'messengers.json'));
   const logFile = path.join(dataDir, 'messengers.log.jsonl');
+  let appendWarned = false;
   const log = (entry) => {
     const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
-    try { fs.appendFileSync(logFile, `${line}\n`); } catch {}
+    try { fs.appendFileSync(logFile, `${line}\n`); } catch (e) {
+      if (!appendWarned) console.error(`[messengers] cannot write ${logFile}: ${e.message}`);
+      appendWarned = true;
+    }
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make(config[id] || {})]));
