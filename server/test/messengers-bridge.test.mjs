@@ -160,3 +160,17 @@ test('a finished card whose post failed is posted on the next tick', async () =>
   await t.tick(1000);
   assert.equal(t.slack.posts.length, 1, 'and announced once');
 });
+
+test('a failed transcript read does not become the baseline', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => { throw new Error('transcript unreadable'); };
+  t.host.list[0].state = 'waiting';
+  await t.tick();
+  const failed = t.logs.find((e) => e.event === 'digest-failed');
+  assert.deepEqual([failed.session, failed.error], ['s1', 'transcript unreadable']);
+  assert.equal(t.store.seen('b0|s1'), null, 'still no baseline');
+  t.host.digestImpl = async () => ({ id: 'a', text: 'old' });
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0, 'the old answer becomes the baseline');
+  assert.equal(t.store.seen('b0|s1'), 'a');
+});

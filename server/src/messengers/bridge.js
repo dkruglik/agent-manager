@@ -196,8 +196,12 @@ export class MessengerBridge {
     if (!baseline && !this.settled(s)) return;
     if (this.now() - (this.digestAt.get(k) || 0) < this.digestEveryMs) return;
     this.digestAt.set(k, this.now());
-    let d = null;
-    try { d = await this.host.digest(s); } catch { d = null; }
+    let d;
+    try { d = await this.host.digest(s); } catch (e) {
+      // Not a baseline: recording an empty one would replay an old answer later.
+      this.log({ event: 'digest-failed', session: s.id, error: e.message });
+      return;
+    }
     const id = d?.id || '';
     // The first look at a session only records where its conversation stands:
     // binding a channel must not replay an answer the operator already read.
