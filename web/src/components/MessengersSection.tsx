@@ -22,6 +22,7 @@ export function MessengersSection() {
       setAdapters(m.adapters);
       setBindings(m.bindings);
       setTree(t);
+      setErr('');
     } catch (e) { setErr((e as Error).message); }
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load]);
@@ -94,6 +95,7 @@ export function MessengersSection() {
           </span>
         </div>
       ))}
+      {err && <div className="s-help s-err" role="alert">{err}</div>}
       {adapters.length > 0 && (
         <div className="setting-row row-top">
           <div>
@@ -109,7 +111,6 @@ export function MessengersSection() {
               onChange={(e) => setDraft({ ...draft, users: e.target.value })} />
             <label className="s-help"><input type="checkbox" checked={draft.approvals}
               onChange={(e) => setDraft({ ...draft, approvals: e.target.checked })} /> allow approving tool calls and answering Claude's questions from chat</label>
-            {err && <div className="s-help s-err" role="alert">{err}</div>}
             {note && <div className="s-help">{note}</div>}
           </div>
           <button className="btn-ghost" disabled={!draft.channel.trim() || !draft.scope || !draft.users.trim()} onClick={add}>Connect</button>
