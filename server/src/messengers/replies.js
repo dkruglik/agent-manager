@@ -73,8 +73,9 @@ export class ReplyRouter {
     const found = anchor ? this.store.findPostedByRef(adapterId, r.channel, anchor) : null;
     const text = r.text || '';
     if (found) {
-      const session = this.host.sessions().find((s) => s.id === found[1].sessionId);
-      return { binding: this.store.binding(found[1].bindingId), session, found, text };
+      const posted = found[1];
+      const session = this.host.sessions().find((s) => s.id === posted.sessionId);
+      return { binding: this.store.binding(posted.bindingId), session, found, text };
     }
     if (r.optionId || r.thread) return { ignored: 'no-target' };
     const named = this.byName(bindings, text);
@@ -93,12 +94,13 @@ export class ReplyRouter {
     const target = this.resolve(adapterId, r);
     if (!target.binding) return { ignored: target.ignored || 'no-target' };
     const { binding, session, found, text } = target;
-    const where = found ? found[1].ref.ts : (r.thread || r.ts);
+    const posted = found?.[1];
+    const where = posted ? posted.ref.ts : (r.thread || r.ts);
     const reply = (t) => this.say(adapterId, r.channel, where, t);
     const refused = await this.refusal(binding, session, r, reply);
     if (refused) return refused;
     try {
-      if (found && found[1].kind === 'input') return await this.answer(found, binding, session, r, text, reply);
+      if (posted?.kind === 'input') return await this.answer(found, binding, session, r, text, reply);
       return await this.prompt(adapterId, binding, session, r, text, reply);
     } catch (e) {
       this.log({ event: 'reply-failed', binding: binding.id, session: session.id, error: e.message });

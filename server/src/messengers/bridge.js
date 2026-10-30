@@ -17,6 +17,8 @@ import { HookDecisions } from './hook-decisions.js';
 const BACKOFF_MIN_MS = 5000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 
+const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
+
 export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {},
@@ -82,14 +84,8 @@ export class MessengerBridge {
     for (const item of items) {
       // A Claude hook item already has its own card; the dialog it mirrors needs no second one.
       if (hooked && item.generic) continue;
-      const k = `${binding.id}|${s.id}|${item.key}`;
-      if (this.store.posted(k)) continue;
-      const ref = await this.post(binding, this.inputCardFor(binding, s, item));
-      this.store.putPosted(k, {
-        bindingId: binding.id, sessionId: s.id, key: item.key, kind: 'input', status: 'open',
-        adapter: binding.adapter, ref, item, partial: {},
-      });
-      this.log({ event: 'posted', binding: binding.id, session: s.id, kind: 'input', key: item.key });
+      if (this.store.posted(inputKey(binding, s, item))) continue;
+      await this.postInput(binding, s, item);
     }
     // A dialog that closed anywhere — terminal, reader, another chat — is
     // resolved here too, so nobody presses a button for a question that is gone.
@@ -98,6 +94,19 @@ export class MessengerBridge {
       if (p.bindingId !== binding.id || p.sessionId !== s.id || p.kind !== 'input' || p.status !== 'open') continue;
       if (!live.has(p.key) && !this.pending.has(p.key)) await this.closeCard(k, p, s, 'Answered or dismissed outside this chat.');
     }
+  }
+
+  // Posts the card for an open dialog and records it; returns [storeKey, record].
+  async postInput(binding, s, item) {
+    const ref = await this.post(binding, this.inputCardFor(binding, s, item));
+    const k = inputKey(binding, s, item);
+    const posted = {
+      bindingId: binding.id, sessionId: s.id, key: item.key, kind: 'input', status: 'open',
+      adapter: binding.adapter, ref, item, partial: {},
+    };
+    this.store.putPosted(k, posted);
+    this.log({ event: 'posted', binding: binding.id, session: s.id, kind: 'input', key: item.key });
+    return [k, posted];
   }
 
   awaitDecision(sessionId, item, opts) { return this.hooks.wait(sessionId, item, opts); }

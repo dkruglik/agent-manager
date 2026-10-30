@@ -54,7 +54,9 @@ function inputActions(item, approvals, partial) {
 function inputBody(agentName, item, partial) {
   const questions = item.questions || [];
   if (!questions.length) {
-    const wanted = item.kind === 'permission' ? 'a permission decision' : item.kind === 'question' ? 'an answer' : 'confirmation';
+    let wanted = 'confirmation';
+    if (item.kind === 'permission') wanted = 'a permission decision';
+    else if (item.kind === 'question') wanted = 'an answer';
     return `${agentName} is waiting for ${wanted}.`;
   }
   return questions.map((q, i) => {

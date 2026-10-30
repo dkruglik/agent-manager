@@ -201,8 +201,9 @@ export class SlackAdapter {
       return;
     }
     ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
-    const reply = msg.type === 'interactive' ? interactiveReply(p)
-      : msg.type === 'events_api' ? messageReply(p, this.botUser) : null;
+    let reply = null;
+    if (msg.type === 'interactive') reply = interactiveReply(p);
+    else if (msg.type === 'events_api') reply = messageReply(p, this.botUser);
     if (reply) await this.hooks.onReply(reply);
   }
 

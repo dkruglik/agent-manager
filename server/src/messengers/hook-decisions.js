@@ -25,13 +25,15 @@ export class HookDecisions {
     const key = `hook:${crypto.randomUUID()}`;
     const withKey = { ...item, key };
     return new Promise((resolve) => {
-      const entry = { resolve, sessionId, session, posting: true, timer: null, detach: () => {} };
-      this.pending.set(key, entry);
       const timer = this.bridge.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
       const onAbort = () => this.settle(key, null, 'Stopped waiting — answer in the terminal.');
       signal?.addEventListener('abort', onAbort, { once: true });
       timer?.unref?.();
-      Object.assign(entry, { timer, detach: () => signal?.removeEventListener('abort', onAbort) });
+      const entry = {
+        resolve, sessionId, session, posting: true, timer,
+        detach: () => signal?.removeEventListener('abort', onAbort),
+      };
+      this.pending.set(key, entry);
       this.postHookCards(bindings, session, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
         .catch((e) => { this.bridge.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); })
@@ -41,14 +43,7 @@ export class HookDecisions {
 
   async postHookCards(bindings, session, item) {
     for (const binding of bindings) {
-      const ref = await this.bridge.post(binding, this.bridge.inputCardFor(binding, session, item));
-      const k = `${binding.id}|${session.id}|${item.key}`;
-      const p = {
-        bindingId: binding.id, sessionId: session.id, key: item.key, kind: 'input', status: 'open',
-        adapter: binding.adapter, ref, item, partial: {},
-      };
-      this.bridge.store.putPosted(k, p);
-      this.bridge.log({ event: 'posted', binding: binding.id, session: session.id, kind: 'input', key: item.key });
+      const [k, p] = await this.bridge.postInput(binding, session, item);
       // Settled while this post was in flight: settle() could not see the card yet.
       if (!this.pending.has(item.key)) {
         await this.bridge.closeCard(k, p, session, this.settledText.get(item.key) || 'No longer waiting — answer in the terminal.');
