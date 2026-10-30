@@ -15,7 +15,8 @@ export interface MessengerBinding {
   scope: { type: 'session' | 'group'; id: string };
   events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
   createdAt: string;
-  /** Set while the binding's posts are failing (a Slack error code, never a token). */
+  /** Set while the binding's posts or lookups are failing: the adapter's public error (a Slack error
+   *  code) or a generic line; never a token, path or network detail. */
   lastError?: string | null;
 }
 export interface MessengerAdapterStatus { id: string; configured: boolean; connected: boolean; error: string | null; }

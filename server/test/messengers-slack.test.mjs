@@ -189,3 +189,12 @@ test('a slash command whose handler throws is still acked, with a generic reply'
   assert.doesNotMatch(sent[0].payload.text, /EACCES|home/, 'the error text stays out of chat');
   assert.deepEqual(t.logs.find((e) => e.event === 'command-failed'), { event: 'command-failed', error: 'EACCES /home/op/.am/data' });
 });
+
+test('a Slack API error carries a public message; a network error does not', async () => {
+  const t = setup({ fetchImpl: async () => ({ status: 200, json: async () => ({ ok: false, error: 'channel_not_found' }) }) });
+  const api = await t.adapter.post({ channel: 'C1' }, { title: 't' }).catch((e) => e);
+  assert.equal(api.publicMessage, 'slack chat.postMessage: channel_not_found');
+  const down = setup({ fetchImpl: async () => { throw new TypeError('fetch failed'); } });
+  const net = await down.adapter.post({ channel: 'C1' }, { title: 't' }).catch((e) => e);
+  assert.equal(net.publicMessage, undefined);
+});

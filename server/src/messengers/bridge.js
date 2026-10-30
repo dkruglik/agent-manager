@@ -17,6 +17,13 @@ import { HookDecisions } from './hook-decisions.js';
 const BACKOFF_MIN_MS = 5000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 
+// Settings shows only what an adapter marked public (a Slack error code): any
+// other error may carry file paths or network details, which stay in the log.
+const publicError = (e) => {
+  if (typeof e.publicMessage === 'string') return e.publicMessage.slice(0, 200);
+  return e.event === 'requests-failed' ? 'could not look up open dialogs — see the server log' : 'could not post — see the server log';
+};
+
 const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
 
 export class MessengerBridge {
@@ -196,10 +203,10 @@ export class MessengerBridge {
     if (!failure) { this.failing.delete(binding.id); return; }
     const count = (this.failing.get(binding.id)?.count || 0) + 1;
     const wait = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (count - 1));
-    this.failing.set(binding.id, { count, error: String(failure.message).slice(0, 200), retryAt: this.now() + wait });
+    this.failing.set(binding.id, { count, error: publicError(failure), retryAt: this.now() + wait });
   }
 
-  /** The last error of a binding whose posts are failing, else null. */
+  /** What Settings shows for a binding whose posts or lookups are failing, else null. */
   lastError(bindingId) { return this.failing.get(bindingId)?.error ?? null; }
 
   handleReply(adapterId, r) { return this.replies.handle(adapterId, r); }

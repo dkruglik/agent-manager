@@ -186,7 +186,7 @@ under the same rule.
 
 | Route | |
 | --- | --- |
-| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts or dialog lookups keep failing carries `lastError` (a Slack error code) and is retried after 5 s, doubling to 5 min |
+| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts or dialog lookups keep failing carries `lastError` (the adapter's public error, such as `slack chat.postMessage: channel_not_found`, or a generic "see the server log" line — never a path or network detail) and is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
@@ -226,6 +226,10 @@ Inbound events go to `onReply({channel, ts, thread, user:{id,name}, messageId, o
 `ts` is the message a button lives on, `thread` the card a threaded reply belongs
 to, and `messageId` a stable id the bridge uses to drop redeliveries. Commands go
 to `onCommand({channel, user, text})`, which resolves to reply text.
+
+An error thrown by `post` or `update` may carry `publicMessage`: text safe to
+show in Settings as the binding's `lastError` (Slack sets it to the API's error
+code). Any other error is shown only as a generic line and logged in full.
 
 For Telegram the mapping is direct: `getUpdates` long-polling (outbound only,
 like Socket Mode), inline keyboards for options (`callback_data` ≤ 64 bytes —

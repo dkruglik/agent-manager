@@ -192,7 +192,10 @@ test('a binding whose posts keep failing is backed off, reported, and cleared on
   t.host.digestImpl = async () => ({ id: 'a:2', text: 'new answer' });
   t.host.list[0].state = 'waiting';
   let attempts = 0;
-  t.slack.post = async () => { attempts += 1; throw new Error('slack chat.postMessage: channel_not_found'); };
+  t.slack.post = async () => {
+    attempts += 1;
+    throw Object.assign(new Error('slack chat.postMessage: channel_not_found'), { publicMessage: 'slack chat.postMessage: channel_not_found' });
+  };
   await t.tick(1000);
   assert.equal(attempts, 1);
   assert.equal(t.bridge.lastError('b0'), 'slack chat.postMessage: channel_not_found');
@@ -223,11 +226,23 @@ test('a request lookup that keeps failing backs the binding off like a failed po
   t.host.requests = async () => { lookups += 1; throw new Error('app-server down'); };
   await t.tick();
   assert.equal(lookups, 1);
-  assert.equal(t.bridge.lastError('b0'), 'app-server down');
+  assert.equal(t.bridge.lastError('b0'), 'could not look up open dialogs — see the server log');
   await t.tick(4000);
   assert.equal(lookups, 1, 'no retry while backing off');
   await t.tick(1000);
   assert.equal(lookups, 2, 'retried after 5 s');
   assert.equal(t.logs.filter((e) => e.event === 'requests-failed').length, 2, 'one log line per attempt, not per tick');
   assert.equal(t.slack.posts.length, 0, 'nothing generic posted for an unknown dialog');
+});
+
+test('lastError shows only what an adapter marked public, never paths or network details', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'new answer' });
+  t.host.list[0].state = 'waiting';
+  t.slack.post = async () => { throw new Error("EACCES: permission denied, open '/home/op/.am/data/messengers.json.tmp'"); };
+  await t.tick(1000);
+  assert.equal(t.bridge.lastError('b0'), 'could not post — see the server log');
+  assert.match(t.logs.find((e) => e.event === 'tick-failed').error, /EACCES/, 'the full error is logged');
 });

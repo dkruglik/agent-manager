@@ -123,7 +123,11 @@ export class SlackAdapter {
       body: JSON.stringify(body || {}),
     });
     const json = await res.json().catch(() => ({}));
-    if (!json.ok) throw new Error(`slack ${method}: ${json.error || `HTTP ${res.status}`}`);
+    if (!json.ok) {
+      // Slack's error code is safe to show in Settings (bridge lastError); a network error is not marked.
+      const message = `slack ${method}: ${String(json.error || `HTTP ${res.status}`).slice(0, 80)}`;
+      throw Object.assign(new Error(message), { publicMessage: message });
+    }
     return json;
   }
 
