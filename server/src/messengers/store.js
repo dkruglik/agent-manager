@@ -27,7 +27,9 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   if (!channel || !ID.test(channel)) throw invalid('target.channel', 'must be a channel id');
   const scope = b.scope ?? existing?.scope;
   if (!scope || !SCOPES.has(scope.type) || !ID.test(scope.id || '')) throw invalid('scope', 'must be {type:"session"|"group", id}');
-  if (!scopeExists(scope)) throw invalid('scope', `${scope.type} "${scope.id}" does not exist`);
+  // An unchanged scope may point at something deleted since: the binding must stay editable.
+  const unchanged = existing && scope.type === existing.scope.type && scope.id === existing.scope.id;
+  if (!unchanged && !scopeExists(scope)) throw invalid('scope', `${scope.type} "${scope.id}" does not exist`);
   const events = b.events ?? existing?.events ?? EVENTS;
   if (!Array.isArray(events) || !events.length || events.some((e) => !EVENTS.includes(e))) {
     throw invalid('events', `must be a non-empty subset of ${EVENTS.join(', ')}`);
