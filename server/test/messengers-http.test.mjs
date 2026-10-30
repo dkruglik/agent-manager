@@ -105,6 +105,9 @@ try {
   r = await hook(hooked, { runId: 'stale', payload: permission });
   assert.equal(r.status, 409, 'no live launch, so a stale runId gets nothing');
   assert.equal(r.body.code, 'conflict');
+  const hookLog = () => fs.readFileSync(path.join(DATA_DIR, 'messengers.log.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const rejected = hookLog().filter((e) => e.event === 'hook-rejected');
+  assert.deepEqual(rejected.map(({ session, status, reason }) => ({ session, status, reason })), [{ session: hooked, status: 409, reason: 'conflict' }]);
   r = await hook(hooked, { runId: 'stale' });
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'invalid-input');

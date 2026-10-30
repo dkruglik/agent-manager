@@ -40,6 +40,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
   return {
     bridge,
     store,
+    log,
     start: () => bridge.start(),
     stop: () => bridge.stop(),
     list() {

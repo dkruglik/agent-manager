@@ -3971,13 +3971,21 @@ api.post('/api/messengers/claude-hook', async (req, res) => {
   const { runId, payload } = req.body || {};
   if (typeof runId !== 'string' || !runId) throw invalid('runId', 'must be a non-empty string.');
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid('payload', 'must be an object.');
-  const session = store.get(String(req.query.from || '').trim());
-  if (!session) throw new ApiError(404, 'not-found', 'Session not found.');
+  const from = String(req.query.from || '').trim();
+  const rejected = (status, reason, message) => {
+    messengers.log({ event: 'hook-rejected', session: from.slice(0, 128), status, reason });
+    return new ApiError(status, reason, message);
+  };
+  const session = store.get(from);
+  if (!session) throw rejected(404, 'not-found', 'Session not found.');
   if (session.cli !== 'claude') return res.json({ output: null });
-  if (runIdOf(session.id) !== runId) throw new ApiError(409, 'conflict', 'This launch is no longer running.');
+  if (runIdOf(session.id) !== runId) throw rejected(409, 'conflict', 'This launch is no longer running.');
   const controller = new AbortController();
   res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-  res.json(await messengers.claudeHook({ sessionId: session.id, payload, signal: controller.signal }));
+  const result = await messengers.claudeHook({ sessionId: session.id, payload, signal: controller.signal });
+  // The hook went away while the decision was made: the answer reaches nobody.
+  if (res.destroyed) messengers.log({ event: 'hook-response-lost', session: session.id, decided: !!result.output });
+  res.json(result);
 });
 messengers.start();
 
