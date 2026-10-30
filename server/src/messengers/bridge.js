@@ -203,9 +203,10 @@ export class MessengerBridge {
     // binding a channel must not replay an answer the operator already read.
     if (baseline) { this.store.putSeen(k, id); return; }
     if (!id || id === this.store.seen(k) || !d.text) return;
-    this.store.putSeen(k, id);
-    if (!binding.events.includes('finished')) return;
+    if (!binding.events.includes('finished')) { this.store.putSeen(k, id); return; }
+    // Seen only once posted: a failed post is retried on the next look.
     const ref = await this.post(binding, finishedCard({ agent: this.agent(s), link: this.host.link(s), text: d.text }));
+    this.store.putSeen(k, id);
     this.store.putPosted(`${k}|done:${id}`, {
       bindingId: binding.id, sessionId: s.id, key: `done:${id}`, kind: 'finished', status: 'closed', adapter: binding.adapter, ref,
     });

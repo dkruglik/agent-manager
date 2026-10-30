@@ -143,3 +143,20 @@ test('awaitDecision leaves a too-long permission request to the terminal at once
   assert.equal(timers.length, 0, 'no timer was started');
   assert.equal(t.bridge.pending.size, 0);
 });
+
+test('a finished card whose post failed is posted on the next tick', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'new answer' });
+  t.host.list[0].state = 'waiting';
+  t.slack.failPosts = 1;
+  await t.tick();
+  assert.equal(t.slack.posts.length, 0);
+  assert.ok(t.logs.some((e) => e.event === 'tick-failed'));
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 1, 'retried');
+  assert.equal(t.slack.posts[0].card.body, 'new answer');
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 1, 'and announced once');
+});
