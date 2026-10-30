@@ -28,7 +28,7 @@ export class HookDecisions {
       const entry = { resolve, sessionId, session, posting: true, timer: null, detach: () => {} };
       this.pending.set(key, entry);
       const timer = this.bridge.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
-      const onAbort = () => this.settle(key, null, 'Answered in the terminal.');
+      const onAbort = () => this.settle(key, null, 'Stopped waiting — answer in the terminal.');
       signal?.addEventListener('abort', onAbort, { once: true });
       timer?.unref?.();
       Object.assign(entry, { timer, detach: () => signal?.removeEventListener('abort', onAbort) });

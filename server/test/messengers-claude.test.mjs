@@ -260,7 +260,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   assert.equal(await aw, null);
   await new Promise((r) => setImmediate(r));
   assert.equal(ab.slack.updates.length, 2);
-  assert.ok(ab.slack.updates.every((u) => u.card.resolved.text === 'Answered in the terminal.'));
+  assert.ok(ab.slack.updates.every((u) => u.card.resolved.text === 'Stopped waiting — answer in the terminal.'));
   assert.equal(ab.clock.timers.size, 0);
   assert.equal(ab.bridge.pending.size, 0);
 
@@ -291,7 +291,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
     assert.equal(posted.status, 'closed', `${how}: the late card is closed`);
     assert.equal(fl.slack.updates.length, 1);
     assert.equal(fl.slack.updates[0].ref.ts, 'late1');
-    assert.equal(fl.slack.updates[0].card.resolved.text, how === 'abort' ? 'Answered in the terminal.' : 'No answer in time — answer in the terminal.');
+    assert.equal(fl.slack.updates[0].card.resolved.text, how === 'abort' ? 'Stopped waiting — answer in the terminal.' : 'No answer in time — answer in the terminal.');
   }
 }
 

@@ -112,9 +112,11 @@ terminal.
    becomes Claude's decision: approve once / deny with a message for a
    permission, or `updatedInput.answers` for a question. The other channels'
    cards close.
-5. With no answer within **120 s**, or if the hook is stopped, the cards say
-   *answer in the terminal* and the hook prints nothing: Claude falls back to
-   its dialog. The hook's own timeout is 150 s.
+5. With no answer within **120 s**, the cards say *No answer in time — answer
+   in the terminal*; if the hook is stopped (Claude moved on, or the terminal
+   answered), they say *Stopped waiting — answer in the terminal*; if Agent
+   Manager stops, they say so too. In each case the hook prints nothing and
+   Claude falls back to its dialog. The hook's own timeout is 150 s.
 
 Limits:
 
