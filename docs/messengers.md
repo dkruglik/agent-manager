@@ -79,7 +79,9 @@ laptop and in a private Space.
 6. In Slack, `/invite @Agent Manager` to the channel. Copy the channel ID
    (channel details → bottom of the About tab) and your member ID
    (profile → ⋮ → Copy member ID).
-7. In **Settings → General → Messengers**, connect the channel to an agent or a
+7. For [Claude Code approvals](#claude-code-approvals), make sure
+   `CLAUDE_CONFIG_DIR` is set and `jq` and `curl` are on `PATH`.
+8. In **Settings → General → Messengers**, connect the channel to an agent or a
    group, list the allowed user IDs, and press **Send test**.
 
 ## Claude Code approvals
@@ -87,7 +89,15 @@ laptop and in a private Space.
 Claude Code exposes no typed answer path into a running TUI, but it does run
 *blocking* hooks before it shows a dialog. Agent Manager installs
 `scripts/am-claude-approval-hook.sh` as a `PermissionRequest` hook and as a
-`PreToolUse` hook for `AskUserQuestion`, next to its existing lifecycle hooks:
+`PreToolUse` hook for `AskUserQuestion`, next to its existing lifecycle hooks.
+
+The server writes these hooks into `$CLAUDE_CONFIG_DIR/settings.json` when it
+starts, and only when `CLAUDE_CONFIG_DIR` is set (the container image sets it).
+On a VPS or a local install, set it yourself, for example to `~/.claude`, before
+starting the server ([configuration table](development.md#configuration)). The
+hook script needs `jq` and `curl` on `PATH`; without either, or without the
+setting, nothing is installed or the hook does nothing, and prompts stay in the
+terminal.
 
 1. Claude runs the hook with the pending tool call (or the questions).
 2. The hook — only in the pane's own `claude` process (`CLAUDE_PID` and
