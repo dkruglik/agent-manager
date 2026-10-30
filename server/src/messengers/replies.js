@@ -44,6 +44,14 @@ export class ReplyRouter {
     return !!user?.id && binding.allowedUsers.includes(user.id);
   }
 
+  channelBindings(adapterId, channel) {
+    return this.store.bindings().filter((b) => b.adapter === adapterId && b.target.channel === channel);
+  }
+
+  sessionById(id) {
+    return this.host.sessions().find((s) => s.id === id);
+  }
+
   // Slack (like most services) redelivers events it thinks were missed.
   duplicate(messageId) {
     if (!messageId) return false;
@@ -68,22 +76,21 @@ export class ReplyRouter {
 
   /** The binding, session and posted card a reply is about, if any. */
   resolve(adapterId, r) {
-    const bindings = this.store.bindings().filter((b) => b.adapter === adapterId && b.target.channel === r.channel);
+    const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
     const anchor = r.optionId ? r.ts : r.thread;
     const found = anchor ? this.store.findPostedByRef(adapterId, r.channel, anchor) : null;
     const text = r.text || '';
     if (found) {
       const posted = found[1];
-      const session = this.host.sessions().find((s) => s.id === posted.sessionId);
-      return { binding: this.store.binding(posted.bindingId), session, found, text };
+      return { binding: this.store.binding(posted.bindingId), session: this.sessionById(posted.sessionId), found, text };
     }
     if (r.optionId || r.thread) return { ignored: 'no-target' };
     const named = this.byName(bindings, text);
     if (named) return named;
     const direct = bindings.filter((b) => b.scope.type === 'session');
     if (direct.length !== 1) return { ignored: 'no-target' };
-    return { binding: direct[0], session: this.host.sessions().find((s) => s.id === direct[0].scope.id), text };
+    return { binding: direct[0], session: this.sessionById(direct[0].scope.id), text };
   }
 
   /**
@@ -143,7 +150,10 @@ export class ReplyRouter {
     // The snapshot was taken before the awaits in handle(): a press that arrived
     // together with this one may have closed the card since.
     const p = this.store.posted(k) || snapshot;
-    if (p.status !== 'open' || this.answering.has(k)) { await reply('This request is already closed.'); return this.refused('closed', binding, session); }
+    if (p.status !== 'open' || this.answering.has(k)) {
+      await reply('This request is already closed.');
+      return this.refused('closed', binding, session);
+    }
     if (p.item.generic) {
       await reply('This dialog cannot be answered from chat yet — open the terminal.');
       return this.refused('untyped', binding, session);
@@ -203,7 +213,7 @@ export class ReplyRouter {
   }
 
   async command(adapterId, { channel, user, text }) {
-    const bindings = this.store.bindings().filter((b) => b.adapter === adapterId && b.target.channel === channel);
+    const bindings = this.channelBindings(adapterId, channel);
     if (!bindings.length) return 'This channel is not connected to Agent Manager.';
     if (!bindings.some((b) => this.allowed(b, user))) return 'You are not on the allowed-users list for this channel.';
     const word = (text || '').trim().split(/\s+/)[0] || 'status';

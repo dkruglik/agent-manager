@@ -18,8 +18,7 @@ export class HookDecisions {
     if (signal?.aborted || !session || this.bridge.host.locked()) return null;
     // A card the approver cannot read in full has no buttons, so waiting would only stall the hook.
     if (item.choices?.length && !reviewable(item)) return null;
-    const bindings = this.bridge.store.bindings().filter((b) => b.approvals === true && b.events.includes('input-required')
-      && this.bridge.statuses.get(b.adapter)?.connected && this.bridge.sessionsFor(b, [session]).length);
+    const bindings = this.bridge.store.bindings().filter((b) => this.canApprove(b, session));
     if (!bindings.length) return null;
     const key = `hook:${crypto.randomUUID()}`;
     const withKey = { ...item, key, source: 'hook' };
@@ -40,6 +39,12 @@ export class HookDecisions {
           this.settle(key, null, 'Could not be posted.');
         });
     });
+  }
+
+  // A binding decides only when it opted into approvals, watches for input, is connected and covers the session.
+  canApprove(binding, session) {
+    return binding.approvals === true && binding.events.includes('input-required')
+      && !!this.bridge.statuses.get(binding.adapter)?.connected && this.bridge.sessionsFor(binding, [session]).length > 0;
   }
 
   async postHookCards(bindings, entry, item) {

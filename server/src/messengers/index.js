@@ -79,7 +79,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     async claudeHook({ sessionId, payload, signal }) {
       const item = hookItem(payload);
       if (!item) return { output: null };
-      const decision = await bridge.awaitDecision(sessionId, item, { signal });
+      const decision = await bridge.hooks.wait(sessionId, item, { signal });
       return { output: decision ? hookOutput(item, decision.response, { by: decision.by }) : null };
     },
     async test(id) {

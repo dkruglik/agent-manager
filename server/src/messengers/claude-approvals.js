@@ -2,8 +2,8 @@
 // the JSON the hook prints on stdout. Pure: no I/O, never throws.
 
 const CHOICES = Object.freeze([
-  Object.freeze({ value: 'accept', label: 'Approve once' }),
-  Object.freeze({ value: 'decline', label: 'Deny' }),
+  { value: 'accept', label: 'Approve once' },
+  { value: 'decline', label: 'Deny' },
 ]);
 const MAX_QUESTIONS = 4;
 

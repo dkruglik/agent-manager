@@ -10,7 +10,7 @@ const setup = (bindings = [{}]) => hookBridge({ bindings });
 
 test('a settled hook decision closes its card, answered or timed out', async () => {
   const answered = setup();
-  const waiting = answered.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = answered.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   const click = { channel: 'C0', ts: answered.posts[0].ref.ts, thread: null, user, messageId: 'm1', optionId: 'd:accept' };
   await answered.bridge.handleReply('slack', click);
@@ -19,7 +19,7 @@ test('a settled hook decision closes its card, answered or timed out', async () 
   assert.ok(answered.bridge.store.allPosted().every(([, p]) => p.status === 'closed'));
 
   const timedOut = setup();
-  const late = timedOut.bridge.awaitDecision('s1', hookItem(perm));
+  const late = timedOut.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   timedOut.timers.values().next().value.fn();
   assert.equal(await late, null);
@@ -33,7 +33,7 @@ test('a decision settled while its card is still being posted closes that card w
   const release = Promise.withResolvers();
   const post = t.bridge.adapters.get('slack').post;
   t.bridge.adapters.get('slack').post = async (...a) => { await release.promise; return post(...a); };
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   t.timers.values().next().value.fn();
   assert.equal(await waiting, null);
@@ -45,7 +45,7 @@ test('a decision settled while its card is still being posted closes that card w
 
 test('stop settles every waiting hook decision with null and starts no second interval', async () => {
   const t = setup();
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   const started = [];
   const realSet = globalThis.setInterval;
@@ -54,7 +54,7 @@ test('stop settles every waiting hook decision with null and starts no second in
   assert.equal(started.length, 1, 'one interval');
   await t.bridge.stop();
   assert.equal(await waiting, null);
-  assert.equal(t.bridge.pending.size, 0);
+  assert.equal(t.bridge.hooks.pending.size, 0);
   await flush();
   assert.equal(t.updates.at(-1).card.resolved.text, 'Agent Manager is stopping — answer in the terminal.');
 });
@@ -63,7 +63,7 @@ test('the decision timer does not keep the process alive', async () => {
   const t = setup();
   const handle = { unref() { handle.unrefd = true; } };
   t.bridge.setTimer = () => handle;
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   assert.equal(handle.unrefd, true);
   await t.bridge.stop();
@@ -72,14 +72,14 @@ test('the decision timer does not keep the process alive', async () => {
 
 test('approval cards go only to bindings that include input-required', async () => {
   const t = setup([{ events: ['finished'], approvals: true }, { events: ['input-required', 'finished'], approvals: true }]);
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
   assert.deepEqual(t.posts.map((p) => p.target.channel), ['C1']);
   await t.bridge.stop();
   await waiting;
 
   const only = setup([{ events: ['finished'], approvals: true }]);
-  assert.equal(await only.bridge.awaitDecision('s1', hookItem(perm)), null, 'nothing qualifies, so the terminal keeps the dialog');
+  assert.equal(await only.bridge.hooks.wait('s1', hookItem(perm)), null, 'nothing qualifies, so the terminal keeps the dialog');
   assert.equal(only.posts.length, 0);
 });
 
@@ -87,13 +87,13 @@ const pending = (promise) => Promise.race([promise.then(() => false), flush().th
 
 test('a user who is not allowed cannot approve a pending hook card', async () => {
   const t = setup();
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await flush();
-  const [key] = t.bridge.pending.keys();
+  const [key] = t.bridge.hooks.pending.keys();
   const click = { channel: 'C0', ts: t.posts[0].ref.ts, thread: null, user: { id: 'U9', name: 'mallory' }, messageId: 'm9', optionId: 'd:accept' };
   assert.deepEqual(await t.bridge.handleReply('slack', click), { refused: 'user-not-allowed' });
   assert.equal(await pending(waiting), true, 'the hook is still waiting');
-  assert.ok(t.bridge.pending.has(key));
+  assert.ok(t.bridge.hooks.pending.has(key));
   assert.equal(t.bridge.store.posted(`b0|s1|${key}`).status, 'open', 'the card stays open');
   assert.equal(t.updates.length, 0);
   assert.match(t.posts.at(-1).card.body, /<@U9> is not allowed to answer for this agent\./);
@@ -108,9 +108,9 @@ test('a two-question Claude dialog is answered one part at a time', async () => 
   ];
   const item = hookItem({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } });
   const t = setup();
-  const waiting = t.bridge.awaitDecision('s1', item);
+  const waiting = t.bridge.hooks.wait('s1', item);
   await flush();
-  const [key] = t.bridge.pending.keys();
+  const [key] = t.bridge.hooks.pending.keys();
   const card = t.posts[0].ref;
   const click = { channel: 'C0', ts: card.ts, thread: null, user, messageId: 'm1', optionId: 'q:0:0' };
   assert.deepEqual(await t.bridge.handleReply('slack', click), { partial: true });
@@ -140,7 +140,7 @@ test('a hook card that cannot be posted falls back to the terminal and closes th
     if (target.channel === 'C1') throw new Error('slack chat.postMessage: channel_not_found');
     return post(target, card);
   };
-  assert.equal(await t.bridge.awaitDecision('s1', hookItem(perm)), null, 'the terminal keeps the dialog');
+  assert.equal(await t.bridge.hooks.wait('s1', hookItem(perm)), null, 'the terminal keeps the dialog');
   const failed = t.logs.find((e) => e.event === 'hook-post-failed');
   assert.deepEqual([failed.binding, failed.session, failed.adapter, failed.error], ['b1', 's1', 'slack', 'slack chat.postMessage: channel_not_found']);
   await waitFor(() => t.updates.length === 1, 'the first card to close');
@@ -158,7 +158,7 @@ test('aborting while the second card is being posted closes both cards', async (
     return post(target, card);
   };
   const stop = new AbortController();
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm), { signal: stop.signal });
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm), { signal: stop.signal });
   await waitFor(() => second, 'the second post to start');
   stop.abort();
   assert.equal(await waiting, null);
@@ -171,7 +171,7 @@ test('aborting while the second card is being posted closes both cards', async (
 test('a card update or close that fails is logged with its binding, session and adapter', async () => {
   const t = setup();
   t.slack.update = async () => { throw new Error('slack chat.update: message_not_found'); };
-  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = t.bridge.hooks.wait('s1', hookItem(perm));
   await waitFor(() => t.posts.length === 1, 'the card');
   t.timers.values().next().value.fn();
   assert.equal(await waiting, null);
@@ -180,7 +180,7 @@ test('a card update or close that fails is logged with its binding, session and 
   assert.deepEqual([failed.binding, failed.session, failed.adapter], ['b0', 's1', 'slack']);
 
   const c = setup();
-  const waiting2 = c.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting2 = c.bridge.hooks.wait('s1', hookItem(perm));
   await waitFor(() => c.posts.length === 1, 'the card');
   c.bridge.store.putPosted = () => { throw new Error('disk full'); };
   c.timers.values().next().value.fn();

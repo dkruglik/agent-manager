@@ -75,7 +75,7 @@ assert.equal(hookOutput(item, {}), null);
 assert.equal(hookOutput({ event: 'Other' }, { decision: 'accept' }), null);
 assert.equal(hookOutput(null, {}), null);
 
-// ---------- awaitDecision: the bridge waits for a chat decision on a hook item ----------
+// ---------- hooks.wait: the bridge waits for a chat decision on a hook item ----------
 const setup = ({ approvals = [true], connected = true } = {}) => hookBridge({ bindings: approvals.map((on) => ({ approvals: on })), connected });
 
 const click = (ref, optionId, n) => ({ channel: ref.channel, ts: ref.ts, thread: null, user, messageId: `m${n}`, optionId });
@@ -91,22 +91,22 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   ]) {
     const ctx = setup(opts);
     patch(ctx);
-    assert.equal(await ctx.bridge.awaitDecision('s1', hookItem(perm)), null, name);
+    assert.equal(await ctx.bridge.hooks.wait('s1', hookItem(perm)), null, name);
     assert.equal(ctx.slack.posts.length, 0, `${name}: nothing posted`);
-    assert.equal(ctx.bridge.pending.size, 0);
+    assert.equal(ctx.bridge.hooks.pending.size, 0);
   }
   const none = setup();
-  assert.equal(await none.bridge.awaitDecision('nope', hookItem(perm)), null, 'unknown session');
+  assert.equal(await none.bridge.hooks.wait('nope', hookItem(perm)), null, 'unknown session');
   assert.equal(none.slack.posts.length, 0);
 
   // Approve from chat: resolves, host.answer is not called, the card closes.
   const a = setup();
-  const waiting = a.bridge.awaitDecision('s1', hookItem(perm));
+  const waiting = a.bridge.hooks.wait('s1', hookItem(perm));
   await new Promise((r) => setImmediate(r));
   assert.equal(a.slack.posts.length, 1);
   assert.deepEqual(labels(a.slack.posts[0].card), ['Approve once', 'Deny']);
   assert.equal(a.clock.timers.size, 1);
-  const [key] = a.bridge.pending.keys();
+  const [key] = a.bridge.hooks.pending.keys();
   assert.match(key, /^hook:[0-9a-f-]{36}$/);
   assert.equal(a.store.posted(`b0|s1|${key}`).status, 'open');
 
@@ -121,7 +121,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   assert.deepEqual(out, { answered: key });
   assert.deepEqual(await waiting, { response: { decision: 'accept' }, by: 'alice' });
   assert.equal(a.host.answers.length, 0, 'host.answer is not called for hook items');
-  assert.equal(a.bridge.pending.size, 0);
+  assert.equal(a.bridge.hooks.pending.size, 0);
   assert.equal(a.clock.timers.size, 0, 'timer cleared');
   assert.equal(a.store.posted(`b0|s1|${key}`).status, 'closed');
   assert.match(lastUpdate(a.slack).resolved.text, /Approve once — by alice/);
@@ -130,7 +130,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
 
   // Timeout: null, card updated; a late click is refused.
   const t = setup();
-  const late = t.bridge.awaitDecision('s1', hookItem(perm), { timeoutMs: 5000 });
+  const late = t.bridge.hooks.wait('s1', hookItem(perm), { timeoutMs: 5000 });
   await new Promise((r) => setImmediate(r));
   const [[timerId, timer]] = [...t.clock.timers];
   assert.equal(timer.ms, 5000);
@@ -140,7 +140,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   assert.equal(lastUpdate(t.slack).resolved.text, 'No answer in time — answer in the terminal.');
   const [tkey] = [...t.store.allPosted()].map(([k]) => k);
   assert.equal(t.store.posted(tkey).status, 'closed');
-  assert.equal(t.bridge.pending.size, 0);
+  assert.equal(t.bridge.hooks.pending.size, 0);
   // Reopen the record to prove the pending map, not the status, refuses the click.
   t.store.putPosted(tkey, { ...t.store.posted(tkey), status: 'open' });
   const refused = await t.bridge.handleReply('slack', click(t.slack.posts[0].ref, 'd:accept', 3));
@@ -160,7 +160,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
 
   // Question item answered by a thread reply.
   const q = setup();
-  const qWait = q.bridge.awaitDecision('s1', hookItem(ask([q1])));
+  const qWait = q.bridge.hooks.wait('s1', hookItem(ask([q1])));
   await new Promise((r) => setImmediate(r));
   assert.equal(q.slack.posts.length, 1);
   await q.bridge.handleReply('slack', {
@@ -171,7 +171,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
 
   // Two approvals bindings: both get a card; answering one closes the other.
   const two2 = setup({ approvals: [true, true] });
-  const both = two2.bridge.awaitDecision('s1', hookItem(perm));
+  const both = two2.bridge.hooks.wait('s1', hookItem(perm));
   await new Promise((r) => setImmediate(r));
   assert.equal(two2.slack.posts.length, 2);
   await two2.bridge.handleReply('slack', click(two2.slack.posts[1].ref, 'd:decline', 4));
@@ -184,7 +184,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   // Abort: the terminal took over.
   const ab = setup({ approvals: [true, true] });
   const ctl = new AbortController();
-  const aw = ab.bridge.awaitDecision('s1', hookItem(perm), { signal: ctl.signal });
+  const aw = ab.bridge.hooks.wait('s1', hookItem(perm), { signal: ctl.signal });
   await new Promise((r) => setImmediate(r));
   ctl.abort();
   assert.equal(await aw, null);
@@ -192,14 +192,14 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
   assert.equal(ab.slack.updates.length, 2);
   assert.ok(ab.slack.updates.every((u) => u.card.resolved.text === 'Stopped waiting — answer in the terminal.'));
   assert.equal(ab.clock.timers.size, 0);
-  assert.equal(ab.bridge.pending.size, 0);
+  assert.equal(ab.bridge.hooks.pending.size, 0);
 
   // Already-aborted signal.
   const pre = setup();
   const done = new AbortController();
   done.abort();
-  assert.equal(await pre.bridge.awaitDecision('s1', hookItem(perm), { signal: done.signal }), null);
-  assert.equal(pre.bridge.pending.size, 0);
+  assert.equal(await pre.bridge.hooks.wait('s1', hookItem(perm), { signal: done.signal }), null);
+  assert.equal(pre.bridge.hooks.pending.size, 0);
   assert.ok([...pre.store.allPosted()].every(([, p]) => p.status === 'closed'));
   assert.equal(pre.clock.timers.size, 0);
   assert.equal(pre.slack.posts.length, 0, 'a pre-aborted signal posts nothing');
@@ -210,7 +210,7 @@ const lastUpdate = (slack) => slack.updates.at(-1).card;
     let release;
     fl.slack.post = (target) => new Promise((res) => { release = () => res({ channel: target.channel, ts: 'late1' }); });
     const stop = new AbortController();
-    const inflight = fl.bridge.awaitDecision('s1', hookItem(perm), { signal: stop.signal });
+    const inflight = fl.bridge.hooks.wait('s1', hookItem(perm), { signal: stop.signal });
     await new Promise((r) => setImmediate(r));
     if (how === 'abort') stop.abort(); else fl.clock.fire([...fl.clock.timers.keys()][0]);
     assert.equal(await inflight, null);

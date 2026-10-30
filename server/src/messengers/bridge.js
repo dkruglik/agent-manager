@@ -47,7 +47,6 @@ export class MessengerBridge {
   }) {
     Object.assign(this, { host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
     this.hooks = new HookDecisions(this);
-    this.pending = this.hooks.pending; // hook key → the decision still being waited for
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
@@ -56,7 +55,7 @@ export class MessengerBridge {
     this.ticking = false;
     this.replies = new ReplyRouter({
       host, store, adapters, log,
-      answerer: (session, item, response, by, ctx) => this.answerItem(session, item, response, by, ctx),
+      answerer: (...args) => this.hooks.answer(...args),
       scope: (binding, sessions) => this.sessionsFor(binding, sessions),
       cards: {
         refresh: (p, session, partial) => this.refreshCard(p, session, partial),
@@ -98,7 +97,7 @@ export class MessengerBridge {
 
   async checkInput(binding, s) {
     const items = await this.inputItems(s);
-    const hooked = [...this.pending.values()].some((p) => p.sessionId === s.id);
+    const hooked = [...this.hooks.pending.values()].some((p) => p.sessionId === s.id);
     for (const item of items) {
       // A Claude hook item already has its own card; the dialog it mirrors needs no second one.
       if (hooked && item.generic) continue;
@@ -110,7 +109,7 @@ export class MessengerBridge {
     const live = new Set(items.map((i) => i.key));
     for (const [k, p] of this.store.allPosted()) {
       if (p.bindingId !== binding.id || p.sessionId !== s.id || p.kind !== 'input' || p.status !== 'open') continue;
-      if (!live.has(p.key) && !this.pending.has(p.key)) await this.closeCard(k, p, s, 'Answered or dismissed outside this chat.');
+      if (!live.has(p.key) && !this.hooks.pending.has(p.key)) await this.closeCard(k, p, s, 'Answered or dismissed outside this chat.');
     }
   }
 
@@ -127,9 +126,6 @@ export class MessengerBridge {
     return [k, posted];
   }
 
-  awaitDecision(sessionId, item, opts) { return this.hooks.wait(sessionId, item, opts); }
-  answerItem(...args) { return this.hooks.answer(...args); }
-
   async refreshCard(p, s, partial) {
     const binding = this.store.binding(p.bindingId);
     await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial }));
@@ -138,8 +134,12 @@ export class MessengerBridge {
   async closeCard(k, p, s, text) {
     const binding = this.store.binding(p.bindingId);
     // A closed card is never answered again: its tool input need not stay on disk.
-    const { details, toolInput, ...kept } = p.item || {};
-    this.store.putPosted(k, { ...p, ...(p.item ? { item: kept } : {}), status: 'closed', closedText: text });
+    const closed = { ...p, status: 'closed', closedText: text };
+    if (p.item) {
+      const { details, toolInput, ...kept } = p.item;
+      closed.item = kept;
+    }
+    this.store.putPosted(k, closed);
     if (!binding || !p.ref) return;
     try {
       await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial: p.partial, resolved: { text } }));
@@ -194,7 +194,10 @@ export class MessengerBridge {
         if (!this.statuses.get(binding.adapter)?.connected) continue;
         if (this.now() < (this.failing.get(binding.id)?.retryAt || 0)) continue;
         let failure = null;
-        for (const s of this.sessionsFor(binding, sessions)) failure = (await this.checkSession(binding, s)) || failure;
+        for (const s of this.sessionsFor(binding, sessions)) {
+          const e = await this.checkSession(binding, s);
+          if (e) failure = e;
+        }
         this.noteOutcome(binding, failure);
       }
     } finally { this.ticking = false; }
