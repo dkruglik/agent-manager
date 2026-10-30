@@ -132,3 +132,14 @@ test('two presses together answer a typed card once', async () => {
   await u.bridge.handleReply('slack', press(3));
   assert.equal(u.store.posted('b0|s1|req1').status, 'open');
 });
+
+test('an agent is addressed only with "name:" or "@name", not by a bare first word', () => {
+  const t = setup();
+  const byName = (body) => t.bridge.replies.byName(t.store.bindings(), body);
+  assert.equal(byName('alpha: hello')?.text, 'hello');
+  assert.equal(byName('@alpha hello')?.text, 'hello');
+  assert.equal(byName('@alpha: hello')?.text, 'hello');
+  assert.equal(byName('Alpha:hello')?.text, 'hello', 'case-insensitive, no space needed after the colon');
+  assert.equal(byName('alpha hello there'), null, 'a message that merely starts with an agent name is not addressed to it');
+  assert.equal(byName('alpha'), null);
+});

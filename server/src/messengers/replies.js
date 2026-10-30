@@ -54,13 +54,13 @@ export class ReplyRouter {
 
   // "name: text" or "@name text" addresses one agent in a group channel.
   byName(bindings, text) {
-    const m = /^@?([^\s:]{1,80})[:\s]\s*([\s\S]+)$/.exec(text.trim());
+    const m = /^(?:@([^\s:]{1,80})[:\s]|([^\s:@]{1,80}):)\s*([\s\S]+)$/.exec(text.trim());
     if (!m) return null;
-    const wanted = m[1].toLowerCase();
+    const wanted = (m[1] || m[2]).toLowerCase();
     const sessions = this.host.sessions();
     for (const binding of bindings) {
       const session = this.scope(binding, sessions).find((x) => x.name.toLowerCase() === wanted);
-      if (session) return { binding, session, text: m[2].trim() };
+      if (session) return { binding, session, text: m[3].trim() };
     }
     return null;
   }

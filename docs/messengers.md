@@ -14,7 +14,7 @@ answer from the chat:
 | Reply in a question card's thread | Your text answers the first open question |
 | Click **Approve once / Deny** (only with *allow approvals*) | The permission request is decided |
 | Reply in a finished card's thread | Sent to that agent as a normal prompt |
-| `agent-name: text` in a group channel | Sent to that agent as a normal prompt |
+| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address |
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
