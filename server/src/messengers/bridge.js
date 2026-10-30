@@ -63,14 +63,13 @@ export class MessengerBridge {
   }
 
   // What needs input right now. Shared Codex exposes typed requests; every
-  // other CLI exposes only the fact (and kind) of a dialog. Null when the
-  // lookup failed: what is open is then unknown, not empty.
+  // other CLI exposes only the fact (and kind) of a dialog. A failed lookup
+  // throws: what is open is then unknown, not empty, and the binding backs off.
   async inputItems(s) {
     if (!s.inputRequired) return [];
     let typed;
     try { typed = await this.host.requests(s); } catch (e) {
-      this.log({ event: 'requests-failed', session: s.id, error: e.message });
-      return null;
+      throw Object.assign(new Error(e.message), { event: 'requests-failed' });
     }
     if (typed.length) return typed;
     const ir = s.inputRequired;
@@ -79,7 +78,6 @@ export class MessengerBridge {
 
   async checkInput(binding, s) {
     const items = await this.inputItems(s);
-    if (!items) return;
     const hooked = [...this.pending.values()].some((p) => p.sessionId === s.id);
     for (const item of items) {
       // A Claude hook item already has its own card; the dialog it mirrors needs no second one.
@@ -187,7 +185,7 @@ export class MessengerBridge {
       await this.checkFinished(binding, s);
       return null;
     } catch (e) {
-      this.log({ event: 'tick-failed', binding: binding.id, session: s.id, error: e.message });
+      this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.message });
       return e;
     }
   }

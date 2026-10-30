@@ -215,3 +215,19 @@ test('a binding whose posts keep failing is backed off, reported, and cleared on
   assert.equal(t.bridge.lastError('b0'), null, 'cleared by a success');
   assert.equal(t.bridge.failing.size, 0);
 });
+
+test('a request lookup that keeps failing backs the binding off like a failed post', async () => {
+  const t = setup({ events: ['input-required'] });
+  t.host.list[0].inputRequired = { kind: 'permission', cli: 'codex', detectedAt: 'x' };
+  let lookups = 0;
+  t.host.requests = async () => { lookups += 1; throw new Error('app-server down'); };
+  await t.tick();
+  assert.equal(lookups, 1);
+  assert.equal(t.bridge.lastError('b0'), 'app-server down');
+  await t.tick(4000);
+  assert.equal(lookups, 1, 'no retry while backing off');
+  await t.tick(1000);
+  assert.equal(lookups, 2, 'retried after 5 s');
+  assert.equal(t.logs.filter((e) => e.event === 'requests-failed').length, 2, 'one log line per attempt, not per tick');
+  assert.equal(t.slack.posts.length, 0, 'nothing generic posted for an unknown dialog');
+});

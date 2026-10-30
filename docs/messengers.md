@@ -180,7 +180,7 @@ under the same rule.
 
 | Route | |
 | --- | --- |
-| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts keep failing carries `lastError` (a Slack error code) and is retried after 5 s, doubling to 5 min |
+| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts or dialog lookups keep failing carries `lastError` (a Slack error code) and is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
