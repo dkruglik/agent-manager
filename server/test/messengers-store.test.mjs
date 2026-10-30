@@ -46,3 +46,49 @@ test('messengers.json and its tmp file are owner-only', () => {
   store.putSeen('k', 'v');
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });
+
+test('validateBinding names the field it rejects', () => {
+  const field = (patch) => {
+    try { validateBinding({ ...base, ...patch }, { adapters: ['slack'] }); } catch (e) { return e.data?.details?.[0]?.field ?? e.message; }
+    return null;
+  };
+  assert.equal(field({ allowedUsers: ['U 1'] }), 'allowedUsers');
+  assert.equal(field({ allowedUsers: [1] }), 'allowedUsers');
+  assert.equal(field({ events: [] }), 'events');
+  assert.equal(field({ events: ['x'] }), 'events');
+  assert.equal(field({ target: { channel: 'a b' } }), 'target.channel');
+  assert.equal(field({}), null, 'the base binding is valid');
+});
+
+test('removing a binding drops its posted and seen entries, and only those', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-store-'));
+  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => 1000 });
+  for (const id of ['b1', 'b2']) store.putBinding({ ...validateBinding(base, { adapters: ['slack'] }), id });
+  for (const id of ['b1', 'b2']) {
+    store.putPosted(`${id}|s1|k`, { bindingId: id, sessionId: 's1', key: 'k', status: 'open' });
+    store.putSeen(`${id}|s1`, 'a:1');
+  }
+  assert.equal(store.removeBinding('b1'), true);
+  assert.equal(store.posted('b1|s1|k'), null);
+  assert.equal(store.seen('b1|s1'), null);
+  assert.ok(store.posted('b2|s1|k'), 'another binding keeps its card');
+  assert.equal(store.seen('b2|s1'), 'a:1');
+  const reloaded = new BindingStore(path.join(root, 'messengers.json'));
+  assert.equal(reloaded.posted('b1|s1|k'), null, 'gone from disk too');
+  assert.equal(store.removeBinding('b1'), false);
+});
+
+test('posted records older than 7 days are pruned on the next write', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-store-'));
+  const day = 24 * 3600_000;
+  let clock = 10 * day;
+  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => clock });
+  store.putPosted('old', { bindingId: 'b1', status: 'open' });
+  clock += 6 * day;
+  store.putPosted('recent', { bindingId: 'b1', status: 'open' });
+  assert.ok(store.posted('old'), 'not yet 7 days old');
+  clock += 2 * day;
+  store.putPosted('new', { bindingId: 'b1', status: 'open' });
+  assert.equal(store.posted('old'), null, 'older than 7 days');
+  assert.ok(store.posted('recent') && store.posted('new'));
+});
