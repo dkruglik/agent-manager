@@ -61,6 +61,9 @@ test('internal error text stays out of chat; user-facing errors are shown', asyn
   t.host.prompt = async () => { throw new ApiError(409, 'busy', 'alpha is busy right now.'); };
   await t.bridge.handleReply('slack', text(2, 'alpha: hello'));
   assert.equal(t.posts.at(-1).card.body, '⚠️ alpha is busy right now.');
+  t.host.prompt = async () => { throw new ApiError(500, 'internal-error', 'disk full at /home/op/.am/data'); };
+  await t.bridge.handleReply('slack', text(4, 'alpha: again'));
+  assert.equal(t.posts.at(-1).card.body, '⚠️ Could not deliver that — see the server log.', 'a 5xx ApiError is masked like any internal error');
 
   t.bridge.store.putPosted('b0|s1|hook:gone', { ...t.store.posted('b0|s1|req1'), key: 'hook:gone', ref: { channel: 'C0', ts: 'card2' }, item: { ...typed, key: 'hook:gone' } });
   await t.bridge.handleReply('slack', { ...press(3), ts: 'card2' });

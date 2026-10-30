@@ -105,8 +105,10 @@ export class ReplyRouter {
       return await this.prompt(adapterId, binding, session, r, text, reply);
     } catch (e) {
       this.log({ event: 'reply-failed', binding: binding.id, session: session.id, error: e.message });
-      // Only errors written for the operator are shown; anything else may carry paths or internals.
-      await reply(e instanceof ApiError || e.userFacing ? `⚠️ ${e.message}` : '⚠️ Could not deliver that — see the server log.');
+      // Only errors written for the operator are shown (a 4xx ApiError, like the API's error envelope);
+      // anything else may carry paths or internals.
+      const shown = (e instanceof ApiError && e.statusCode < 500) || e.userFacing;
+      await reply(shown ? `⚠️ ${e.message}` : '⚠️ Could not deliver that — see the server log.');
       return { error: e.message };
     }
   }
