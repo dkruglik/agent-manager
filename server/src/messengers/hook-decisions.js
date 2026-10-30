@@ -19,7 +19,7 @@ export class HookDecisions {
     if (signal?.aborted || !session || this.bridge.host.locked()) return null;
     // A card the approver cannot read in full has no buttons, so waiting would only stall the hook.
     if (item.choices?.length && !reviewable(item)) return null;
-    const bindings = this.bridge.store.bindings().filter((b) => b.approvals === true
+    const bindings = this.bridge.store.bindings().filter((b) => b.approvals === true && b.events.includes('input-required')
       && this.bridge.statuses.get(b.adapter)?.connected && this.bridge.sessionsFor(b, [session]).length);
     if (!bindings.length) return null;
     const key = `hook:${crypto.randomUUID()}`;

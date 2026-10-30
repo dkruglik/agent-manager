@@ -103,3 +103,16 @@ test('the decision timer does not keep the process alive', async () => {
   await t.bridge.stop();
   await waiting;
 });
+
+test('approval cards go only to bindings that include input-required', async () => {
+  const t = setup([{ events: ['finished'], approvals: true }, { events: ['input-required', 'finished'], approvals: true }]);
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  await flush();
+  assert.deepEqual(t.posts.map((p) => p.target.channel), ['C1']);
+  await t.bridge.stop();
+  await waiting;
+
+  const only = setup([{ events: ['finished'], approvals: true }]);
+  assert.equal(await only.bridge.awaitDecision('s1', hookItem(perm)), null, 'nothing qualifies, so the terminal keeps the dialog');
+  assert.equal(only.posts.length, 0);
+});

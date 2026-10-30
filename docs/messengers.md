@@ -104,11 +104,13 @@ terminal.
    `AM_PANE_PID`, as the input-required hook checks) — calls
    `POST /api/messengers/claude-hook?from=$AM_ID` with the payload and the
    pane's `AM_RUN_ID`. Only that pane's live launch is answered.
-3. If no connected binding with *allow approvals* covers the session, the
+3. If no connected binding with *allow approvals* and the *input-required*
+   event covers the session, the
    server answers `{output:null}` at once and the hook prints nothing, so
    Claude shows its normal dialog. Sessions without such a binding see no
    change apart from that one local request.
-4. Otherwise a card goes to every such binding. The first allowed answer
+4. Otherwise a card goes to every such binding (one that only sends
+   *finished* cards gets none). The first allowed answer
    becomes Claude's decision: approve once / deny with a message for a
    permission, or `updatedInput.answers` for a question. The other channels'
    cards close.
@@ -160,7 +162,7 @@ channel does not replay old answers). Card records expire after 7 days.
 
 | Route | |
 | --- | --- |
-| `GET /api/messengers` | Adapters (configured / connected / error) and bindings |
+| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts keep failing carries `lastError` (a Slack error code) and is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
