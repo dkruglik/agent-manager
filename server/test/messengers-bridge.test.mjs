@@ -81,3 +81,29 @@ test('a failed request lookup keeps typed cards open and posts nothing generic',
   await t.tick();
   assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'still open once lookups work again');
 });
+
+test('a corrupt messengers.json is set aside, not overwritten', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-corrupt-'));
+  const file = path.join(dir, 'messengers.json');
+  fs.writeFileSync(file, '{not json');
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  let store;
+  try { store = new BindingStore(file, { now: () => 4242 }); } finally { console.warn = warn; }
+  const aside = path.join(dir, 'messengers.json.corrupt-4242');
+  assert.equal(fs.readFileSync(aside, 'utf8'), '{not json');
+  assert.equal(fs.existsSync(file), false);
+  assert.deepEqual(store.bindings(), []);
+  assert.equal(warnings.length, 1);
+  store.putSeen('k', 'v');
+  assert.equal(fs.readFileSync(aside, 'utf8'), '{not json', 'a later write leaves the copy alone');
+
+  const noBindings = path.join(dir, 'other.json');
+  fs.writeFileSync(noBindings, '{"posted":{}}');
+  new BindingStore(noBindings, { now: () => 7 });
+  assert.ok(fs.existsSync(`${noBindings}.corrupt-7`), 'JSON without a bindings array is set aside too');
+
+  assert.deepEqual(new BindingStore(path.join(dir, 'missing.json')).bindings(), [], 'a missing file just starts empty');
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.startsWith('missing')), []);
+});

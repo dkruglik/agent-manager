@@ -59,10 +59,28 @@ export class BindingStore {
     this.file = file;
     this.now = now;
     this.data = { bindings: [], posted: {}, seen: {} };
+    this.load();
+  }
+
+  // A missing file is a first run. Anything else unreadable is kept aside, so
+  // the next persist() cannot overwrite what the operator might still recover.
+  load() {
+    let text;
+    try { text = fs.readFileSync(this.file, 'utf8'); } catch (e) {
+      if (e.code !== 'ENOENT') this.setAside(e);
+      return;
+    }
     try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (raw && Array.isArray(raw.bindings)) this.data = { bindings: raw.bindings, posted: raw.posted || {}, seen: raw.seen || {} };
-    } catch {}
+      const raw = JSON.parse(text);
+      if (!raw || !Array.isArray(raw.bindings)) throw new Error('no bindings array');
+      this.data = { bindings: raw.bindings, posted: raw.posted || {}, seen: raw.seen || {} };
+    } catch (e) { this.setAside(e); }
+  }
+
+  setAside(error) {
+    const aside = `${this.file}.corrupt-${this.now()}`;
+    try { fs.renameSync(this.file, aside); } catch {}
+    console.warn(`messengers: could not read ${this.file} (${error.message}); starting empty, kept as ${aside}`);
   }
 
   persist() {
