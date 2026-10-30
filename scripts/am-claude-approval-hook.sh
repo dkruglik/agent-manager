@@ -13,8 +13,9 @@ case "$AM_PORT" in '' | *[!0-9]*) exit 0 ;; esac
 command -v jq >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
-# Only this pane's root CLI: PermissionRequest also fires for background
-# subagents that cannot show a prompt, and a global config reaches them too.
+# Only this pane's own claude process: the guard filters other claude processes
+# that inherit the global config. In-process background subagents share
+# CLAUDE_PID, so they pass it and do reach chat (docs/messengers.md).
 [ "$CLAUDE_CODE_ENTRYPOINT" = "cli" ] || exit 0
 case "$CLAUDE_PID" in '' | *[!0-9]*) exit 0 ;; esac
 if [ "$CLAUDE_PID" != "$AM_PANE_PID" ]; then

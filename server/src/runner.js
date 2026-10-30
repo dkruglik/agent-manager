@@ -1379,7 +1379,13 @@ export async function codexRolloutForId(id) {
   return (await codexRolloutsSince(0)).find((item) => path.basename(item.p).endsWith(suffix))?.p || null;
 }
 
-// Register the SessionStart hook in $CLAUDE_CONFIG_DIR/settings.json. Merge,
+// Register Agent Manager's Claude hooks in $CLAUDE_CONFIG_DIR/settings.json,
+// and only when that variable is set. It adds: the SessionStart repin hook;
+// the input-required hook (Notification, plus the PostToolBatch, Stop,
+// SessionEnd, ElicitationResult and UserPromptSubmit events that clear it);
+// and the blocking chat-approval hook on PermissionRequest and on PreToolUse
+// for AskUserQuestion (timeout 150 s; it does nothing without an opted-in
+// binding, so the terminal dialog stays). Merge,
 // never replace: the file also holds permissions/model/theme. Idempotent — a
 // second boot finds the entry and writes nothing. A file that exists but does
 // not parse is left alone (clobbering the user's settings to install a hook

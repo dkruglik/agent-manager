@@ -6,8 +6,8 @@ import { BindingStore, validateBinding } from './store.js';
 import { hookItem, hookOutput } from './claude-approvals.js';
 import { SlackAdapter } from './adapters/slack.js';
 
-// Built-in messengers. An adapter is a plain object — see docs/messengers.md —
-// so adding Telegram or Discord is one file here and nothing in the bridge.
+// Built-in messengers. Any object implementing the adapter interface in
+// docs/messengers.md will do (Slack's is a class), so adding Telegram or Discord is one file here and nothing in the bridge.
 export const ADAPTERS = {
   slack: (config) => new SlackAdapter(config),
 };

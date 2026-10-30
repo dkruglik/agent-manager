@@ -19,7 +19,8 @@ answer from the chat:
 | `/am status` | Lists agents in scope and their state |
 
 A card closes itself when its dialog is answered anywhere else (terminal,
-reader, another chat). Clicking a closed card does nothing.
+reader, another chat). A closed card loses its buttons; a late click gets
+"This request is already closed."
 
 ## What can be answered from chat
 
@@ -100,8 +101,9 @@ setting, nothing is installed or the hook does nothing, and prompts stay in the
 terminal.
 
 1. Claude runs the hook with the pending tool call (or the questions).
-2. The hook — only in the pane's own `claude` process (`CLAUDE_PID` and
-   `AM_PANE_PID`, as the input-required hook checks) — calls
+2. The hook — only in the pane's own `claude` process (the same entrypoint and
+   `CLAUDE_PID`/`AM_PANE_PID` guard as the input-required hook, and only with
+   `AM_PORT` set and `AM_CLI=claude`) — calls
    `POST /api/messengers/claude-hook?from=$AM_ID` with the payload and the
    pane's `AM_RUN_ID`. Only that pane's live launch is answered.
 3. If no connected binding with *allow approvals* and the *input-required*
@@ -135,7 +137,7 @@ Limits:
 ## Security model
 
 - **Allowed users only.** A click or reply from anyone not on the binding's
-  list is ignored and logged. Being in the channel is not enough.
+  list is refused and logged. Being in the channel is not enough.
 - **Approvals are opt-in per binding.** Without it, permission cards show no
   buttons and a forged button value is refused, and Claude's blocking hook
   returns at once without a decision.
@@ -146,7 +148,15 @@ Limits:
 - **Tokens live in the environment**, never in `messengers.json`.
 - **Audit.** Binding changes go through the API and appear in the API log.
   Posted cards, answers, prompts and refusals are written to
-  `DATA_DIR/messengers.log.jsonl`.
+  `DATA_DIR/messengers.log.jsonl` (message text is never logged): `posted`,
+  `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
+  `user-not-allowed`, `no-session`, `locked`, `closed`, `untyped`,
+  `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
+  `hook-rejected`, `hook-response-lost`, and the failures `tick-failed`,
+  `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
+  `hook-post-failed`, `digest-failed`, `requests-failed`, plus the Slack
+  socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error` and
+  `socket-silent`.
 - Agent Manager still has no login of its own: anything that can reach the API
   can change bindings. The messenger does not widen that boundary — the bridge
   only answers dialogs and sends prompts for sessions a binding covers.
@@ -167,14 +177,14 @@ channel does not replay old answers). Card records expire after 7 days.
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
 | `POST /api/messengers/bindings/:id/test` | Posts a test card; `409 messenger-offline` when the messenger is not connected |
-| `POST /api/messengers/claude-hook?from=<session>` | Used by the Claude hook: `{runId, payload}` → `{output}` after at most 120 s; `409 conflict` unless `runId` is the pane's live launch |
+| `POST /api/messengers/claude-hook?from=<session>` | Used by the Claude hook: `{runId, payload}` → `{output}` after at most 120 s; `{output:null}` for a session that is not Claude; `409 conflict` unless `runId` is the pane's live launch; `400 invalid-input` for a bad body; `404 not-found` for an unknown session; `400 unknown-origin` when the request carries no known origin ([error contract](api-errors.md)) |
 
 Invalid input is `400 invalid-input` with `details[].field`; an unknown binding
 is `404 not-found` ([error contract](api-errors.md)).
 
 ## Adding a messenger
 
-An adapter is a class in `server/src/messengers/adapters/`, registered in
+An adapter is any object implementing the interface below (Slack's is a class), kept in `server/src/messengers/adapters/` and registered in
 `ADAPTERS` (`server/src/messengers/index.js`) with a factory that receives its
 section of `MESSENGERS` from `config.js`. Its tokens are read there, like every
 operator-facing setting. It knows nothing about agents:
@@ -210,15 +220,26 @@ option ids already fit), `reply_to_message_id` for threads and
 
 ## Tests
 
-`server/test/messengers.test.mjs` drives the bridge with a fake adapter and a
-fake host (baselines, settle window, redelivery, allow-list, group addressing,
-typed questions, opt-in approvals, cards closed elsewhere, the lock, restart),
-and the Slack adapter with a fake socket and `fetch` (envelope acks, bot-message
-filtering, slash-command replies, token use).
-`server/test/messengers-http.test.mjs` exercises the routes on a real server:
-the error envelope, admission, and that tokens reach neither a response nor the
-API log. `messengers-claude.test.mjs` covers the hook payload mapping and the
-bridge's wait (opt-in, timeout, abort, several channels), and
-`messengers-claude-hook.test.mjs` runs the hook script against a local server
-(guards, pass-through, silent failure) and its installation. No suite talks to
-Slack or runs a real Claude.
+One file per concern, all under `server/test/`; no suite talks to Slack or runs a
+real Claude.
+
+- `messengers.test.mjs`: the bridge with a fake adapter and host (baselines,
+  settle window, redelivery, allow-list, group addressing, typed questions,
+  opt-in approvals, cards closed elsewhere, the lock, restart) and the Slack
+  adapter with a fake socket and `fetch` (acks, bot filtering, slash commands).
+- `messengers-bridge.test.mjs`: failure paths (lookups, posts, transcript
+  reads), escaping and review limits of approval details, back-off.
+- `messengers-cards.test.mjs`: which buttons a card carries, and the
+  unreviewable-details refusal.
+- `messengers-replies.test.mjs`: what is said back in chat, what is logged,
+  answering a card once, and how an agent is addressed by name.
+- `messengers-store.test.mjs`: binding validation and what is kept on disk.
+- `messengers-slack.test.mjs`: the Slack socket (malformed frames, start/stop,
+  silent connections).
+- `messengers-claude.test.mjs`: the hook payload mapping and its output.
+- `messengers-hooks.test.mjs`: hook decisions on the bridge (opt-in, timeout,
+  abort, several channels, no leftover state).
+- `messengers-claude-hook.test.mjs`: the hook script against a local server
+  (guards, pass-through, silent failure) and its installation.
+- `messengers-http.test.mjs`: the routes on a real server (error envelope,
+  admission, tokens never reach a response or the API log).
