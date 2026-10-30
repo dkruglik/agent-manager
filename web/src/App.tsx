@@ -1057,7 +1057,7 @@ export default function App() {
   // Messenger cards link to `#session=<id>` (docs/messengers.md). The handler
   // is its own chunk: the entry has no room to carry it for every page load.
   useEffect(() => {
-    if (location.hash.includes('session=')) import('./lib/sessionLink').then((m) => m.openLinkedSession(tree.sessions));
+    if (location.hash.includes('session=')) import('./lib/sessionLink').then((m) => m.openLinkedSession(tree.sessions)).catch((e) => console.warn('session link:', e));
   }, [tree]);
   const activate = (ref: string) => {
     setActiveRef(ref);
