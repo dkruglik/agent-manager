@@ -10,6 +10,10 @@ import { WebSocket } from 'ws';
 
 const API = 'https://slack.com/api';
 const BACKOFF_MAX_MS = 60_000;
+// A socket can die without a close event (NAT, sleep). We ping, and any frame,
+// ping or pong proves it alive; two minutes of nothing means it is not.
+const PING_EVERY_MS = 30_000;
+const SILENT_AFTER_MS = 120_000;
 
 // Slack's mrkdwn is not Markdown: bold is *x*, links are <url|text>, and
 // &, < and > must be escaped. Good enough for agent replies; code survives.
@@ -98,8 +102,9 @@ function messageReply(p, botUser) {
 }
 
 export class SlackAdapter {
-  constructor({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout } = {}) {
-    Object.assign(this, { botToken, appToken, fetchImpl, WebSocketImpl, setTimer });
+  constructor({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+    Object.assign(this, { botToken, appToken, fetchImpl, WebSocketImpl, setTimer, clearTimer });
+    this.watch = { silent: null, ping: null };
     this.id = 'slack';
     this.capabilities = { buttons: true, threads: true, edit: true };
     this.socket = null;
@@ -143,16 +148,51 @@ export class SlackAdapter {
     if (!live()) return;
     const ws = new this.WebSocketImpl(url);
     this.socket = ws;
-    ws.on('message', (raw) => { this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.message })); });
-    ws.on('close', () => { if (this.socket === ws) this.reconnectLater('socket closed'); });
+    this.heard(ws);
+    this.schedulePing(ws);
+    for (const e of ['ping', 'pong']) ws.on(e, () => this.heard(ws));
+    ws.on('message', (raw) => { this.heard(ws); this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.message })); });
+    ws.on('close', () => { if (this.socket === ws) { this.unwatch(); this.reconnectLater('socket closed'); } });
     ws.on('error', (e) => this.hooks.log({ event: 'socket-error', error: e.message }));
+  }
+
+  timer(fn, ms) {
+    const t = this.setTimer(fn, ms);
+    t?.unref?.();
+    return t;
+  }
+
+  unwatch() {
+    this.clearTimer(this.watch.silent);
+    this.clearTimer(this.watch.ping);
+  }
+
+  // Anything from the socket restarts the silence clock.
+  heard(ws) {
+    this.clearTimer(this.watch.silent);
+    this.watch.silent = this.timer(() => {
+      if (this.socket !== ws) return;
+      this.hooks.log({ event: 'socket-silent' });
+      this.socket = null;
+      this.unwatch();
+      (ws.terminate || ws.close).call(ws);
+      this.reconnectLater('no frames for 2 minutes');
+    }, SILENT_AFTER_MS);
+  }
+
+  schedulePing(ws) {
+    this.watch.ping = this.timer(() => {
+      if (this.socket !== ws) return;
+      try { ws.ping(); } catch (e) { this.hooks.log({ event: 'ping-failed', error: e.message }); }
+      this.schedulePing(ws);
+    }, PING_EVERY_MS);
   }
 
   async onFrame(ws, raw) {
     let msg;
     try { msg = JSON.parse(String(raw)); } catch { this.hooks.log({ event: 'bad-frame' }); return; }
     if (msg.type === 'hello') { this.attempt = 0; this.setStatus(true); return; }
-    if (msg.type === 'disconnect') { this.socket = null; ws.close(); this.reconnectLater('refresh requested'); return; }
+    if (msg.type === 'disconnect') { this.socket = null; this.unwatch(); ws.close(); this.reconnectLater('refresh requested'); return; }
     if (!msg.envelope_id) return;
     const p = msg.payload || {};
     // Slack redelivers anything not acknowledged within 3 s, so ack first —
@@ -180,6 +220,7 @@ export class SlackAdapter {
     this.stopped = true;
     this.running = false;
     this.generation += 1;
+    this.unwatch();
     const ws = this.socket;
     this.socket = null;
     ws?.close();

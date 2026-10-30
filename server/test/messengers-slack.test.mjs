@@ -81,3 +81,28 @@ test('stopping while a connect is in flight opens no socket afterwards', async (
   await settle();
   assert.equal(FakeWs.all.length, 1, 'only the new start connected');
 });
+
+test('a socket that goes silent is dropped and reconnected', async () => {
+  const cleared = new Set();
+  const t = setup({ clearTimer: (h) => cleared.add(h) });
+  t.adapter.start(t.hooks);
+  await settle();
+  const ws = FakeWs.all[0];
+  ws.emit('message', Buffer.from('{"type":"hello"}'));
+  await settle();
+  const silent = t.timers.filter((x) => x.ms === 120_000);
+  const live = silent.at(-1);
+  assert.ok(cleared.has(silent[0]), 'each frame restarts the clock');
+  assert.ok(t.timers.every((x) => x.unrefd), 'timers never keep the process alive');
+  const ping = t.timers.find((x) => x.ms === 30_000);
+  ping.fn();
+  assert.equal(ws.pings, 1, 'pings every 30 s');
+  const before = t.timers.length;
+  live.fn();
+  assert.deepEqual(t.logs.at(-1), { event: 'socket-silent' });
+  assert.deepEqual(t.statuses.at(-1), { connected: false, error: 'no frames for 2 minutes' });
+  assert.ok(t.timers.length > before, 'a reconnect is scheduled');
+  t.timers.at(-1).fn();
+  await settle();
+  assert.equal(FakeWs.all.length, 2, 'reconnected');
+});
