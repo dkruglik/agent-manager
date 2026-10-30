@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { BindingStore } from '../src/messengers/store.js';
-import { hookItem } from '../src/messengers/claude-approvals.js';
+import { hookItem, hookOutput } from '../src/messengers/claude-approvals.js';
 
 // Hook decisions on the bridge: what is kept while one is in flight, which
 // bindings get its cards, and how it ends.
@@ -115,4 +115,49 @@ test('approval cards go only to bindings that include input-required', async () 
   const only = setup([{ events: ['finished'], approvals: true }]);
   assert.equal(await only.bridge.awaitDecision('s1', hookItem(perm)), null, 'nothing qualifies, so the terminal keeps the dialog');
   assert.equal(only.posts.length, 0);
+});
+
+const pending = (promise) => Promise.race([promise.then(() => false), flush().then(() => true)]);
+
+test('a user who is not allowed cannot approve a pending hook card', async () => {
+  const t = setup();
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  await flush();
+  const [key] = t.bridge.pending.keys();
+  const click = { channel: 'C0', ts: t.posts[0].ref.ts, thread: null, user: { id: 'U9', name: 'mallory' }, messageId: 'm9', optionId: 'd:accept' };
+  assert.deepEqual(await t.bridge.handleReply('slack', click), { refused: 'user-not-allowed' });
+  assert.equal(await pending(waiting), true, 'the hook is still waiting');
+  assert.ok(t.bridge.pending.has(key));
+  assert.equal(t.bridge.store.posted(`b0|s1|${key}`).status, 'open', 'the card stays open');
+  assert.equal(t.updates.length, 0);
+  assert.match(t.posts.at(-1).card.body, /<@U9> is not allowed to answer for this agent\./);
+  await t.bridge.stop();
+  assert.equal(await waiting, null);
+});
+
+test('a two-question Claude dialog is answered one part at a time', async () => {
+  const questions = [
+    { question: 'Which DB?', options: [{ label: 'pg' }, { label: 'sqlite' }] },
+    { question: 'Which lang?', options: [{ label: 'js' }, { label: 'ts' }] },
+  ];
+  const item = hookItem({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } });
+  const t = setup();
+  const waiting = t.bridge.awaitDecision('s1', item);
+  await flush();
+  const [key] = t.bridge.pending.keys();
+  const card = t.posts[0].ref;
+  const click = { channel: 'C0', ts: card.ts, thread: null, user, messageId: 'm1', optionId: 'q:0:0' };
+  assert.deepEqual(await t.bridge.handleReply('slack', click), { partial: true });
+  assert.equal(await pending(waiting), true, 'one answer of two does not settle the hook');
+  assert.deepEqual(t.bridge.store.posted(`b0|s1|${key}`).partial, { q0: 'pg' });
+  assert.equal(t.bridge.store.posted(`b0|s1|${key}`).status, 'open');
+  assert.equal(t.updates.length, 1, 'the card is refreshed');
+  assert.equal(t.updates[0].ref.ts, card.ts);
+
+  const reply = { channel: 'C0', ts: 'r1', thread: card.ts, user, messageId: 'm2', text: 'rust' };
+  assert.deepEqual(await t.bridge.handleReply('slack', reply), { answered: key });
+  const decided = await waiting;
+  assert.deepEqual(decided.response, { answers: { q0: 'pg', q1: 'rust' } });
+  assert.deepEqual(hookOutput(item, decided.response, { by: decided.by }).hookSpecificOutput.updatedInput.answers,
+    { 'Which DB?': 'pg', 'Which lang?': 'rust' });
 });
