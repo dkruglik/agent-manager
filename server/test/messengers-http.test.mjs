@@ -128,6 +128,8 @@ try {
   assert.equal(r.body.details?.[0]?.field, 'payload');
   r = await hook(hooked, { payload: permission });
   assert.equal(r.body.details?.[0]?.field, 'runId');
+  assert.deepEqual(hookLog().filter((e) => e.event === 'hook-rejected' && e.status === 400).map(({ session, reason }) => ({ session, reason })),
+    [{ session: hooked, reason: 'invalid-input' }, { session: hooked, reason: 'invalid-input' }], 'a bad body is logged as rejected too');
   r = await hook('s_unknown', { runId: 'x', payload: permission });
   // The origin middleware resolves ?from first and refuses an unknown session
   // before the route's own 404 can be reached.

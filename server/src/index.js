@@ -3972,21 +3972,26 @@ api.put('/api/messengers/bindings/:id', (req, res) => res.json(messengers.update
 api.delete('/api/messengers/bindings/:id', (req, res) => res.json(messengers.remove(req.params.id)));
 api.post('/api/messengers/bindings/:id/test', async (req, res) => res.json(await messengers.test(req.params.id)));
 api.post('/api/messengers/claude-hook', async (req, res) => {
-  const { runId, payload } = req.body || {};
-  if (typeof runId !== 'string' || !runId) throw invalid('runId', 'must be a non-empty string.');
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid('payload', 'must be an object.');
   const from = String(req.query.from || '').trim();
-  const rejected = (status, reason, message) => {
-    messengers.log({ event: 'hook-rejected', session: from.slice(0, 128), status, reason });
-    return new ApiError(status, reason, message);
+  // The hook script reports a refusal only on stderr, which Claude hides: log every one here.
+  const rejected = (error) => {
+    const known = error instanceof ApiError;
+    messengers.log({ event: 'hook-rejected', session: from.slice(0, 128), status: known ? error.statusCode : 500, reason: known ? error.code : 'internal-error' });
+    return error;
   };
+  const { runId, payload } = req.body || {};
+  if (typeof runId !== 'string' || !runId) throw rejected(invalid('runId', 'must be a non-empty string.'));
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw rejected(invalid('payload', 'must be an object.'));
   const session = store.get(from);
-  if (!session) throw rejected(404, 'not-found', 'Session not found.');
+  if (!session) throw rejected(new ApiError(404, 'not-found', 'Session not found.'));
   if (session.cli !== 'claude') return res.json({ output: null });
-  if (runIdOf(session.id) !== runId) throw rejected(409, 'conflict', 'This launch is no longer running.');
+  if (runIdOf(session.id) !== runId) throw rejected(new ApiError(409, 'conflict', 'This launch is no longer running.'));
   const controller = new AbortController();
   res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-  const result = await messengers.claudeHook({ sessionId: session.id, payload, signal: controller.signal });
+  let result;
+  try { result = await messengers.claudeHook({ sessionId: session.id, payload, signal: controller.signal }); } catch (e) {
+    throw rejected(e);
+  }
   // The hook went away while the decision was made: the answer reaches nobody.
   if (res.destroyed) messengers.log({ event: 'hook-response-lost', session: session.id, decided: !!result.output });
   res.json(result);

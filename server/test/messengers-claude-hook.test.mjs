@@ -85,10 +85,13 @@ for (const [name, rep] of [
   r = await run(permission);
   assert.equal(r.status, 0, name);
   assert.equal(r.stdout, '', name);
+  if (name === '409') assert.match(r.stderr, /am-claude-approval-hook: .*409/, 'a refused request is reported on stderr, which Claude shows only in verbose mode');
+  else assert.equal(r.stderr, '', `${name}: nothing on stderr`);
 }
 r = await run(permission, { ...baseEnv(), AM_PORT: String(await freePort()) });
 assert.equal(r.status, 0);
-assert.equal(r.stdout, '', 'unreachable server is silent');
+assert.equal(r.stdout, '', 'unreachable server prints no decision');
+assert.match(r.stderr, /am-claude-approval-hook: /, 'and says why on stderr');
 
 // AskUserQuestion vs other PreToolUse
 const answer = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { answers: { q: 'a' } } } };

@@ -98,7 +98,10 @@ On a VPS or a local install, set it yourself, for example to `~/.claude`, before
 starting the server ([configuration table](development.md#configuration)). The
 hook script needs `jq` and `curl` on `PATH`; without either, or without the
 setting, nothing is installed or the hook does nothing, and prompts stay in the
-terminal.
+terminal. When the request to Agent Manager fails (unreachable, or refused with
+an HTTP error), the hook prints nothing on stdout, so the terminal dialog stays,
+and writes one line on stderr, which Claude shows only in verbose mode; the
+server logs every refusal as `hook-rejected` with its status and reason.
 
 1. Claude runs the hook with the pending tool call (or the questions).
 2. The hook — only in the pane's own `claude` process (the same entrypoint and
@@ -258,6 +261,6 @@ real Claude.
 - `messengers-hooks.test.mjs`: hook decisions on the bridge (opt-in, timeout,
   abort, several channels, no leftover state).
 - `messengers-claude-hook.test.mjs`: the hook script against a local server
-  (guards, pass-through, silent failure) and its installation.
+  (guards, pass-through, failures reported on stderr only) and its installation.
 - `messengers-http.test.mjs`: the routes on a real server (error envelope,
   admission, tokens never reach a response or the API log).

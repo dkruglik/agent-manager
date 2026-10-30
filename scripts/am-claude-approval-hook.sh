@@ -1,7 +1,7 @@
 #!/bin/sh
 # Blocking Claude Code hook: asks Agent Manager for a chat decision on a
 # permission dialog or an AskUserQuestion. Any guard failure or error exits 0
-# with no output, which leaves Claude's normal terminal dialog in place.
+# with nothing on stdout, which leaves Claude's normal terminal dialog in place.
 
 [ -n "$AM_ID" ] || exit 0
 case "$AM_ID" in *[!a-zA-Z0-9_-]*) exit 0 ;; esac
@@ -36,12 +36,19 @@ case "$(jq -r '.hook_event_name // empty' "$payload" 2>/dev/null)" in
   *) exit 0 ;;
 esac
 
-jq -n --arg runId "$AM_RUN_ID" --slurpfile payload "$payload" \
+# A failure is reported on stderr, which Claude shows only in verbose mode, so
+# the terminal dialog is unaffected; stdout stays empty.
+code=$(jq -n --arg runId "$AM_RUN_ID" --slurpfile payload "$payload" \
   '{runId:$runId,payload:$payload[0]}' 2>/dev/null \
-  | curl -sS --fail --max-time 135 -X POST \
+  | curl -s --max-time 135 -X POST \
       -H 'X-AM-Request: 1' -H 'content-type: application/json' \
-      --data-binary @- -o "$response" \
-      "http://${AM_HOST:-127.0.0.1}:$AM_PORT/api/messengers/claude-hook?from=$AM_ID" >/dev/null 2>&1 || exit 0
+      --data-binary @- -o "$response" -w '%{http_code}' \
+      "http://${AM_HOST:-127.0.0.1}:$AM_PORT/api/messengers/claude-hook?from=$AM_ID")
+rc=$?
+if [ "$rc" -ne 0 ] || [ "$code" != 200 ]; then
+  echo "am-claude-approval-hook: no chat decision (curl exit $rc, HTTP $code); answer in the terminal" >&2
+  exit 0
+fi
 
 jq -e '.output | type == "object"' "$response" >/dev/null 2>&1 || exit 0
 jq -c .output "$response" 2>/dev/null
