@@ -217,3 +217,68 @@ test('a Slack API error carries a public message; a network error does not', asy
   const net = await down.adapter.post({ channel: 'C1' }, { title: 't' }).catch((e) => e);
   assert.equal(net.publicMessage, undefined);
 });
+
+// Timers that honour clearTimer, so firing every live one shows what would really run.
+function liveTimers(t) {
+  const cleared = new Set();
+  t.adapter.clearTimer = (h) => cleared.add(h);
+  return { live: () => t.timers.filter((x) => !cleared.has(x)), silent: () => t.timers.filter((x) => x.ms === 120_000 && !cleared.has(x)) };
+}
+
+test('any frame, ping or pong restarts the silence clock', async () => {
+  const t = setup();
+  const clock = liveTimers(t);
+  t.adapter.start(t.hooks);
+  await firstSocket();
+  const ws = FakeWs.all[0];
+  for (const fire of [() => ws.emit('pong'), () => ws.emit('ping'), () => ws.emit('message', Buffer.from('{"type":"hello"}'))]) {
+    const [before] = clock.silent();
+    fire();
+    const after = clock.silent();
+    assert.equal(after.length, 1, 'one silence clock at a time');
+    assert.notEqual(after[0], before, 'a new clock replaced the old one');
+  }
+  await waitFor(() => lastStatus(t)?.connected === true, 'hello');
+  clock.silent()[0].fn();
+  assert.deepEqual(t.logs.at(-1), { event: 'socket-silent' });
+});
+
+test('a late close or frame on a replaced socket leaves the new one alone', async () => {
+  const t = setup();
+  const clock = liveTimers(t);
+  t.adapter.start(t.hooks);
+  await firstSocket();
+  const old = FakeWs.all[0];
+  old.emit('message', Buffer.from('{"type":"disconnect"}'));
+  const fresh = await reconnect(t);
+  fresh.emit('message', Buffer.from('{"type":"hello"}'));
+  await waitFor(() => lastStatus(t)?.connected === true, 'hello');
+  const [watching] = clock.silent();
+  const scheduled = reconnects(t).length;
+  old.emit('message', Buffer.from('{"type":"hello"}'));
+  old.emit('pong');
+  old.emit('message', Buffer.from('{"type":"disconnect"}'));
+  old.emit('close');
+  await drained();
+  assert.deepEqual(clock.silent(), [watching], 'the new socket keeps its silence clock');
+  assert.equal(reconnects(t).length, scheduled, 'no reconnect for the old socket');
+  assert.equal(lastStatus(t).connected, true);
+  assert.equal(t.adapter.socket, fresh);
+});
+
+test('stop() then start() connects once; a reconnect left from before stop does nothing', async () => {
+  const t = setup();
+  t.adapter.start(t.hooks);
+  await firstSocket();
+  FakeWs.all[0].close(); // schedules a reconnect
+  const leftover = reconnects(t).at(-1);
+  await t.adapter.stop();
+  t.adapter.start(t.hooks);
+  await waitFor(() => FakeWs.all.length === 2, 'the restart');
+  FakeWs.all[1].emit('message', Buffer.from('{"type":"hello"}'));
+  await waitFor(() => lastStatus(t)?.connected === true, 'hello');
+  leftover.fn();
+  await drained();
+  assert.equal(FakeWs.all.length, 2, 'the old reconnect opened no second socket');
+  assert.equal(t.adapter.socket, FakeWs.all[1]);
+});

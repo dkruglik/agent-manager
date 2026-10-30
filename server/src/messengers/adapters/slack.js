@@ -137,7 +137,11 @@ export class SlackAdapter {
     if (this.stopped) return;
     this.setStatus(false, reason);
     const delay = Math.min(BACKOFF_MAX_MS, 1000 * 2 ** Math.min(this.attempt++, 6));
-    this.setTimer(() => { this.connect().catch((e) => this.reconnectLater(e.message)); }, delay);
+    // A stop() since makes this retry stale, even if start() ran again after it.
+    const generation = this.generation;
+    this.setTimer(() => {
+      if (generation === this.generation) this.connect().catch((e) => this.reconnectLater(e.message));
+    }, delay);
   }
 
   async connect() {
@@ -169,8 +173,9 @@ export class SlackAdapter {
     this.clearTimer(this.watch.ping);
   }
 
-  // Anything from the socket restarts the silence clock.
+  // Anything from the current socket restarts the silence clock; a replaced one is ignored.
   heard(ws) {
+    if (this.socket !== ws) return;
     this.clearTimer(this.watch.silent);
     this.watch.silent = this.timer(() => {
       if (this.socket !== ws) return;
@@ -194,7 +199,11 @@ export class SlackAdapter {
     let msg;
     try { msg = JSON.parse(String(raw)); } catch { this.hooks.log({ event: 'bad-frame' }); return; }
     if (msg.type === 'hello') { this.attempt = 0; this.setStatus(true); return; }
-    if (msg.type === 'disconnect') { this.socket = null; this.unwatch(); ws.close(); this.reconnectLater('refresh requested'); return; }
+    if (msg.type === 'disconnect') {
+      if (this.socket !== ws) return; // already replaced
+      this.socket = null; this.unwatch(); ws.close(); this.reconnectLater('refresh requested');
+      return;
+    }
     if (!msg.envelope_id) return;
     const p = msg.payload || {};
     // Slack redelivers anything not acknowledged within 3 s, so ack first —
