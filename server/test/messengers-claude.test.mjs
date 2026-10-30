@@ -1,17 +1,8 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { hookItem, hookOutput } from '../src/messengers/claude-approvals.js';
-import { MessengerBridge } from '../src/messengers/bridge.js';
-import { BindingStore } from '../src/messengers/store.js';
+import { askPayload as ask, hookBridge, user } from './messengers-fixtures.mjs';
 
 const perm = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls -la' } };
-const ask = (questions) => ({
-  hook_event_name: 'PreToolUse',
-  tool_name: 'AskUserQuestion',
-  tool_input: { questions, metadata: { source: 'x' } },
-});
 const q1 = { question: 'Which DB?', header: 'DB', options: [{ label: 'pg', description: 'Postgres' }, { label: 'sqlite' }] };
 const q2 = { question: 'Which lang?', options: [{ label: 'js' }, { label: 'ts' }] };
 
@@ -85,66 +76,8 @@ assert.equal(hookOutput({ event: 'Other' }, { decision: 'accept' }), null);
 assert.equal(hookOutput(null, {}), null);
 
 // ---------- awaitDecision: the bridge waits for a chat decision on a hook item ----------
-function fakeAdapter() {
-  const posts = [];
-  const updates = [];
-  let n = 0;
-  return {
-    posts, updates,
-    configured: () => true,
-    start(h) { h.onStatus({ connected: true, error: null }); },
-    async post(target, card) { const ref = { channel: target.channel, ts: `t${++n}` }; posts.push({ target, card, ref }); return ref; },
-    async update(ref, card) { updates.push({ ref, card }); },
-  };
-}
+const setup = ({ approvals = [true], connected = true } = {}) => hookBridge({ bindings: approvals.map((on) => ({ approvals: on })), connected });
 
-function fakeHost() {
-  const h = {
-    list: [{ id: 's1', name: 'alpha', cli: 'claude', state: 'working', inputRequired: null }],
-    answers: [],
-    isLocked: false,
-    sessions: () => h.list.map((s) => ({ ...s })),
-    groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => h.isLocked,
-    link: (s) => `http://am/#session=${s.id}`,
-    requests: async () => [],
-    digest: async () => null,
-    answer: async (s, key, response) => { h.answers.push({ id: s.id, key, response }); },
-    prompt: async () => {},
-  };
-  return h;
-}
-
-function fakeTimers() {
-  const timers = new Map();
-  let n = 0;
-  return {
-    timers,
-    setTimer: (fn, ms) => { timers.set(++n, { fn, ms }); return n; },
-    clearTimer: (id) => { timers.delete(id); },
-    fire: (id) => { const t = timers.get(id); timers.delete(id); t.fn(); },
-  };
-}
-
-function setup({ approvals = [true], connected = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-claude-'));
-  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => 1 });
-  const host = fakeHost();
-  const slack = fakeAdapter();
-  const clock = fakeTimers();
-  const bridge = new MessengerBridge({
-    host, store, adapters: new Map([['slack', slack]]), tickMs: 1e9, settleMs: 0, digestEveryMs: 0,
-    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
-  });
-  approvals.forEach((on, i) => store.putBinding({
-    id: `b${i}`, adapter: 'slack', target: { channel: `C${i}` }, scope: { type: 'group', id: 'g1' },
-    events: ['input-required'], allowedUsers: ['U1'], approvals: on, createdAt: 'x',
-  }));
-  bridge.statuses.set('slack', { connected, error: null });
-  return { bridge, host, slack, store, clock };
-}
-
-const user = { id: 'U1', name: 'alice' };
 const click = (ref, optionId, n) => ({ channel: ref.channel, ts: ref.ts, thread: null, user, messageId: `m${n}`, optionId });
 const labels = (card) => card.options.map((o) => o.label);
 const lastUpdate = (slack) => slack.updates.at(-1).card;

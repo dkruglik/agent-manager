@@ -209,15 +209,11 @@ test('a binding whose posts keep failing is backed off, reported, and cleared on
   await t.tick(1000);
   assert.equal(attempts, 3);
   assert.equal(t.logs.filter((e) => e.event === 'tick-failed').length, 3, 'one log line per attempt, not per tick');
-  for (let i = 0; i < 10; i++) t.bridge.noteOutcome({ id: 'b0' }, new Error('x'));
-  assert.equal(t.bridge.failing.get('b0').retryAt - t.bridge.now(), 300_000, 'capped at 5 minutes');
-  t.bridge.waitingSince.clear(); // a long wait leaves the look-for window; start a new one
-
   const real = fakeAdapter();
   t.slack.post = real.post;
-  await t.tick(300_000);
+  await t.tick(20_000);
+  assert.equal(real.posts.length, 1, 'posted once the channel works again');
   assert.equal(t.bridge.lastError('b0'), null, 'cleared by a success');
-  assert.equal(t.bridge.failing.size, 0);
 });
 
 test('a request lookup that keeps failing backs the binding off like a failed post', async () => {
@@ -234,6 +230,11 @@ test('a request lookup that keeps failing backs the binding off like a failed po
   assert.equal(lookups, 2, 'retried after 5 s');
   assert.equal(t.logs.filter((e) => e.event === 'requests-failed').length, 2, 'one log line per attempt, not per tick');
   assert.equal(t.slack.posts.length, 0, 'nothing generic posted for an unknown dialog');
+  for (let i = 0; i < 10; i++) t.bridge.noteOutcome({ id: 'b0' }, new Error('x'));
+  await t.tick(299_999);
+  assert.equal(lookups, 2, 'still backing off just short of 5 minutes');
+  await t.tick(1);
+  assert.equal(lookups, 3, 'the wait is capped at 5 minutes');
 });
 
 test('lastError shows only what an adapter marked public, never paths or network details', async () => {

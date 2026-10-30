@@ -1,57 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { MessengerBridge } from '../src/messengers/bridge.js';
-import { BindingStore } from '../src/messengers/store.js';
 import { hookItem, hookOutput } from '../src/messengers/claude-approvals.js';
+import { flush, hookBridge, permissionPayload as perm, user } from './messengers-fixtures.mjs';
 
 // Hook decisions on the bridge: what is kept while one is in flight, which
 // bindings get its cards, and how it ends.
 
-const perm = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } };
-const flush = () => new Promise((r) => setImmediate(r));
-const user = { id: 'U1', name: 'alice' };
+const setup = (bindings = [{}]) => hookBridge({ bindings });
 
-function setup(bindings = [{ events: ['input-required'], approvals: true }]) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-hooks-'));
-  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => 1 });
-  const host = {
-    sessions: () => [{ id: 's1', name: 'alpha', cli: 'claude', state: 'working', inputRequired: null }],
-    groupOf: () => ({ id: 'g1', name: 'proj' }), locked: () => false, link: () => null,
-    requests: async () => [], digest: async () => null, answer: async () => {}, prompt: async () => {},
-  };
-  const posts = [];
-  const updates = [];
-  const slack = {
-    configured: () => true, start() {}, stop: async () => {},
-    async post(target, card) { const ref = { channel: target.channel, ts: `t${posts.length + 1}` }; posts.push({ target, card, ref }); return ref; },
-    async update(ref, card) { updates.push({ ref, card }); },
-  };
-  const timers = new Map();
-  const logs = [];
-  let n = 0;
-  const bridge = new MessengerBridge({
-    host, store, adapters: new Map([['slack', slack]]), tickMs: 1e9, log: (e) => logs.push(e),
-    setTimer: (fn, ms) => { timers.set(++n, { fn, ms }); return n; }, clearTimer: (id) => { timers.delete(id); },
-  });
-  bindings.forEach((b, i) => store.putBinding({
-    id: `b${i}`, adapter: 'slack', target: { channel: `C${i}` }, scope: { type: 'group', id: 'g1' },
-    allowedUsers: ['U1'], createdAt: 'x', ...b,
-  }));
-  bridge.statuses.set('slack', { connected: true, error: null });
-  return { bridge, posts, updates, timers, logs, slack };
-}
-
-test('a settled hook decision leaves no text behind', async () => {
+test('a settled hook decision closes its card, answered or timed out', async () => {
   const answered = setup();
   const waiting = answered.bridge.awaitDecision('s1', hookItem(perm));
   await flush();
   const click = { channel: 'C0', ts: answered.posts[0].ref.ts, thread: null, user, messageId: 'm1', optionId: 'd:accept' };
   await answered.bridge.handleReply('slack', click);
   assert.equal((await waiting).by, 'alice');
-  assert.equal(answered.bridge.hooks.settledText.size, 0, 'answered');
+  assert.equal(answered.updates.at(-1).card.resolved.text, 'Approve once — by alice', 'answered');
+  assert.ok(answered.bridge.store.allPosted().every(([, p]) => p.status === 'closed'));
 
   const timedOut = setup();
   const late = timedOut.bridge.awaitDecision('s1', hookItem(perm));
@@ -59,7 +24,8 @@ test('a settled hook decision leaves no text behind', async () => {
   timedOut.timers.values().next().value.fn();
   assert.equal(await late, null);
   await flush();
-  assert.equal(timedOut.bridge.hooks.settledText.size, 0, 'timed out');
+  assert.equal(timedOut.updates.at(-1).card.resolved.text, 'No answer in time — answer in the terminal.', 'timed out');
+  assert.ok(timedOut.bridge.store.allPosted().every(([, p]) => p.status === 'closed'));
 });
 
 test('a decision settled while its card is still being posted closes that card with the text', async () => {
@@ -75,7 +41,6 @@ test('a decision settled while its card is still being posted closes that card w
   await flush();
   await flush();
   assert.equal(t.updates.at(-1).card.resolved.text, 'No answer in time — answer in the terminal.');
-  assert.equal(t.bridge.hooks.settledText.size, 0);
 });
 
 test('stop settles every waiting hook decision with null and starts no second interval', async () => {

@@ -7,8 +7,7 @@ import { reviewable } from './cards.js';
 export class HookDecisions {
   constructor(bridge) {
     this.bridge = bridge;
-    this.pending = new Map();      // hook key → {resolve, timer, sessionId, session, detach}
-    this.settledText = new Map();  // hook key → the text its cards were closed with, while its post is in flight
+    this.pending = new Map(); // hook key → {resolve, timer, sessionId, session, detach, settledText}
   }
 
   // Waits for a chat decision on a Claude hook item. Resolves {response, by}
@@ -30,30 +29,29 @@ export class HookDecisions {
       signal?.addEventListener('abort', onAbort, { once: true });
       timer?.unref?.();
       const entry = {
-        resolve, sessionId, session, posting: true, timer,
+        resolve, sessionId, session, timer, settledText: null,
         detach: () => signal?.removeEventListener('abort', onAbort),
       };
       this.pending.set(key, entry);
-      this.postHookCards(bindings, session, withKey)
+      this.postHookCards(bindings, entry, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
         .catch((e) => {
           this.bridge.log({ event: 'hook-post-failed', key, session: sessionId, binding: e.binding, adapter: e.adapter, error: e.message });
           this.settle(key, null, 'Could not be posted.');
-        })
-        .finally(() => { entry.posting = false; this.settledText.delete(key); });
+        });
     });
   }
 
-  async postHookCards(bindings, session, item) {
+  async postHookCards(bindings, entry, item) {
     for (const binding of bindings) {
       let k;
       let p;
-      try { [k, p] = await this.bridge.postInput(binding, session, item); } catch (e) {
+      try { [k, p] = await this.bridge.postInput(binding, entry.session, item); } catch (e) {
         throw Object.assign(e, { binding: binding.id, adapter: binding.adapter });
       }
       // Settled while this post was in flight: settle() could not see the card yet.
       if (!this.pending.has(item.key)) {
-        await this.bridge.closeCard(k, p, session, this.settledText.get(item.key) || 'No longer waiting — answer in the terminal.');
+        await this.bridge.closeCard(k, p, entry.session, entry.settledText || 'No longer waiting — answer in the terminal.');
         return;
       }
     }
@@ -65,8 +63,7 @@ export class HookDecisions {
     const entry = this.pending.get(key);
     if (!entry) return;
     this.pending.delete(key);
-    // Only a card still being posted needs the text, and nothing else would clear it.
-    if (entry.posting) this.settledText.set(key, text);
+    entry.settledText = text; // for a card still being posted, which settle() cannot see yet
     this.bridge.clearTimer(entry.timer);
     entry.detach();
     entry.resolve(result);
