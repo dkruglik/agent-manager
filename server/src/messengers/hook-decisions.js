@@ -8,7 +8,7 @@ export class HookDecisions {
   constructor(bridge) {
     this.bridge = bridge;
     this.pending = new Map();      // hook key → {resolve, timer, sessionId, session, detach}
-    this.settledText = new Map();  // hook key → the text its cards were closed with
+    this.settledText = new Map();  // hook key → the text its cards were closed with, while its post is in flight
   }
 
   // Waits for a chat decision on a Claude hook item. Resolves {response, by}
@@ -25,7 +25,7 @@ export class HookDecisions {
     const key = `hook:${crypto.randomUUID()}`;
     const withKey = { ...item, key };
     return new Promise((resolve) => {
-      const entry = { resolve, sessionId, session, timer: null, detach: () => {} };
+      const entry = { resolve, sessionId, session, posting: true, timer: null, detach: () => {} };
       this.pending.set(key, entry);
       const timer = this.bridge.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
       const onAbort = () => this.settle(key, null, 'Answered in the terminal.');
@@ -34,7 +34,7 @@ export class HookDecisions {
       this.postHookCards(bindings, session, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
         .catch((e) => { this.bridge.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); })
-        .finally(() => this.settledText.delete(key));
+        .finally(() => { entry.posting = false; this.settledText.delete(key); });
     });
   }
 
@@ -62,7 +62,8 @@ export class HookDecisions {
     const entry = this.pending.get(key);
     if (!entry) return;
     this.pending.delete(key);
-    this.settledText.set(key, text);
+    // Only a card still being posted needs the text, and nothing else would clear it.
+    if (entry.posting) this.settledText.set(key, text);
     this.bridge.clearTimer(entry.timer);
     entry.detach();
     entry.resolve(result);
