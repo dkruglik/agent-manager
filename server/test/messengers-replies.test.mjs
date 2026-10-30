@@ -143,3 +143,18 @@ test('an agent is addressed only with "name:" or "@name", not by a bare first wo
   assert.equal(byName('alpha hello there'), null, 'a message that merely starts with an agent name is not addressed to it');
   assert.equal(byName('alpha'), null);
 });
+
+test('a top-level channel message prompts the one session-scoped binding, and is ignored when two compete', async () => {
+  const t = setup();
+  const prompts = [];
+  t.host.prompt = async (s, body) => { prompts.push({ id: s.id, body }); };
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'run the tests')), { prompted: 's1' });
+  assert.deepEqual(prompts, [{ id: 's1', body: 'run the tests' }]);
+
+  t.store.putBinding({
+    id: 'b1', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'session', id: 's1' },
+    events: ['input-required'], allowedUsers: ['U1'], approvals: false, createdAt: 'x',
+  });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { ignored: 'no-target' });
+  assert.equal(prompts.length, 1, 'nothing was sent to either session');
+});
