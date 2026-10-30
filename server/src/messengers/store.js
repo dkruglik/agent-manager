@@ -16,6 +16,12 @@ const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 // A card posted for a request that never resolves would otherwise be kept forever.
 const POSTED_MAX_AGE_MS = 7 * 24 * 3600_000;
 
+// A cheap shape check for what was read from disk; validateBinding is the strict one for input.
+const wellFormed = (b) => !!b && typeof b === 'object' && typeof b.id === 'string' && !!b.id
+  && typeof b.adapter === 'string' && typeof b.target?.channel === 'string'
+  && SCOPES.has(b.scope?.type) && typeof b.scope?.id === 'string'
+  && Array.isArray(b.events) && Array.isArray(b.allowedUsers) && typeof b.approvals === 'boolean';
+
 const text = (v, max) => typeof v === 'string' ? v.trim().slice(0, max) : '';
 
 export function validateBinding(input, { adapters, existing = null, scopeExists = () => true } = {}) {
@@ -75,7 +81,11 @@ export class BindingStore {
     try {
       const raw = JSON.parse(text);
       if (!raw || !Array.isArray(raw.bindings)) throw new Error('no bindings array');
-      this.data = { bindings: raw.bindings, posted: raw.posted || {}, seen: raw.seen || {} };
+      const bindings = raw.bindings.filter(wellFormed);
+      if (bindings.length !== raw.bindings.length) {
+        console.warn(`messengers: ignored ${raw.bindings.length - bindings.length} malformed binding(s) in ${this.file}`);
+      }
+      this.data = { bindings, posted: raw.posted || {}, seen: raw.seen || {} };
     } catch (e) { this.setAside(e); }
   }
 
