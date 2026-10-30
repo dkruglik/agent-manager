@@ -106,3 +106,70 @@ test('a socket that goes silent is dropped and reconnected', async () => {
   await settle();
   assert.equal(FakeWs.all.length, 2, 'reconnected');
 });
+
+async function waitFor(predicate, what) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+const reconnects = (t) => t.timers.filter((x) => x.ms !== 30_000 && x.ms !== 120_000);
+const lastStatus = (t) => t.statuses.at(-1);
+
+// Fires the newest reconnect timer and waits for the socket it opens.
+async function reconnect(t) {
+  const sockets = FakeWs.all.length;
+  reconnects(t).at(-1).fn();
+  await waitFor(() => FakeWs.all.length === sockets + 1, 'the reconnect');
+  return FakeWs.all.at(-1);
+}
+
+test('a closed socket schedules reconnects with exponential delay capped at 60 s', async () => {
+  const t = setup();
+  t.adapter.start(t.hooks);
+  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  let ws = FakeWs.all[0];
+  const delays = [];
+  for (let i = 0; i < 9; i++) {
+    ws.close();
+    assert.deepEqual(lastStatus(t), { connected: false, error: 'socket closed' });
+    delays.push(reconnects(t).at(-1).ms);
+    ws = await reconnect(t);
+  }
+  assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16_000, 32_000, 60_000, 60_000, 60_000]);
+});
+
+test('a disconnect frame reconnects like a close, and hello resets the delay', async () => {
+  const t = setup();
+  t.adapter.start(t.hooks);
+  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  let ws = FakeWs.all[0];
+  const frame = (msg) => ws.emit('message', Buffer.from(JSON.stringify(msg)));
+  const delays = [];
+  for (let i = 0; i < 3; i++) {
+    frame({ type: 'disconnect', reason: 'refresh_requested' });
+    await waitFor(() => lastStatus(t)?.error === 'refresh requested', 'the disconnect');
+    assert.equal(ws.closed, true, 'the old socket is closed');
+    assert.deepEqual(lastStatus(t), { connected: false, error: 'refresh requested' });
+    delays.push(reconnects(t).at(-1).ms);
+    ws = await reconnect(t);
+  }
+  assert.deepEqual(delays, [1000, 2000, 4000]);
+  frame({ type: 'hello' });
+  await waitFor(() => lastStatus(t)?.connected === true, 'hello');
+  frame({ type: 'disconnect' });
+  await waitFor(() => lastStatus(t)?.connected === false, 'the next disconnect');
+  assert.equal(reconnects(t).at(-1).ms, 1000, 'hello reset the attempt counter');
+});
+
+test('no reconnect is scheduled after stop()', async () => {
+  const t = setup();
+  t.adapter.start(t.hooks);
+  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  await t.adapter.stop();
+  assert.equal(reconnects(t).length, 0, 'closing during stop schedules nothing');
+  t.adapter.reconnectLater('late failure');
+  assert.equal(reconnects(t).length, 0);
+  assert.equal(FakeWs.all.length, 1);
+});
