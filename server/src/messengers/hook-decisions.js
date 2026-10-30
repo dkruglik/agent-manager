@@ -22,7 +22,7 @@ export class HookDecisions {
       && this.bridge.statuses.get(b.adapter)?.connected && this.bridge.sessionsFor(b, [session]).length);
     if (!bindings.length) return null;
     const key = `hook:${crypto.randomUUID()}`;
-    const withKey = { ...item, key };
+    const withKey = { ...item, key, source: 'hook' };
     return new Promise((resolve) => {
       const timer = this.bridge.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
       const onAbort = () => this.settle(key, null, 'Stopped waiting — answer in the terminal.');
@@ -85,7 +85,7 @@ export class HookDecisions {
       this.settle(item.key, { response, by }, text, binding?.id);
       return undefined;
     }
-    if (item.key.startsWith('hook:')) {
+    if (item.source === 'hook') {
       throw Object.assign(new Error('This request is no longer waiting — answer in the terminal.'), { userFacing: true });
     }
     return this.bridge.host.answer(session, item.key, response);

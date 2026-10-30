@@ -65,9 +65,17 @@ test('internal error text stays out of chat; user-facing errors are shown', asyn
   await t.bridge.handleReply('slack', text(4, 'alpha: again'));
   assert.equal(t.posts.at(-1).card.body, '⚠️ Could not deliver that — see the server log.', 'a 5xx ApiError is masked like any internal error');
 
-  t.bridge.store.putPosted('b0|s1|hook:gone', { ...t.store.posted('b0|s1|req1'), key: 'hook:gone', ref: { channel: 'C0', ts: 'card2' }, item: { ...typed, key: 'hook:gone' } });
+  t.bridge.store.putPosted('b0|s1|gone', { ...t.store.posted('b0|s1|req1'), key: 'gone', ref: { channel: 'C0', ts: 'card2' }, item: { ...typed, key: 'gone', source: 'hook' } });
   await t.bridge.handleReply('slack', { ...press(3), ts: 'card2' });
-  assert.match(t.posts.at(-1).card.body, /no longer waiting — answer in the terminal/);
+  assert.match(t.posts.at(-1).card.body, /no longer waiting — answer in the terminal/, 'a hook item nobody waits for is refused, whatever its key');
+});
+
+test('a typed request whose key happens to start with hook: is still answered by the session', async () => {
+  const t = setup();
+  t.host.answer = async (...a) => { t.host.answers.push(a); };
+  t.bridge.store.putPosted('b0|s1|hook:x', { ...t.store.posted('b0|s1|req1'), key: 'hook:x', ref: { channel: 'C0', ts: 'card3' }, item: { ...typed, key: 'hook:x' } });
+  assert.deepEqual(await t.bridge.handleReply('slack', { ...press(5), ts: 'card3' }), { answered: 'hook:x' });
+  assert.deepEqual(t.host.answers.map(([s, key, response]) => [s.id, key, response]), [['s1', 'hook:x', { decision: 'accept' }]]);
 });
 
 test('a notice that cannot be posted is logged, not lost silently', async () => {
