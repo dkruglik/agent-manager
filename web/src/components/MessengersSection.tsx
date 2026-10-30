@@ -100,14 +100,14 @@ export function MessengersSection() {
         <div className="setting-row row-top">
           <div>
             <div className="s-label">Connect a channel</div>
-            <input className="cfg-input" placeholder="Channel id, e.g. C0123ABCD" value={draft.channel}
+            <input className="cfg-input" aria-label="Channel id" placeholder="Channel id, e.g. C0123ABCD" value={draft.channel}
               onChange={(e) => setDraft({ ...draft, channel: e.target.value })} />
-            <select className="cfg-input" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>
+            <select className="cfg-input" aria-label="Agent or group" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>
               <option value="">Agent or group…</option>
               {tree?.groups.length ? <optgroup label="Groups">{tree.groups.map((g) => <option key={g.id} value={`group:${g.id}`}>{g.name}</option>)}</optgroup> : null}
               <optgroup label="Agents">{live.map((s) => <option key={s.id} value={`session:${s.id}`}>{s.name}</option>)}</optgroup>
             </select>
-            <input className="cfg-input" placeholder="Allowed user ids, e.g. U0123ABCD" value={draft.users}
+            <input className="cfg-input" aria-label="Allowed user ids" placeholder="Allowed user ids, e.g. U0123ABCD" value={draft.users}
               onChange={(e) => setDraft({ ...draft, users: e.target.value })} />
             <label className="s-help"><input type="checkbox" checked={draft.approvals}
               onChange={(e) => setDraft({ ...draft, approvals: e.target.checked })} /> allow approving tool calls and answering Claude's questions from chat</label>
