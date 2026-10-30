@@ -15,12 +15,12 @@ export interface MessengerBinding {
   scope: { type: 'session' | 'group'; id: string };
   events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
   createdAt: string;
-  /** Set while the binding's posts or lookups are failing: the adapter's public error (a Slack error
-   *  code) or a generic line; never a token, path or network detail. */
-  lastError?: string | null;
+  /** The adapter's public error (a Slack error code) or a generic line while the binding's posts or
+   *  lookups are failing, else null; never a token, path or network detail. */
+  lastError: string | null;
 }
 export interface MessengerAdapterStatus { id: string; configured: boolean; connected: boolean; error: string | null; }
-export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt'>;
+export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt' | 'lastError'>;
 
 /** `session:<id>` / `group:<id>` from the scope picker. Splits on the first ':'
  *  only, so an id that contains one stays whole. */

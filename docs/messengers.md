@@ -189,7 +189,7 @@ under the same rule.
 
 | Route | |
 | --- | --- |
-| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; a binding whose posts or dialog lookups keep failing carries `lastError` (the adapter's public error, such as `slack chat.postMessage: channel_not_found`, or a generic "see the server log" line — never a path or network detail) and is retried after 5 s, doubling to 5 min |
+| `GET /api/messengers` | Adapters (configured / connected / error) and bindings; each binding carries `lastError`, `null` unless its posts or dialog lookups keep failing, then the adapter's public error, such as `slack chat.postMessage: channel_not_found`, or a generic "see the server log" line — never a path or network detail; such a binding is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
@@ -264,3 +264,6 @@ real Claude.
   (guards, pass-through, failures reported on stderr only) and its installation.
 - `messengers-http.test.mjs`: the routes on a real server (error envelope,
   admission, tokens never reach a response or the API log).
+- `web/test/messengersApi.test.mjs` and `web/test/messengersView.test.mjs`: the
+  Settings section's pure helpers (scope parsing and names, the agent picker,
+  the failure line, a tree that fails to load without hiding the bindings).

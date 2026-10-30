@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api';
 import * as messengers from '../lib/messengersApi';
 import type { MessengerAdapterStatus, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
-import { isPassive, type Tree } from '../types';
+import { failureText, newBinding, pickableAgents, scopeName, settleLoad } from '../lib/messengersView';
+import type { Tree } from '../types';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
 // messenger) to a session or a group; see docs/messengers.md for setup.
@@ -23,35 +24,22 @@ export function MessengersSection() {
   const [draft, setDraft] = useState({ channel: '', scope: '', users: '', approvals: false });
 
   const load = useCallback(async () => {
-    try {
-      const [m, t] = await Promise.all([messengers.getMessengers(), api.getTree()]);
-      setAdapters(m.adapters);
-      setBindings(m.bindings);
-      setTree(t);
-      setErr('');
-    } catch (e) { setErr((e as Error).message); }
+    const loaded = settleLoad(...await Promise.allSettled([messengers.getMessengers(), api.getTree()]));
+    if (loaded.messengers) {
+      setAdapters(loaded.messengers.adapters);
+      setBindings(loaded.messengers.bindings);
+    }
+    if (loaded.tree) setTree(loaded.tree);
+    setErr(loaded.error);
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load]);
 
-  const scopeName = (b: MessengerBinding) => {
-    if (b.scope.type === 'group') return `group ${tree?.groups.find((g) => g.id === b.scope.id)?.name ?? b.scope.id}`;
-    return tree?.sessions.find((s) => s.id === b.scope.id)?.name ?? b.scope.id;
-  };
   const run = async (fn: () => Promise<unknown>, ok = '') => {
     setErr(''); setNote('');
     try { await fn(); if (ok) setNote(ok); await load(); } catch (e) { setErr((e as Error).message); }
   };
   const add = () => run(async () => {
-    const scope = messengers.parseScope(draft.scope);
-    if (!scope) throw new Error('Choose an agent or a group.');
-    await messengers.createMessengerBinding({
-      adapter: 'slack',
-      target: { channel: draft.channel.trim() },
-      scope,
-      events: ['input-required', 'finished'],
-      allowedUsers: draft.users.split(/[\s,]+/).filter(Boolean),
-      approvals: draft.approvals,
-    });
+    await messengers.createMessengerBinding(newBinding(draft));
     setDraft({ ...draft, channel: '', users: '' });
   }, 'Connected. Use “Send test” to check the channel.');
   const toggleEvent = (b: MessengerBinding, e: MessengerEvent) => {
@@ -59,7 +47,7 @@ export function MessengersSection() {
     if (events.length) run(() => messengers.updateMessengerBinding(b.id, { events }));
   };
 
-  const live = tree?.sessions.filter((s) => !s.archivedAt && s.cli !== 'shell' && !isPassive(s.cli)) ?? [];
+  const live = pickableAgents(tree);
   return (
     <>
       <h3>Messengers</h3>
@@ -81,7 +69,7 @@ export function MessengersSection() {
       {bindings.map((b) => (
         <div className="setting-row row-top" key={b.id}>
           <div>
-            <div className="s-label">{b.adapter} <span className="mono">{b.target.channel}</span> → {scopeName(b)}</div>
+            <div className="s-label">{b.adapter} <span className="mono">{b.target.channel}</span> → {scopeName(b, tree)}</div>
             <div className="s-help">
               {(Object.keys(EVENT_LABELS) as MessengerEvent[]).map((e) => (
                 <label key={e} style={{ marginRight: 12 }}>
@@ -92,7 +80,7 @@ export function MessengersSection() {
                 <input type="checkbox" checked={b.approvals} onChange={() => run(() => messengers.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals (Codex, Claude Code)
               </label>
               <div>Allowed users: <span className="mono">{b.allowedUsers.join(', ') || 'nobody'}</span></div>
-              {b.lastError && <div className="s-muted">Posting is failing — <span className="mono">{b.lastError}</span>. Retrying with a growing delay.</div>}
+              {failureText(b) && <div className="s-muted">Failing — <span className="mono">{failureText(b)}</span>. Retrying with a growing delay.</div>}
             </div>
           </div>
           <span className="confirm-del">
