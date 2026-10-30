@@ -14,12 +14,12 @@ export interface MessengerBinding {
   id: string; adapter: string; target: { channel: string };
   scope: { type: 'session' | 'group'; id: string };
   events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
-  label: string | null; createdAt: string;
+  createdAt: string;
   /** Set while the binding's posts are failing (a Slack error code, never a token). */
   lastError?: string | null;
 }
 export interface MessengerAdapter { id: string; configured: boolean; connected: boolean; error: string | null; }
-export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt' | 'label'>;
+export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt'>;
 
 const HEADERS = { 'content-type': 'application/json' };
 const bindingUrl = (id: string, suffix = ''): string => `/api/messengers/bindings/${encodeURIComponent(id)}${suffix}`;

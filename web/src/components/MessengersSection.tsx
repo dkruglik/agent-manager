@@ -14,7 +14,7 @@ export function MessengersSection() {
   const [tree, setTree] = useState<Tree | null>(null);
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
-  const [draft, setDraft] = useState({ adapter: 'slack', channel: '', scope: '', users: '', approvals: false });
+  const [draft, setDraft] = useState({ channel: '', scope: '', users: '', approvals: false });
 
   const load = useCallback(async () => {
     try {
@@ -37,7 +37,7 @@ export function MessengersSection() {
   const add = () => run(async () => {
     const [type, id] = draft.scope.split(':');
     await messengers.createMessengerBinding({
-      adapter: draft.adapter,
+      adapter: 'slack',
       target: { channel: draft.channel.trim() },
       scope: { type: type as 'session' | 'group', id },
       events: ['input-required', 'finished'],
@@ -98,9 +98,6 @@ export function MessengersSection() {
         <div className="setting-row row-top">
           <div>
             <div className="s-label">Connect a channel</div>
-            <select className="cfg-input" value={draft.adapter} onChange={(e) => setDraft({ ...draft, adapter: e.target.value })}>
-              {adapters.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
-            </select>
             <input className="cfg-input" placeholder="Channel id, e.g. C0123ABCD" value={draft.channel}
               onChange={(e) => setDraft({ ...draft, channel: e.target.value })} />
             <select className="cfg-input" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>

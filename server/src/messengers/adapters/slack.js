@@ -105,8 +105,6 @@ export class SlackAdapter {
   constructor({ botToken = '', appToken = '', fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     Object.assign(this, { botToken, appToken, fetchImpl, WebSocketImpl, setTimer, clearTimer });
     this.watch = { silent: null, ping: null };
-    this.id = 'slack';
-    this.capabilities = { buttons: true, threads: true, edit: true };
     this.socket = null;
     this.stopped = false;
     this.running = false;

@@ -14,7 +14,7 @@ export const ADAPTERS = {
 
 const notFound = () => new ApiError(404, 'not-found', 'Binding not found.');
 
-export function createMessengers({ host, dataDir, config, scopeExists = () => true, factories = ADAPTERS, bridgeOptions = {} }) {
+export function createMessengers({ host, dataDir, config, scopeExists = () => true }) {
   const store = new BindingStore(path.join(dataDir, 'messengers.json'));
   const logFile = path.join(dataDir, 'messengers.log.jsonl');
   let appendWarned = false;
@@ -26,8 +26,8 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     }
     if (entry.error) console.error('[messengers]', line);
   };
-  const adapters = new Map(Object.entries(factories).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = new MessengerBridge({ host, store, adapters, log, ...bridgeOptions });
+  const adapters = new Map(Object.entries(ADAPTERS).map(([id, make]) => [id, make(config[id] || {})]));
+  const bridge = new MessengerBridge({ host, store, adapters, log });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);
@@ -38,11 +38,8 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
   // The operations behind /api/messengers; index.js registers the routes so
   // they pass the same admission and validation as every other route.
   return {
-    bridge,
-    store,
     log,
     start: () => bridge.start(),
-    stop: () => bridge.stop(),
     list() {
       const status = bridge.status();
       return {

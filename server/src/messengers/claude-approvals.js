@@ -1,7 +1,10 @@
 // Maps Claude Code hook payloads to messenger items and a chat answer back to
 // the JSON the hook prints on stdout. Pure: no I/O, never throws.
 
-const CHOICES = [{ value: 'accept', label: 'Approve once' }, { value: 'decline', label: 'Deny' }];
+const CHOICES = Object.freeze([
+  Object.freeze({ value: 'accept', label: 'Approve once' }),
+  Object.freeze({ value: 'decline', label: 'Deny' }),
+]);
 const MAX_QUESTIONS = 4;
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -20,11 +23,9 @@ function permissionItem(payload) {
   if (typeof payload.tool_name !== 'string' || !isObject(payload.tool_input)) return null;
   return {
     kind: 'permission',
-    source: 'claude-hook',
     event: 'PermissionRequest',
-    tool: payload.tool_name,
     details: JSON.stringify({ tool: payload.tool_name, input: payload.tool_input }, null, 2),
-    choices: CHOICES.map((c) => ({ ...c })),
+    choices: CHOICES,
   };
 }
 
@@ -36,7 +37,6 @@ function questionItem(payload) {
   if (!questions.every(validQuestion)) return null;
   return {
     kind: 'question',
-    source: 'claude-hook',
     event: 'PreToolUse',
     toolInput: payload.tool_input,
     questions: questions.map((q, i) => ({

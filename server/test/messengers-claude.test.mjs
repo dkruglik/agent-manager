@@ -18,9 +18,7 @@ const q2 = { question: 'Which lang?', options: [{ label: 'js' }, { label: 'ts' }
 // Permission mapping.
 const p = hookItem(perm);
 assert.equal(p.kind, 'permission');
-assert.equal(p.source, 'claude-hook');
 assert.equal(p.event, 'PermissionRequest');
-assert.equal(p.tool, 'Bash');
 assert.deepEqual(JSON.parse(p.details), { tool: 'Bash', input: { command: 'ls -la' } });
 assert.ok(p.details.includes('\n  "tool": "Bash"'));
 assert.deepEqual(p.choices, [{ value: 'accept', label: 'Approve once' }, { value: 'decline', label: 'Deny' }]);
@@ -42,7 +40,6 @@ assert.equal(hookOutput(p, {}), null);
 const one = hookItem(ask([q1]));
 assert.deepEqual(one, {
   kind: 'question',
-  source: 'claude-hook',
   event: 'PreToolUse',
   toolInput: ask([q1]).tool_input,
   questions: [{ id: 'q0', text: 'Which DB?', secret: false, options: [{ label: 'pg' }, { label: 'sqlite' }] }],

@@ -55,7 +55,6 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
     events: [...new Set(events)],
     allowedUsers: [...new Set(users)],
     approvals,
-    label: text(b.label ?? existing?.label, 80) || null,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 }
