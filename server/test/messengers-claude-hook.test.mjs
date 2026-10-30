@@ -124,6 +124,19 @@ for (const [name, mutate] of Object.entries(guards)) {
   assert.equal(r.stdout, '', name);
   assert.equal(requests.length, 0, `${name}: no request`);
 }
+
+// A real child of the pane process passes the check (a /proc parent lookup).
+const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
+try {
+  assert.ok(sleeper.pid, 'the child started');
+  requests.length = 0;
+  r = await run(permission, { ...baseEnv(), CLAUDE_PID: String(sleeper.pid) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(requests.length, 1, 'a child of the pane process asks');
+  assert.deepEqual(JSON.parse(r.stdout), decision);
+} finally {
+  sleeper.kill();
+}
 server.close();
 
 // install
@@ -138,6 +151,22 @@ assert.deepEqual(s.hooks.PreToolUse, [userHook, { matcher: 'AskUserQuestion', ho
 const before = fs.readFileSync(settings);
 assert.equal(runner.installClaudeRepinHook('/x/am-repin-hook.sh', '/x/am-input-required-hook.sh', '/x/am-claude-approval-hook.sh'), true);
 assert.ok(before.equals(fs.readFileSync(settings)), 'second install leaves the file byte-identical');
+
+
+// A user's own PermissionRequest hook stays, and a missing hook is added without duplicating the approval hook.
+const cmd = (command) => ({ hooks: [{ type: 'command', command }] });
+const approval = (extra = {}) => ({ hooks: [{ type: 'command', command: '/x/am-claude-approval-hook.sh', timeout: 150 }], ...extra });
+const mine = cmd('/usr/bin/my-permission-hook.sh');
+fs.writeFileSync(settings, JSON.stringify({ hooks: { PermissionRequest: [mine, approval()] } }));
+assert.equal(runner.installClaudeRepinHook('/x/am-repin-hook.sh', '/x/am-input-required-hook.sh', '/x/am-claude-approval-hook.sh'), true);
+const kept = JSON.parse(fs.readFileSync(settings, 'utf8'));
+assert.deepEqual(kept.hooks.PermissionRequest, [mine, approval()], 'own hook kept, approval hook not duplicated');
+assert.deepEqual(kept.hooks.PreToolUse, [approval({ matcher: 'AskUserQuestion' })], 'the missing question hook was added');
+assert.equal(kept.hooks.SessionStart.length, 1);
+
+fs.writeFileSync(settings, JSON.stringify({ hooks: { PermissionRequest: [mine] } }));
+assert.equal(runner.installClaudeRepinHook('/x/am-repin-hook.sh', '/x/am-input-required-hook.sh', '/x/am-claude-approval-hook.sh'), true);
+assert.deepEqual(JSON.parse(fs.readFileSync(settings, 'utf8')).hooks.PermissionRequest, [mine, approval()], 'appended after the user\'s hook');
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('messengers-claude-hook: all assertions passed');
