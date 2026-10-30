@@ -36,14 +36,21 @@ export class HookDecisions {
       this.pending.set(key, entry);
       this.postHookCards(bindings, session, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
-        .catch((e) => { this.bridge.log({ event: 'hook-post-failed', key, error: e.message }); this.settle(key, null, 'Could not be posted.'); })
+        .catch((e) => {
+          this.bridge.log({ event: 'hook-post-failed', key, session: sessionId, binding: e.binding, adapter: e.adapter, error: e.message });
+          this.settle(key, null, 'Could not be posted.');
+        })
         .finally(() => { entry.posting = false; this.settledText.delete(key); });
     });
   }
 
   async postHookCards(bindings, session, item) {
     for (const binding of bindings) {
-      const [k, p] = await this.bridge.postInput(binding, session, item);
+      let k;
+      let p;
+      try { [k, p] = await this.bridge.postInput(binding, session, item); } catch (e) {
+        throw Object.assign(e, { binding: binding.id, adapter: binding.adapter });
+      }
       // Settled while this post was in flight: settle() could not see the card yet.
       if (!this.pending.has(item.key)) {
         await this.bridge.closeCard(k, p, session, this.settledText.get(item.key) || 'No longer waiting — answer in the terminal.');
@@ -65,7 +72,9 @@ export class HookDecisions {
     entry.resolve(result);
     for (const [k, p] of this.bridge.store.allPosted()) {
       if (p.key !== key || p.status !== 'open' || p.bindingId === answeredBy) continue;
-      this.bridge.closeCard(k, p, entry.session, text).catch((e) => this.bridge.log({ event: 'close-failed', key, error: e.message }));
+      this.bridge.closeCard(k, p, entry.session, text).catch((e) => this.bridge.log({
+        event: 'close-failed', key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.message,
+      }));
     }
   }
 

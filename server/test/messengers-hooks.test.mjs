@@ -30,9 +30,10 @@ function setup(bindings = [{ events: ['input-required'], approvals: true }]) {
     async update(ref, card) { updates.push({ ref, card }); },
   };
   const timers = new Map();
+  const logs = [];
   let n = 0;
   const bridge = new MessengerBridge({
-    host, store, adapters: new Map([['slack', slack]]), tickMs: 1e9,
+    host, store, adapters: new Map([['slack', slack]]), tickMs: 1e9, log: (e) => logs.push(e),
     setTimer: (fn, ms) => { timers.set(++n, { fn, ms }); return n; }, clearTimer: (id) => { timers.delete(id); },
   });
   bindings.forEach((b, i) => store.putBinding({
@@ -40,7 +41,7 @@ function setup(bindings = [{ events: ['input-required'], approvals: true }]) {
     allowedUsers: ['U1'], createdAt: 'x', ...b,
   }));
   bridge.statuses.set('slack', { connected: true, error: null });
-  return { bridge, posts, updates, timers };
+  return { bridge, posts, updates, timers, logs, slack };
 }
 
 test('a settled hook decision leaves no text behind', async () => {
@@ -160,4 +161,66 @@ test('a two-question Claude dialog is answered one part at a time', async () => 
   assert.deepEqual(decided.response, { answers: { q0: 'pg', q1: 'rust' } });
   assert.deepEqual(hookOutput(item, decided.response, { by: decided.by }).hookSpecificOutput.updatedInput.answers,
     { 'Which DB?': 'pg', 'Which lang?': 'rust' });
+});
+
+const waitFor = async (predicate, what) => {
+  for (let i = 0; i < 1000 && !predicate(); i++) await flush();
+  assert.ok(predicate(), `timed out waiting for ${what}`);
+};
+
+test('a hook card that cannot be posted falls back to the terminal and closes the cards already posted', async () => {
+  const t = setup([{ events: ['input-required'], approvals: true }, { events: ['input-required'], approvals: true }]);
+  const post = t.slack.post;
+  t.slack.post = async (target, card) => {
+    if (target.channel === 'C1') throw new Error('slack chat.postMessage: channel_not_found');
+    return post(target, card);
+  };
+  assert.equal(await t.bridge.awaitDecision('s1', hookItem(perm)), null, 'the terminal keeps the dialog');
+  const failed = t.logs.find((e) => e.event === 'hook-post-failed');
+  assert.deepEqual([failed.binding, failed.session, failed.adapter, failed.error], ['b1', 's1', 'slack', 'slack chat.postMessage: channel_not_found']);
+  await waitFor(() => t.updates.length === 1, 'the first card to close');
+  assert.equal(t.updates[0].ref.channel, 'C0');
+  assert.equal(t.updates[0].card.resolved.text, 'Could not be posted.');
+});
+
+test('aborting while the second card is being posted closes both cards', async () => {
+  const t = setup([{ events: ['input-required'], approvals: true }, { events: ['input-required'], approvals: true }]);
+  const post = t.slack.post;
+  const release = Promise.withResolvers();
+  let second = false;
+  t.slack.post = async (target, card) => {
+    if (target.channel === 'C1') { second = true; await release.promise; }
+    return post(target, card);
+  };
+  const stop = new AbortController();
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm), { signal: stop.signal });
+  await waitFor(() => second, 'the second post to start');
+  stop.abort();
+  assert.equal(await waiting, null);
+  release.resolve();
+  await waitFor(() => t.updates.length === 2, 'both cards to close');
+  assert.deepEqual(t.updates.map((u) => [u.ref.channel, u.card.resolved.text]).sort(),
+    [['C0', 'Stopped waiting — answer in the terminal.'], ['C1', 'Stopped waiting — answer in the terminal.']]);
+});
+
+test('a card update or close that fails is logged with its binding, session and adapter', async () => {
+  const t = setup();
+  t.slack.update = async () => { throw new Error('slack chat.update: message_not_found'); };
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  await waitFor(() => t.posts.length === 1, 'the card');
+  t.timers.values().next().value.fn();
+  assert.equal(await waiting, null);
+  await waitFor(() => t.logs.some((e) => e.event === 'update-failed'), 'the update failure');
+  const failed = t.logs.find((e) => e.event === 'update-failed');
+  assert.deepEqual([failed.binding, failed.session, failed.adapter], ['b0', 's1', 'slack']);
+
+  const c = setup();
+  const waiting2 = c.bridge.awaitDecision('s1', hookItem(perm));
+  await waitFor(() => c.posts.length === 1, 'the card');
+  c.bridge.store.putPosted = () => { throw new Error('disk full'); };
+  c.timers.values().next().value.fn();
+  assert.equal(await waiting2, null);
+  await waitFor(() => c.logs.some((e) => e.event === 'close-failed'), 'the close failure');
+  const closeFailed = c.logs.find((e) => e.event === 'close-failed');
+  assert.deepEqual([closeFailed.binding, closeFailed.session, closeFailed.adapter, closeFailed.error], ['b0', 's1', 'slack', 'disk full']);
 });

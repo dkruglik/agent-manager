@@ -130,7 +130,9 @@ export class MessengerBridge {
     if (!binding || !p.ref) return;
     try {
       await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial: p.partial, resolved: { text } }));
-    } catch (e) { this.log({ event: 'update-failed', key: p.key, error: e.message }); }
+    } catch (e) {
+      this.log({ event: 'update-failed', key: p.key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.message });
+    }
   }
 
   // True once a session has sat in `waiting` for the settle window, and only
