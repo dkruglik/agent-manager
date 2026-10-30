@@ -135,8 +135,10 @@ Limits:
 - **Approvals are opt-in per binding.** Without it, permission cards show no
   buttons and a forged button value is refused, and Claude's blocking hook
   returns at once without a decision.
-- **The privacy lock stops both directions.** Nothing is posted and nothing is
-  delivered while the instance is locked.
+- **The privacy lock stops cards and deliveries.** No card is posted and no
+  reply, answer or approval is delivered to an agent while the instance is
+  locked; refusal notices and `/am status` still reply in the channel, and
+  `/am status` lists no agents.
 - **Tokens live in the environment**, never in `messengers.json`.
 - **Audit.** Binding changes go through the API and appear in the API log.
   Posted cards, answers, prompts and refusals are written to

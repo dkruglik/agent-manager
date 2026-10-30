@@ -174,3 +174,13 @@ test('a failed transcript read does not become the baseline', async () => {
   assert.equal(t.slack.posts.length, 0, 'the old answer becomes the baseline');
   assert.equal(t.store.seen('b0|s1'), 'a');
 });
+
+test('/am status lists nothing while locked', async () => {
+  const t = setup();
+  const ask = () => t.bridge.handleCommand('slack', { channel: 'C0', user: { id: 'U1' }, text: 'status' });
+  assert.match(await ask(), /alpha/);
+  t.host.isLocked = true;
+  const reply = await ask();
+  assert.equal(reply, 'Agent Manager is locked.');
+  assert.doesNotMatch(reply, /alpha/);
+});

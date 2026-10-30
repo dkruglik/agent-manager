@@ -183,6 +183,7 @@ export class ReplyRouter {
     if (!bindings.some((b) => this.allowed(b, user))) return 'You are not on the allowed-users list for this channel.';
     const word = (text || '').trim().split(/\s+/)[0] || 'status';
     if (word !== 'status') return 'Commands: `status`. Reply in a card\'s thread to talk to that agent, or start a message with `agent-name:`.';
+    if (this.host.locked()) return 'Agent Manager is locked.';
     const sessions = this.host.sessions();
     const rows = [];
     for (const b of bindings) for (const s of this.scope(b, sessions)) {
