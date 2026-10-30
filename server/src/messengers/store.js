@@ -34,7 +34,7 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   const channel = text(target?.channel, 128);
   if (!channel || !ID.test(channel)) throw invalid('target.channel', 'must be a channel id');
   const scope = b.scope ?? existing?.scope;
-  if (!scope || !SCOPES.has(scope.type) || !ID.test(scope.id || '')) throw invalid('scope', 'must be {type:"session"|"group", id}');
+  if (!scope || !SCOPES.has(scope.type) || typeof scope.id !== 'string' || !ID.test(scope.id)) throw invalid('scope', 'must be {type:"session"|"group", id}');
   // An unchanged scope may point at something deleted since: the binding must stay editable.
   const unchanged = existing && scope.type === existing.scope.type && scope.id === existing.scope.id;
   if (!unchanged && !scopeExists(scope)) throw invalid('scope', `${scope.type} "${scope.id}" does not exist`);

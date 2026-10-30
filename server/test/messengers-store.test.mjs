@@ -57,6 +57,7 @@ test('validateBinding names the field it rejects', () => {
   assert.equal(field({ events: [] }), 'events');
   assert.equal(field({ events: ['x'] }), 'events');
   assert.equal(field({ target: { channel: 'a b' } }), 'target.channel');
+  assert.equal(field({ scope: { type: 'group', id: ['g1'] } }), 'scope', 'an array id is not coerced to a string');
   assert.equal(field({}), null, 'the base binding is valid');
 });
 
