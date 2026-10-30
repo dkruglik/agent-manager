@@ -137,7 +137,8 @@ test('awaitDecision leaves a too-long permission request to the terminal at once
   const timers = [];
   t.bridge.setTimer = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
   const long = { ...permission, details: 'x'.repeat(2000) };
-  const outcome = await Promise.race([t.bridge.awaitDecision('s1', long), new Promise((r) => setTimeout(r, 200, 'still waiting'))]);
+  // Resolved before anything else can run: no post, no timer, nothing to wait for.
+  const outcome = await Promise.race([t.bridge.awaitDecision('s1', long), new Promise((r) => setImmediate(r, 'still waiting'))]);
   assert.equal(outcome, null, 'resolves at once');
   assert.equal(t.slack.posts.length, 0);
   assert.equal(timers.length, 0, 'no timer was started');

@@ -33,14 +33,25 @@ function setup(over = {}) {
   const hooks = { onReply: async () => {}, onCommand: async () => '', onStatus: (s) => statuses.push(s), log: (e) => logs.push(e) };
   return { adapter, hooks, timers, logs, statuses, calls };
 }
-const settle = () => new Promise((r) => setTimeout(r, 10));
+async function waitFor(predicate, what) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+// Every fake here resolves at once, so once the microtasks queued so far have
+// run (before setImmediate fires) nothing more is in flight: used to show that
+// something did NOT happen, where there is no condition to wait for.
+const drained = () => new Promise((r) => setImmediate(r));
+const firstSocket = () => waitFor(() => FakeWs.all.length === 1, 'the first socket');
 
 test('a frame that is not JSON is logged, without its content', async () => {
   const t = setup();
   t.adapter.start(t.hooks);
-  await settle();
+  await firstSocket();
   FakeWs.all[0].emit('message', Buffer.from('xoxb-secret {not json'));
-  await settle();
+  await waitFor(() => t.logs.length > 0, 'the log line');
   assert.deepEqual(t.logs, [{ event: 'bad-frame' }]);
 });
 
@@ -48,37 +59,53 @@ test('starting twice opens one socket', async () => {
   const t = setup();
   t.adapter.start(t.hooks);
   t.adapter.start(t.hooks);
-  await settle();
+  await firstSocket();
+  await drained();
   assert.equal(FakeWs.all.length, 1);
+  assert.deepEqual(t.calls, ['auth.test', 'apps.connections.open']);
 });
+
+// Holds the first auth.test until `gate` resolves; `released` settles once it has answered.
+function holdAuth(t, gate) {
+  const inner = t.adapter.fetchImpl;
+  const released = Promise.withResolvers();
+  let held = true;
+  t.adapter.fetchImpl = async (url, init) => {
+    if (held && url.endsWith('auth.test')) {
+      held = false;
+      await gate.promise;
+      const res = await inner(url, init);
+      released.resolve();
+      return res;
+    }
+    return inner(url, init);
+  };
+  return released.promise;
+}
 
 test('stopping while a connect is in flight opens no socket afterwards', async () => {
   const gate = Promise.withResolvers();
-  let first = true;
   const t = setup();
-  const inner = t.adapter.fetchImpl;
-  t.adapter.fetchImpl = async (url, init) => { if (first && url.endsWith('auth.test')) { first = false; await gate.promise; } return inner(url, init); };
-  t.adapter.start(t.hooks);
-  await settle();
+  const released = holdAuth(t, gate);
+  t.adapter.start(t.hooks); // auth.test is asked at once and held
   await t.adapter.stop();
   gate.resolve();
-  await settle();
+  await released;
+  await drained();
   assert.equal(FakeWs.all.length, 0);
   assert.deepEqual(t.calls, ['auth.test'], 'it did not go on to open a connection either');
 
   // A restart while the old connect is still in flight is not mistaken for it.
   const gate2 = Promise.withResolvers();
   const u = setup();
-  const inner2 = u.adapter.fetchImpl;
-  let held = true;
-  u.adapter.fetchImpl = async (url, init) => { if (held && url.endsWith('auth.test')) { held = false; await gate2.promise; } return inner2(url, init); };
+  const released2 = holdAuth(u, gate2);
   u.adapter.start(u.hooks);
-  await settle();
   await u.adapter.stop();
   u.adapter.start(u.hooks);
-  await settle();
+  await waitFor(() => FakeWs.all.length === 1, 'the new start to connect');
   gate2.resolve();
-  await settle();
+  await released2;
+  await drained();
   assert.equal(FakeWs.all.length, 1, 'only the new start connected');
 });
 
@@ -86,10 +113,10 @@ test('a socket that goes silent is dropped and reconnected', async () => {
   const cleared = new Set();
   const t = setup({ clearTimer: (h) => cleared.add(h) });
   t.adapter.start(t.hooks);
-  await settle();
+  await firstSocket();
   const ws = FakeWs.all[0];
   ws.emit('message', Buffer.from('{"type":"hello"}'));
-  await settle();
+  await waitFor(() => t.statuses.at(-1)?.connected === true, 'hello');
   const silent = t.timers.filter((x) => x.ms === 120_000);
   const live = silent.at(-1);
   assert.ok(cleared.has(silent[0]), 'each frame restarts the clock');
@@ -103,17 +130,9 @@ test('a socket that goes silent is dropped and reconnected', async () => {
   assert.deepEqual(t.statuses.at(-1), { connected: false, error: 'no frames for 2 minutes' });
   assert.ok(t.timers.length > before, 'a reconnect is scheduled');
   t.timers.at(-1).fn();
-  await settle();
-  assert.equal(FakeWs.all.length, 2, 'reconnected');
+  await waitFor(() => FakeWs.all.length === 2, 'the reconnect');
 });
 
-async function waitFor(predicate, what) {
-  const deadline = Date.now() + 2000;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 1));
-  }
-}
 const reconnects = (t) => t.timers.filter((x) => x.ms !== 30_000 && x.ms !== 120_000);
 const lastStatus = (t) => t.statuses.at(-1);
 
@@ -128,7 +147,7 @@ async function reconnect(t) {
 test('a closed socket schedules reconnects with exponential delay capped at 60 s', async () => {
   const t = setup();
   t.adapter.start(t.hooks);
-  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  await firstSocket();
   let ws = FakeWs.all[0];
   const delays = [];
   for (let i = 0; i < 9; i++) {
@@ -143,7 +162,7 @@ test('a closed socket schedules reconnects with exponential delay capped at 60 s
 test('a disconnect frame reconnects like a close, and hello resets the delay', async () => {
   const t = setup();
   t.adapter.start(t.hooks);
-  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  await firstSocket();
   let ws = FakeWs.all[0];
   const frame = (msg) => ws.emit('message', Buffer.from(JSON.stringify(msg)));
   const delays = [];
@@ -166,7 +185,7 @@ test('a disconnect frame reconnects like a close, and hello resets the delay', a
 test('no reconnect is scheduled after stop()', async () => {
   const t = setup();
   t.adapter.start(t.hooks);
-  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  await firstSocket();
   await t.adapter.stop();
   assert.equal(reconnects(t).length, 0, 'closing during stop schedules nothing');
   t.adapter.reconnectLater('late failure');
@@ -178,7 +197,7 @@ test('a slash command whose handler throws is still acked, with a generic reply'
   const t = setup();
   t.hooks.onCommand = async () => { throw new Error('EACCES /home/op/.am/data'); };
   t.adapter.start(t.hooks);
-  await waitFor(() => FakeWs.all.length === 1, 'the first socket');
+  await firstSocket();
   const ws = FakeWs.all[0];
   const sent = [];
   ws.send = (s) => sent.push(JSON.parse(s));
