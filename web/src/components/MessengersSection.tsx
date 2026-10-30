@@ -2,11 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api';
 import * as messengers from '../lib/messengersApi';
 import type { MessengerAdapter, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
-import type { Tree } from '../types';
+import { isPassive, type Tree } from '../types';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
 // messenger) to a session or a group; see docs/messengers.md for setup.
 const EVENT_LABELS: Record<MessengerEvent, string> = { 'input-required': 'needs input', finished: 'finished work' };
+
+function adapterHelp(a: MessengerAdapter) {
+  if (!a.configured) return <>Set <span className="mono">SLACK_BOT_TOKEN</span> and <span className="mono">SLACK_APP_TOKEN</span> and restart.</>;
+  if (a.connected) return 'Connected.';
+  return `Not connected${a.error ? ` — ${a.error}` : ''}.`;
+}
 
 export function MessengersSection() {
   const [adapters, setAdapters] = useState<MessengerAdapter[]>([]);
@@ -53,7 +59,7 @@ export function MessengersSection() {
     if (events.length) run(() => messengers.updateMessengerBinding(b.id, { events }));
   };
 
-  const live = tree?.sessions.filter((s) => !s.archivedAt && s.cli !== 'shell' && s.cli !== 'files' && s.cli !== 'trace') ?? [];
+  const live = tree?.sessions.filter((s) => !s.archivedAt && s.cli !== 'shell' && !isPassive(s.cli)) ?? [];
   return (
     <>
       <h3>Messengers</h3>
@@ -66,8 +72,7 @@ export function MessengersSection() {
           <div>
             <div className="s-label">{a.id[0].toUpperCase() + a.id.slice(1)}</div>
             <div className="s-help">
-              {!a.configured ? <>Set <span className="mono">SLACK_BOT_TOKEN</span> and <span className="mono">SLACK_APP_TOKEN</span> and restart.</>
-                : a.connected ? 'Connected.' : `Not connected${a.error ? ` — ${a.error}` : ''}.`}
+              {adapterHelp(a)}
             </div>
           </div>
           <span className={a.connected ? 'save-flag' : 's-muted'}>{a.connected ? 'online' : 'offline'}</span>
