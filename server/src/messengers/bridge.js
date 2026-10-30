@@ -14,6 +14,19 @@ import { HookDecisions } from './hook-decisions.js';
 // chat service through an adapter, so this file knows neither. See
 // docs/messengers.md for both contracts.
 
+/**
+ * @typedef {object} InputItem An open dialog a card is posted for.
+ * @property {string} key  Unique per dialog: a Codex request key, `ir:<cli>:<detectedAt>`, or `hook:<uuid>`.
+ * @property {'permission'|'question'|'confirmation'|string} kind
+ * @property {'hook'} [source]  Set on a Claude hook item, which is answered to the waiting hook, never the session.
+ * @property {boolean} [generic]  Only the fact of a dialog is known: the card links to the terminal.
+ * @property {string} [details]  Preformatted request text (a command, a JSON tool input).
+ * @property {{value: string, label: string}[]} [choices]  Decisions, e.g. accept / decline.
+ * @property {{id: string, text: string, secret?: boolean, options?: ({label: string}|string)[]}[]} [questions]
+ * @property {string} [event]  The Claude hook event (PermissionRequest, PreToolUse).
+ * @property {object} [toolInput]  The Claude tool input an AskUserQuestion answer travels back with.
+ */
+
 const BACKOFF_MIN_MS = 5000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 

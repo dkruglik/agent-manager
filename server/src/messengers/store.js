@@ -166,7 +166,20 @@ export class BindingStore {
     return true;
   }
 
-  // posted: `${bindingId}|${sessionId}|${key}` → {bindingId, sessionId, key, kind, ref, status, at, ...}
+  /**
+   * @typedef {object} PostedCard A card in a channel, stored under `${bindingId}|${sessionId}|${key}`.
+   * @property {string} bindingId
+   * @property {string} sessionId
+   * @property {string} key  The input item's key, or `done:<reply id>` for a finished card.
+   * @property {'input'|'finished'} kind
+   * @property {'open'|'closed'} status  Only an open input card takes answers.
+   * @property {string} adapter
+   * @property {{channel: string, ts: string}} ref  Where the adapter posted it.
+   * @property {import('./bridge.js').InputItem} [item]  Input cards; details and toolInput are dropped once closed.
+   * @property {Record<string, string>} [partial]  Answers collected so far, by question id.
+   * @property {string} [closedText]
+   * @property {number} at  When it was recorded (ms); pruned after 7 days.
+   */
   posted(k) { return this.data.posted[k] || null; }
   allPosted() { return Object.entries(this.data.posted); }
 

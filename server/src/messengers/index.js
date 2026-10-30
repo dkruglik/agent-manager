@@ -8,6 +8,23 @@ import { SlackAdapter } from './adapters/slack.js';
 
 // Built-in messengers. Any object implementing the adapter interface in
 // docs/messengers.md will do (Slack's is a class), so adding Telegram or Discord is one file here and nothing in the bridge.
+/**
+ * @typedef {object} Adapter The messenger contract (docs/messengers.md, "Adding a messenger").
+ * @property {() => boolean} configured  True when its tokens are set.
+ * @property {(hooks: {
+ *   onReply: (r: {channel: string, ts: string, thread: string|null, user: {id: string, name?: string},
+ *     messageId: string, optionId?: string, text?: string}) => Promise<unknown>,
+ *   onCommand: (c: {channel: string, user: {id: string, name?: string}, text: string}) => Promise<string>,
+ *   onStatus: (s: {connected: boolean, error: string|null}) => void,
+ *   log: (entry: object) => void,
+ * }) => void} start
+ * @property {() => Promise<void>} [stop]
+ * @property {(target: {channel: string, thread: string|null}, card: object) => Promise<{channel: string, ts: string}>} post
+ *   Throws on failure; an error's `publicMessage`, if set, may be shown in Settings.
+ * @property {(ref: {channel: string, ts: string}, card: object) => Promise<void>} update
+ */
+
+/** @type {Record<string, (config: object) => Adapter>} */
 export const ADAPTERS = {
   slack: (config) => new SlackAdapter(config),
 };
