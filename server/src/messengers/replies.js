@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { ApiError } from '../api-errors.js';
 import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 
 // Inbound side of the bridge: a button press or a chat message becomes a typed
@@ -93,7 +94,8 @@ export class ReplyRouter {
       return await this.prompt(adapterId, binding, session, r, text, reply);
     } catch (e) {
       this.log({ event: 'reply-failed', binding: binding.id, session: session.id, error: e.message });
-      await reply(`⚠️ ${e.message}`);
+      // Only errors written for the operator are shown; anything else may carry paths or internals.
+      await reply(e instanceof ApiError || e.userFacing ? `⚠️ ${e.message}` : '⚠️ Could not deliver that — see the server log.');
       return { error: e.message };
     }
   }

@@ -78,7 +78,9 @@ export class HookDecisions {
       this.settle(item.key, { response, by }, text, binding?.id);
       return undefined;
     }
-    if (item.key.startsWith('hook:')) throw new Error('This request is no longer waiting — answer in the terminal.');
+    if (item.key.startsWith('hook:')) {
+      throw Object.assign(new Error('This request is no longer waiting — answer in the terminal.'), { userFacing: true });
+    }
     return this.bridge.host.answer(session, item.key, response);
   }
 }
