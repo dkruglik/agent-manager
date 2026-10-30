@@ -110,7 +110,9 @@ export class MessengerBridge {
 
   async closeCard(k, p, s, text) {
     const binding = this.store.binding(p.bindingId);
-    this.store.putPosted(k, { ...p, status: 'closed', closedText: text });
+    // A closed card is never answered again: its tool input need not stay on disk.
+    const { details, toolInput, ...kept } = p.item || {};
+    this.store.putPosted(k, { ...p, ...(p.item ? { item: kept } : {}), status: 'closed', closedText: text });
     if (!binding || !p.ref) return;
     try {
       await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial: p.partial, resolved: { text } }));

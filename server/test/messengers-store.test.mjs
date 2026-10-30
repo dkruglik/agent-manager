@@ -37,3 +37,12 @@ test('malformed bindings in messengers.json are ignored with one warning', () =>
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /ignored 8 malformed/);
 });
+
+test('messengers.json and its tmp file are owner-only', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-mode-'));
+  const file = path.join(dir, 'messengers.json');
+  fs.writeFileSync(`${file}.tmp`, 'stale', { mode: 0o644 }); // left by a crash, world-readable
+  const store = new BindingStore(file);
+  store.putSeen('k', 'v');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});

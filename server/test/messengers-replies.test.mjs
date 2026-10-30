@@ -44,7 +44,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
     bindingId: 'b0', sessionId: 's1', key: 'req1', kind: 'input', status: 'open', adapter: 'slack',
     ref: { channel: 'C0', ts: 'card1' }, item: typed, partial: {},
   });
-  return { bridge, host, slack, store, posts, logs };
+  return { bridge, host, slack, store, posts, logs, root };
 }
 
 const press = (n, optionId = 'd:accept', who = user) => ({ channel: 'C0', ts: 'card1', thread: null, user: who, messageId: `m${n}`, optionId });
@@ -94,4 +94,21 @@ test('every refusal is logged once, without the message text', async () => {
   const reasons = [closed, off, locked, gone, tooLong].map((t) => t.logs.filter((e) => e.event === 'refused').map((e) => e.reason));
   assert.deepEqual(reasons, [['closed'], ['approvals-off'], ['locked'], ['no-session'], ['too-long']]);
   assert.ok(!JSON.stringify(gone.logs).includes('secret words'));
+});
+
+test('a closed input card keeps no tool input on disk but is still closed with its details', async () => {
+  const t = setup();
+  const item = { ...typed, toolInput: { command: 'ls' } };
+  t.store.putPosted('b0|s1|req1', { ...t.store.posted('b0|s1|req1'), item });
+  const updates = [];
+  t.slack.update = async (ref, card) => { updates.push(card); };
+  await t.bridge.handleReply('slack', press(1));
+  const closed = t.store.posted('b0|s1|req1');
+  assert.equal(closed.status, 'closed');
+  assert.equal('details' in closed.item, false);
+  assert.equal('toolInput' in closed.item, false);
+  assert.equal(closed.item.kind, 'permission');
+  assert.ok(!fs.readFileSync(path.join(t.root, 'messengers.json'), 'utf8').includes('"ls"'));
+  assert.equal(updates.at(-1).details, typed.details, 'the closed card in chat still shows what was decided');
+  assert.match(updates.at(-1).resolved.text, /Approve once/);
 });
