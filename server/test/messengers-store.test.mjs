@@ -92,3 +92,25 @@ test('posted records older than 7 days are pruned on the next write', () => {
   assert.equal(store.posted('old'), null, 'older than 7 days');
   assert.ok(store.posted('recent') && store.posted('new'));
 });
+
+test('an unreadable messengers.json that cannot be renamed aside is copied, or never overwritten', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-aside-'));
+  const file = path.join(dir, 'messengers.json');
+  const warnings = [];
+  t.mock.method(console, 'warn', (...a) => warnings.push(a.join(' ')));
+  t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('EXDEV: rename refused'), { code: 'EXDEV' }); });
+  fs.writeFileSync(file, '{not json');
+  const copied = new BindingStore(file, { now: () => 7 });
+  assert.equal(fs.readFileSync(`${file}.corrupt-7`, 'utf8'), '{not json', 'copied aside when rename fails');
+  assert.match(warnings.join('\n'), /kept as .*corrupt-7/);
+  assert.equal(copied.readOnly, false);
+
+  warnings.length = 0;
+  t.mock.method(fs, 'copyFileSync', () => { throw new Error('ENOSPC: copy refused'); });
+  const stuck = new BindingStore(file, { now: () => 8 });
+  assert.ok(!fs.existsSync(`${file}.corrupt-8`));
+  assert.doesNotMatch(warnings.join('\n'), /kept as /, 'no false claim');
+  assert.match(warnings.join('\n'), /copy refused/);
+  assert.throws(() => stuck.putSeen('k', 'v'), /not overwriting/);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{not json', 'the unreadable file is left as it was');
+});

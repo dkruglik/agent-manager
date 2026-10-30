@@ -59,6 +59,15 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   };
 }
 
+// True once `file` is at `aside`, else the reason it is not: a rename, or a copy across devices.
+function keepCopy(file, aside) {
+  try { fs.renameSync(file, aside); return true; } catch (e) {
+    try { fs.copyFileSync(file, aside, fs.constants.COPYFILE_EXCL); return true; } catch (c) {
+      return `rename: ${e.message}; copy: ${c.message}`;
+    }
+  }
+}
+
 // Persists to one JSON file, written whole and renamed into place, so a crash
 // mid-write leaves the previous version rather than half a file.
 export class BindingStore {
@@ -66,6 +75,7 @@ export class BindingStore {
     this.file = file;
     this.now = now;
     this.data = { bindings: [], posted: {}, seen: {} };
+    this.readOnly = false;
     this.load();
   }
 
@@ -88,13 +98,19 @@ export class BindingStore {
     } catch (e) { this.setAside(e); }
   }
 
+  // Moved aside, else copied; if neither works the store refuses to persist,
+  // so the file the operator might recover is never overwritten.
   setAside(error) {
     const aside = `${this.file}.corrupt-${this.now()}`;
-    try { fs.renameSync(this.file, aside); } catch {}
-    console.warn(`messengers: could not read ${this.file} (${error.message}); starting empty, kept as ${aside}`);
+    const problem = `messengers: could not read ${this.file} (${error.message}); starting empty`;
+    const kept = keepCopy(this.file, aside);
+    if (kept === true) { console.warn(`${problem}, kept as ${aside}`); return; }
+    this.readOnly = true;
+    console.warn(`${problem}. It could not be kept aside (${kept}), so nothing will be saved until it is moved by hand.`);
   }
 
   persist() {
+    if (this.readOnly) throw new Error(`messengers: ${this.file} could not be kept aside; not overwriting it`);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     // Open cards hold tool inputs: owner-only, including a tmp file left by an earlier crash.

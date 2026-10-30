@@ -169,6 +169,11 @@ are in which channel (so a restart neither re-posts nor loses the ability to
 answer) and the newest reply already accounted for per agent (so connecting a
 channel does not replay old answers). Card records expire after 7 days.
 
+A `messengers.json` that cannot be read or parsed is moved (or, failing that,
+copied) to `messengers.json.corrupt-<ms>` and the bridge starts empty. If it
+can be neither moved nor copied, nothing is saved until it is moved by hand,
+so the file is never overwritten.
+
 ## API
 
 | Route | |
