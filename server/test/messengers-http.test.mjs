@@ -108,6 +108,20 @@ try {
   const hookLog = () => fs.readFileSync(path.join(DATA_DIR, 'messengers.log.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const rejected = hookLog().filter((e) => e.event === 'hook-rejected');
   assert.deepEqual(rejected.map(({ session, status, reason }) => ({ session, status, reason })), [{ session: hooked, status: 409, reason: 'conflict' }]);
+  // The script sends only X-AM-Request: 1, a JSON body and ?from=<id>, no x-am-origin:
+  // it must get past admission and the origin check to the route's own 409.
+  r = await api(`/api/messengers/claude-hook?from=${hooked}`, { method: 'POST', body: { runId: 'stale', payload: permission }, origin: false });
+  assert.equal(r.status, 409, 'the script request passes admission');
+  assert.equal(r.body.code, 'conflict');
+  assert.notEqual(r.body.code, 'request-not-allowed');
+
+  // Only Claude panes ask: any other session gets an empty answer, not an error.
+  r = await api('/api/sessions', { method: 'POST', body: { cli: 'shell', name: 'plain' } });
+  assert.equal(r.status, 201);
+  r = await hook(r.body.id, { runId: 'whatever', payload: permission });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { output: null });
+
   r = await hook(hooked, { runId: 'stale' });
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'invalid-input');
