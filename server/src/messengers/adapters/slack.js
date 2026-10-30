@@ -15,11 +15,12 @@ const BACKOFF_MAX_MS = 60_000;
 const PING_EVERY_MS = 30_000;
 const SILENT_AFTER_MS = 120_000;
 
+const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 // Slack's mrkdwn is not Markdown: bold is *x*, links are <url|text>, and
 // &, < and > must be escaped. Good enough for agent replies; code survives.
 export function toMrkdwn(md) {
-  return String(md || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return escapeMrkdwn(String(md || ''))
     .replace(/\*\*(.+?)\*\*/g, '*$1*')
     .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<$2|$1>');
@@ -33,8 +34,6 @@ export function fromMrkdwn(text) {
     .replace(/<([^>|]+)(?:\|[^>]*)?>/g, '$1')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
-
-const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Slack reads <...> as links and mentions, so details are escaped to show as
 // written. Escaping can grow text fivefold, past one block's limit: it is split
@@ -106,7 +105,6 @@ export class SlackAdapter {
     Object.assign(this, { botToken, appToken, fetchImpl, WebSocketImpl, setTimer, clearTimer });
     this.watch = { silent: null, ping: null };
     this.socket = null;
-    this.stopped = false;
     this.running = false;
     this.generation = 0; // bumped by stop(), so a connect() begun before it cannot open a socket after
     this.attempt = 0;
@@ -134,7 +132,7 @@ export class SlackAdapter {
   setStatus(connected, error = null) { this.hooks?.onStatus({ connected, error }); }
 
   reconnectLater(reason) {
-    if (this.stopped) return;
+    if (!this.running) return;
     this.setStatus(false, reason);
     const delay = Math.min(BACKOFF_MAX_MS, 1000 * 2 ** Math.min(this.attempt++, 6));
     // A stop() since makes this retry stale, even if start() ran again after it.
@@ -146,7 +144,7 @@ export class SlackAdapter {
 
   async connect() {
     const generation = this.generation;
-    const live = () => !this.stopped && generation === this.generation;
+    const live = () => this.running && generation === this.generation;
     if (!live()) return;
     if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
     if (!live()) return;
@@ -180,11 +178,16 @@ export class SlackAdapter {
     this.watch.silent = this.timer(() => {
       if (this.socket !== ws) return;
       this.hooks.log({ event: 'socket-silent' });
-      this.socket = null;
-      this.unwatch();
-      (ws.terminate || ws.close).call(ws);
-      this.reconnectLater('no frames for 2 minutes');
+      this.dropSocket(ws, ws.terminate || ws.close, 'no frames for 2 minutes');
     }, SILENT_AFTER_MS);
+  }
+
+  // Forgets the current socket, closes it, and dials a new one.
+  dropSocket(ws, close, reason) {
+    this.socket = null;
+    this.unwatch();
+    close.call(ws);
+    this.reconnectLater(reason);
   }
 
   schedulePing(ws) {
@@ -201,7 +204,7 @@ export class SlackAdapter {
     if (msg.type === 'hello') { this.attempt = 0; this.setStatus(true); return; }
     if (msg.type === 'disconnect') {
       if (this.socket !== ws) return; // already replaced
-      this.socket = null; this.unwatch(); ws.close(); this.reconnectLater('refresh requested');
+      this.dropSocket(ws, ws.close, 'refresh requested');
       return;
     }
     if (!msg.envelope_id) return;
@@ -229,12 +232,10 @@ export class SlackAdapter {
     if (this.running) return;
     this.running = true;
     this.hooks = hooks;
-    this.stopped = false;
     this.connect().catch((e) => this.reconnectLater(e.message));
   }
 
   async stop() {
-    this.stopped = true;
     this.running = false;
     this.generation += 1;
     this.unwatch();

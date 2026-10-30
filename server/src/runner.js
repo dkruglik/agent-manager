@@ -1379,6 +1379,11 @@ export async function codexRolloutForId(id) {
   return (await codexRolloutsSince(0)).find((item) => path.basename(item.p).endsWith(suffix))?.p || null;
 }
 
+const REPIN_HOOK = 'am-repin-hook.sh';
+const INPUT_HOOK = 'am-input-required-hook.sh';
+const APPROVAL_HOOK = 'am-claude-approval-hook.sh';
+const CLEAR_EVENTS = ['PostToolBatch', 'Stop', 'SessionEnd', 'ElicitationResult', 'UserPromptSubmit'];
+
 // Register Agent Manager's Claude hooks in $CLAUDE_CONFIG_DIR/settings.json,
 // and only when that variable is set. It adds: the SessionStart repin hook;
 // the input-required hook (Notification, plus the PostToolBatch, Stop,
@@ -1387,14 +1392,15 @@ export async function codexRolloutForId(id) {
 // for AskUserQuestion (timeout 150 s; it does nothing without an opted-in
 // binding, so the terminal dialog stays). Merge,
 // never replace: the file also holds permissions/model/theme. Idempotent — a
-// second boot finds the entry and writes nothing. A file that exists but does
+// second boot finds the entries and writes nothing. A file that exists but does
 // not parse is left alone (clobbering the user's settings to install a hook
-// would be a terrible trade), and every failure is non-fatal: without the
-// hook the watcher simply keeps today's behaviour.
+// would be a terrible trade), and every failure is non-fatal: without these
+// hooks a repin is found by the transcript scan alone, no input-required
+// marker is set, and approvals stay in the terminal.
 export function installClaudeRepinHook(
-  hookCmd = shq(appScript('am-repin-hook.sh')),
-  inputRequiredCmd = shq(appScript('am-input-required-hook.sh')),
-  approvalCmd = shq(appScript('am-claude-approval-hook.sh')),
+  hookCmd = shq(appScript(REPIN_HOOK)),
+  inputRequiredCmd = shq(appScript(INPUT_HOOK)),
+  approvalCmd = shq(appScript(APPROVAL_HOOK)),
 ) {
   const dir = process.env.CLAUDE_CONFIG_DIR;
   if (!dir) return false;
@@ -1410,47 +1416,38 @@ export function installClaudeRepinHook(
     console.warn(`[claude] not installing lifecycle hooks: ${file} hooks is not an object`);
     return false;
   }
-  const hasHook = (list, script) => Array.isArray(list) && list.some((m) => (m?.hooks || [])
+  const hasHook = (event, script) => Array.isArray(cfg.hooks?.[event]) && cfg.hooks[event].some((m) => (m?.hooks || [])
     .some((h) => String(h?.command || '').includes(script)));
-  const entries = Array.isArray(cfg.hooks?.SessionStart) ? cfg.hooks.SessionStart : [];
-  const present = hasHook(entries, 'am-repin-hook.sh');
-  const notifications = Array.isArray(cfg.hooks?.Notification) ? cfg.hooks.Notification : [];
-  const inputPresent = hasHook(notifications, 'am-input-required-hook.sh');
-  const clearEvents = ['PostToolBatch', 'Stop', 'SessionEnd', 'ElicitationResult', 'UserPromptSubmit'];
-  const missingClear = clearEvents.some((event) => !hasHook(cfg.hooks?.[event], 'am-input-required-hook.sh'));
-  const permissionPresent = hasHook(cfg.hooks?.PermissionRequest, 'am-claude-approval-hook.sh');
-  const questionPresent = hasHook(cfg.hooks?.PreToolUse, 'am-claude-approval-hook.sh');
-  if (present && inputPresent && !missingClear && permissionPresent && questionPresent) return true;
+  const appendHook = (event, entry) => {
+    cfg.hooks[event] = [...(Array.isArray(cfg.hooks[event]) ? cfg.hooks[event] : []), entry];
+  };
+  const present = hasHook('SessionStart', REPIN_HOOK);
+  const inputPresent = hasHook('Notification', INPUT_HOOK);
+  const missingClear = CLEAR_EVENTS.filter((event) => !hasHook(event, INPUT_HOOK));
+  const permissionPresent = hasHook('PermissionRequest', APPROVAL_HOOK);
+  const questionPresent = hasHook('PreToolUse', APPROVAL_HOOK);
+  if (present && inputPresent && !missingClear.length && permissionPresent && questionPresent) return true;
   // No matcher: fire for every source. `startup` replaces the "--session-id
   // not honoured" heuristic with a fact, `resume` is a proven no-op (same id),
   // and `clear` is the case this exists for. Filtering happens server-side.
   cfg.hooks = cfg.hooks || {};
-  if (!present) cfg.hooks.SessionStart = [...entries, { hooks: [{ type: 'command', command: hookCmd, timeout: 5 }] }];
+  if (!present) appendHook('SessionStart', { hooks: [{ type: 'command', command: hookCmd, timeout: 5 }] });
   // Notification is deliberately later than PermissionRequest: it fires only
   // after the actual permission/elicitation UI has remained unanswered for
   // about six seconds, and cannot be intercepted by another decision hook.
-  if (!inputPresent) cfg.hooks.Notification = [...notifications, {
+  if (!inputPresent) appendHook('Notification', {
     matcher: 'permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed',
     hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
-  }];
+  });
   // These events prove the associated interaction has moved on. They only
   // remove a marker carrying this pane launch's nonce; hook output stays empty.
-  for (const event of clearEvents) {
-    const eventEntries = Array.isArray(cfg.hooks[event]) ? cfg.hooks[event] : [];
-    if (!hasHook(eventEntries, 'am-input-required-hook.sh')) cfg.hooks[event] = [...eventEntries, {
-      hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
-    }];
-  }
+  for (const event of missingClear) appendHook(event, { hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }] });
   // Blocking decision hooks: the server decides per binding whether a chat
   // answers; with no answer the script prints nothing and the terminal dialog
   // stays. The timeout outlasts the server's 120 s decision window.
-  if (!permissionPresent) {
-    const list = Array.isArray(cfg.hooks.PermissionRequest) ? cfg.hooks.PermissionRequest : [];
-    cfg.hooks.PermissionRequest = [...list, { hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] }];
-  }
+  if (!permissionPresent) appendHook('PermissionRequest', { hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] });
   if (!questionPresent) {
-    const list = Array.isArray(cfg.hooks.PreToolUse) ? cfg.hooks.PreToolUse : [];
-    cfg.hooks.PreToolUse = [...list, { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] }];
+    appendHook('PreToolUse', { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] });
   }
   try {
     const tmp = `${file}.am-tmp`;
