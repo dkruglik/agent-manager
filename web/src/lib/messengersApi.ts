@@ -18,7 +18,7 @@ export interface MessengerBinding {
   /** Set while the binding's posts are failing (a Slack error code, never a token). */
   lastError?: string | null;
 }
-export interface MessengerAdapter { id: string; configured: boolean; connected: boolean; error: string | null; }
+export interface MessengerAdapterStatus { id: string; configured: boolean; connected: boolean; error: string | null; }
 export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt'>;
 
 /** `session:<id>` / `group:<id>` from the scope picker. Splits on the first ':'
@@ -33,11 +33,11 @@ export function parseScope(value: string): MessengerBinding['scope'] | null {
 const HEADERS = { 'content-type': 'application/json' };
 const bindingUrl = (id: string, suffix = ''): string => `/api/messengers/bindings/${encodeURIComponent(id)}${suffix}`;
 
-export const getMessengers = (): Promise<{ adapters: MessengerAdapter[]; bindings: MessengerBinding[] }> =>
+export const getMessengers = (): Promise<{ adapters: MessengerAdapterStatus[]; bindings: MessengerBinding[] }> =>
   requestJson('/api/messengers');
 export const createMessengerBinding = (b: NewMessengerBinding): Promise<MessengerBinding> =>
   requestJson('/api/messengers/bindings', { method: 'POST', headers: HEADERS, body: JSON.stringify(b) });
-export const updateMessengerBinding = (id: string, patch: Partial<MessengerBinding>): Promise<MessengerBinding> =>
+export const updateMessengerBinding = (id: string, patch: Partial<Omit<NewMessengerBinding, 'adapter'>>): Promise<MessengerBinding> =>
   requestJson(bindingUrl(id), { method: 'PUT', headers: HEADERS, body: JSON.stringify(patch) });
 export const deleteMessengerBinding = (id: string): Promise<{ ok: boolean }> =>
   requestJson(bindingUrl(id), { method: 'DELETE' });

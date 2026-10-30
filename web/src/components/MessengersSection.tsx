@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api';
 import * as messengers from '../lib/messengersApi';
-import type { MessengerAdapter, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
+import type { MessengerAdapterStatus, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
 import { isPassive, type Tree } from '../types';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
 // messenger) to a session or a group; see docs/messengers.md for setup.
 const EVENT_LABELS: Record<MessengerEvent, string> = { 'input-required': 'needs input', finished: 'finished work' };
 
-function adapterHelp(a: MessengerAdapter) {
+function adapterHelp(a: MessengerAdapterStatus) {
   if (!a.configured) return <>Set <span className="mono">SLACK_BOT_TOKEN</span> and <span className="mono">SLACK_APP_TOKEN</span> and restart.</>;
   if (a.connected) return 'Connected.';
   return `Not connected${a.error ? ` — ${a.error}` : ''}.`;
 }
 
 export function MessengersSection() {
-  const [adapters, setAdapters] = useState<MessengerAdapter[]>([]);
+  const [adapters, setAdapters] = useState<MessengerAdapterStatus[]>([]);
   const [bindings, setBindings] = useState<MessengerBinding[]>([]);
   const [tree, setTree] = useState<Tree | null>(null);
   const [err, setErr] = useState('');
