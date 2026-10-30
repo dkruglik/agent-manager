@@ -1,0 +1,83 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { MessengerBridge } from '../src/messengers/bridge.js';
+import { BindingStore } from '../src/messengers/store.js';
+
+// Bridge failure paths: a failed lookup, post or transcript read must neither
+// close cards nor lose or replay events.
+
+function fakeAdapter() {
+  const posts = [];
+  const updates = [];
+  const adapter = {
+    posts, updates, failPosts: 0,
+    configured: () => true,
+    start(h) { h.onStatus({ connected: true, error: null }); },
+    async post(target, card) {
+      if (adapter.failPosts > 0) { adapter.failPosts -= 1; throw new Error('post failed'); }
+      const ref = { channel: target.channel, ts: `t${posts.length + 1}` };
+      posts.push({ target, card, ref });
+      return ref;
+    },
+    async update(ref, card) { updates.push({ ref, card }); },
+  };
+  return adapter;
+}
+
+function setup({ events = ['input-required', 'finished'] } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-bridge-'));
+  let clock = 1_000_000;
+  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => clock });
+  const host = {
+    list: [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }],
+    typed: [], requestsError: null, digestImpl: async () => null, isLocked: false,
+    sessions: () => host.list.map((s) => ({ ...s })),
+    groupOf: () => ({ id: 'g1', name: 'proj' }),
+    locked: () => host.isLocked,
+    link: (s) => `http://am/#session=${s.id}`,
+    requests: async () => {
+      if (host.requestsError) { const e = host.requestsError; host.requestsError = null; throw e; }
+      return host.typed;
+    },
+    digest: (s) => host.digestImpl(s),
+    answer: async () => {}, prompt: async () => {},
+  };
+  const slack = fakeAdapter();
+  const logs = [];
+  const bridge = new MessengerBridge({
+    host, store, adapters: new Map([['slack', slack]]), now: () => clock, log: (e) => logs.push(e),
+    tickMs: 1e9, settleMs: 0, digestEveryMs: 0,
+  });
+  store.putBinding({
+    id: 'b0', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'group', id: 'g1' },
+    events, allowedUsers: ['U1'], approvals: true, createdAt: 'x',
+  });
+  bridge.statuses.set('slack', { connected: true, error: null });
+  return { bridge, host, slack, store, logs, tick: (ms = 0) => { clock += ms; return bridge.tick(); } };
+}
+
+const permission = {
+  key: 'req1', kind: 'permission', details: '{"command":"ls"}',
+  choices: [{ value: 'accept', label: 'Approve once' }, { value: 'decline', label: 'Deny' }],
+};
+
+test('a failed request lookup keeps typed cards open and posts nothing generic', async () => {
+  const t = setup({ events: ['input-required'] });
+  t.host.typed = [permission];
+  t.host.list[0].inputRequired = { kind: 'permission', cli: 'codex', detectedAt: 'x' };
+  await t.tick();
+  assert.equal(t.slack.posts.length, 1);
+  assert.equal(t.store.posted('b0|s1|req1').status, 'open');
+  t.host.requestsError = new Error('app-server down');
+  await t.tick();
+  assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'the typed card stays open');
+  assert.equal(t.slack.posts.length, 1, 'no generic card was posted');
+  assert.equal(t.slack.updates.length, 0);
+  const failed = t.logs.find((e) => e.event === 'requests-failed');
+  assert.deepEqual([failed.session, failed.error], ['s1', 'app-server down']);
+  await t.tick();
+  assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'still open once lookups work again');
+});
