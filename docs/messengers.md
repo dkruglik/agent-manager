@@ -264,6 +264,9 @@ real Claude.
   (guards, pass-through, failures reported on stderr only) and its installation.
 - `messengers-http.test.mjs`: the routes on a real server (error envelope,
   admission, tokens never reach a response or the API log).
+- `messengers-hook-http.test.mjs`: the hook route with a fake connected Slack
+  (a client that goes away cancels the hook, closes its card, and is logged as
+  `hook-response-lost`).
 - `web/test/messengersApi.test.mjs` and `web/test/messengersView.test.mjs`: the
   Settings section's pure helpers (scope parsing and names, the agent picker,
   the failure line, a tree that fails to load without hiding the bindings).
