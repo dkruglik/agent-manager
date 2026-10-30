@@ -30,6 +30,7 @@ export class HookDecisions {
       const timer = this.bridge.setTimer(() => this.settle(key, null, 'No answer in time — answer in the terminal.'), timeoutMs);
       const onAbort = () => this.settle(key, null, 'Answered in the terminal.');
       signal?.addEventListener('abort', onAbort, { once: true });
+      timer?.unref?.();
       Object.assign(entry, { timer, detach: () => signal?.removeEventListener('abort', onAbort) });
       this.postHookCards(bindings, session, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
@@ -71,6 +72,11 @@ export class HookDecisions {
       if (p.key !== key || p.status !== 'open' || p.bindingId === answeredBy) continue;
       this.bridge.closeCard(k, p, entry.session, text).catch((e) => this.bridge.log({ event: 'close-failed', key, error: e.message }));
     }
+  }
+
+  // Nothing will answer once the server stops: tell every waiting hook to fall back to the terminal.
+  settleAll(text) {
+    for (const key of [...this.pending.keys()]) this.settle(key, null, text);
   }
 
   answer(session, item, response, by, { binding, text } = {}) {

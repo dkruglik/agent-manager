@@ -205,6 +205,7 @@ export class MessengerBridge {
   }
 
   start() {
+    if (this.timer) return;
     for (const [id, a] of this.adapters) {
       this.statuses.set(id, { connected: false, error: a.configured() ? null : 'not configured' });
       if (!a.configured()) continue;
@@ -221,6 +222,8 @@ export class MessengerBridge {
 
   async stop() {
     clearInterval(this.timer);
+    this.timer = null;
+    this.hooks.settleAll('Agent Manager is stopping — answer in the terminal.');
     for (const a of this.adapters.values()) await a.stop?.();
   }
 }

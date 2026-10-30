@@ -104,6 +104,8 @@ export class SlackAdapter {
     this.capabilities = { buttons: true, threads: true, edit: true };
     this.socket = null;
     this.stopped = false;
+    this.running = false;
+    this.generation = 0; // bumped by stop(), so a connect() begun before it cannot open a socket after
     this.attempt = 0;
     this.hooks = null;
     this.botUser = null;
@@ -132,9 +134,13 @@ export class SlackAdapter {
   }
 
   async connect() {
-    if (this.stopped) return;
+    const generation = this.generation;
+    const live = () => !this.stopped && generation === this.generation;
+    if (!live()) return;
     if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
+    if (!live()) return;
     const { url } = await this.call('apps.connections.open', {}, this.appToken);
+    if (!live()) return;
     const ws = new this.WebSocketImpl(url);
     this.socket = ws;
     ws.on('message', (raw) => { this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.message })); });
@@ -163,6 +169,8 @@ export class SlackAdapter {
   }
 
   start(hooks) {
+    if (this.running) return;
+    this.running = true;
     this.hooks = hooks;
     this.stopped = false;
     this.connect().catch((e) => this.reconnectLater(e.message));
@@ -170,6 +178,8 @@ export class SlackAdapter {
 
   async stop() {
     this.stopped = true;
+    this.running = false;
+    this.generation += 1;
     const ws = this.socket;
     this.socket = null;
     ws?.close();

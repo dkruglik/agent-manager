@@ -43,3 +43,41 @@ test('a frame that is not JSON is logged, without its content', async () => {
   await settle();
   assert.deepEqual(t.logs, [{ event: 'bad-frame' }]);
 });
+
+test('starting twice opens one socket', async () => {
+  const t = setup();
+  t.adapter.start(t.hooks);
+  t.adapter.start(t.hooks);
+  await settle();
+  assert.equal(FakeWs.all.length, 1);
+});
+
+test('stopping while a connect is in flight opens no socket afterwards', async () => {
+  const gate = Promise.withResolvers();
+  let first = true;
+  const t = setup();
+  const inner = t.adapter.fetchImpl;
+  t.adapter.fetchImpl = async (url, init) => { if (first && url.endsWith('auth.test')) { first = false; await gate.promise; } return inner(url, init); };
+  t.adapter.start(t.hooks);
+  await settle();
+  await t.adapter.stop();
+  gate.resolve();
+  await settle();
+  assert.equal(FakeWs.all.length, 0);
+  assert.deepEqual(t.calls, ['auth.test'], 'it did not go on to open a connection either');
+
+  // A restart while the old connect is still in flight is not mistaken for it.
+  const gate2 = Promise.withResolvers();
+  const u = setup();
+  const inner2 = u.adapter.fetchImpl;
+  let held = true;
+  u.adapter.fetchImpl = async (url, init) => { if (held && url.endsWith('auth.test')) { held = false; await gate2.promise; } return inner2(url, init); };
+  u.adapter.start(u.hooks);
+  await settle();
+  await u.adapter.stop();
+  u.adapter.start(u.hooks);
+  await settle();
+  gate2.resolve();
+  await settle();
+  assert.equal(FakeWs.all.length, 1, 'only the new start connected');
+});

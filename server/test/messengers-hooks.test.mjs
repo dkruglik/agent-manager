@@ -76,3 +76,30 @@ test('a decision settled while its card is still being posted closes that card w
   assert.equal(t.updates.at(-1).card.resolved.text, 'No answer in time — answer in the terminal.');
   assert.equal(t.bridge.hooks.settledText.size, 0);
 });
+
+test('stop settles every waiting hook decision with null and starts no second interval', async () => {
+  const t = setup();
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  await flush();
+  const started = [];
+  const realSet = globalThis.setInterval;
+  globalThis.setInterval = (...a) => { const h = realSet(...a); started.push(h); return h; };
+  try { t.bridge.start(); t.bridge.start(); } finally { globalThis.setInterval = realSet; }
+  assert.equal(started.length, 1, 'one interval');
+  await t.bridge.stop();
+  assert.equal(await waiting, null);
+  assert.equal(t.bridge.pending.size, 0);
+  await flush();
+  assert.equal(t.updates.at(-1).card.resolved.text, 'Agent Manager is stopping — answer in the terminal.');
+});
+
+test('the decision timer does not keep the process alive', async () => {
+  const t = setup();
+  const handle = { unref() { handle.unrefd = true; } };
+  t.bridge.setTimer = () => handle;
+  const waiting = t.bridge.awaitDecision('s1', hookItem(perm));
+  await flush();
+  assert.equal(handle.unrefd, true);
+  await t.bridge.stop();
+  await waiting;
+});
