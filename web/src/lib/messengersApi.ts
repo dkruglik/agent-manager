@@ -21,6 +21,15 @@ export interface MessengerBinding {
 export interface MessengerAdapter { id: string; configured: boolean; connected: boolean; error: string | null; }
 export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt'>;
 
+/** `session:<id>` / `group:<id>` from the scope picker. Splits on the first ':'
+ *  only, so an id that contains one stays whole. */
+export function parseScope(value: string): MessengerBinding['scope'] | null {
+  const i = value.indexOf(':');
+  const type = value.slice(0, i);
+  const id = value.slice(i + 1);
+  return i > 0 && id && (type === 'session' || type === 'group') ? { type, id } : null;
+}
+
 const HEADERS = { 'content-type': 'application/json' };
 const bindingUrl = (id: string, suffix = ''): string => `/api/messengers/bindings/${encodeURIComponent(id)}${suffix}`;
 

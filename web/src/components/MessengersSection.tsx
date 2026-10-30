@@ -36,11 +36,12 @@ export function MessengersSection() {
     try { await fn(); if (ok) setNote(ok); await load(); } catch (e) { setErr((e as Error).message); }
   };
   const add = () => run(async () => {
-    const [type, id] = draft.scope.split(':');
+    const scope = messengers.parseScope(draft.scope);
+    if (!scope) throw new Error('Choose an agent or a group.');
     await messengers.createMessengerBinding({
       adapter: 'slack',
       target: { channel: draft.channel.trim() },
-      scope: { type: type as 'session' | 'group', id },
+      scope,
       events: ['input-required', 'finished'],
       allowedUsers: draft.users.split(/[\s,]+/).filter(Boolean),
       approvals: draft.approvals,
