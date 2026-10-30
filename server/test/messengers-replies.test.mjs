@@ -158,3 +158,31 @@ test('a top-level channel message prompts the one session-scoped binding, and is
   assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { ignored: 'no-target' });
   assert.equal(prompts.length, 1, 'nothing was sent to either session');
 });
+
+test('an answer in flight is claimed in memory only, and a failed answer leaves the card answerable', async () => {
+  const t = setup();
+  const onDisk = () => new BindingStore(path.join(t.root, 'messengers.json')).posted('b0|s1|req1').status;
+  const statusDuring = [];
+  let fail = true;
+  t.host.answer = async () => {
+    statusDuring.push(onDisk());
+    if (fail) throw new Error('app-server down');
+  };
+  const first = await t.bridge.handleReply('slack', press(1));
+  assert.ok(first.error);
+  assert.deepEqual(statusDuring, ['open'], 'a crash mid-answer leaves nothing stuck on disk');
+  assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'rolled back');
+  fail = false;
+  assert.deepEqual(await t.bridge.handleReply('slack', press(2)), { answered: 'req1' }, 'answerable again');
+});
+
+test('a card that cannot be closed after a delivered answer is logged, not reported as undelivered', async () => {
+  const t = setup();
+  t.bridge.replies.cards.close = async () => { throw new Error('EACCES messengers.json'); };
+  const out = await t.bridge.handleReply('slack', press(1));
+  assert.deepEqual(out, { answered: 'req1' });
+  assert.equal(t.host.answers.length, 1);
+  assert.equal(t.logs.find((e) => e.event === 'close-failed')?.error, 'EACCES messengers.json');
+  assert.ok(!t.posts.some((p) => /Could not deliver/.test(p.card.body)), 'the user is not told it failed');
+  assert.ok(!t.logs.some((e) => e.event === 'reply-failed'));
+});

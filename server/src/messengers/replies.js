@@ -25,6 +25,7 @@ export class ReplyRouter {
     this.answerer = answerer;
     this.log = log;
     this.handled = [];
+    this.answering = new Set(); // posted keys with an answer in flight; never persisted, so a crash leaves the card open
   }
 
   async say(adapterId, channel, thread, text) {
@@ -140,7 +141,7 @@ export class ReplyRouter {
     // The snapshot was taken before the awaits in handle(): a press that arrived
     // together with this one may have closed the card since.
     const p = this.store.posted(k) || snapshot;
-    if (p.status !== 'open') { await reply('This request is already closed.'); return this.refused('closed', binding, session); }
+    if (p.status !== 'open' || this.answering.has(k)) { await reply('This request is already closed.'); return this.refused('closed', binding, session); }
     if (p.item.generic) {
       await reply('This dialog cannot be answered from chat yet — open the terminal.');
       return this.refused('untyped', binding, session);
@@ -159,13 +160,15 @@ export class ReplyRouter {
       return { partial: true };
     }
     // Claimed before the first await, so a second press sees the card taken.
-    this.store.putPosted(k, { ...p, status: 'answering' });
-    try { await this.answerer(session, p.item, outcome.response, by, { binding, text: outcome.text }); } catch (e) {
-      this.store.putPosted(k, p);
-      throw e;
+    this.answering.add(k);
+    try { await this.answerer(session, p.item, outcome.response, by, { binding, text: outcome.text }); } finally {
+      this.answering.delete(k);
     }
     this.log({ event: 'answered', binding: binding.id, session: session.id, key: p.item.key, user: r.user.id });
-    await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text);
+    // The answer was delivered: a card that cannot be closed is a log line, not a failed reply.
+    try { await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text); } catch (e) {
+      this.log({ event: 'close-failed', binding: binding.id, session: session.id, key: p.item.key, error: e.message });
+    }
     return { answered: p.item.key };
   }
 
