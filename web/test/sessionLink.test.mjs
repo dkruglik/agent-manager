@@ -1,3 +1,4 @@
+// The "Open in Agent Manager" link on messenger cards (docs/messengers.md) lands here.
 // Opening a session from a `#session=<id>` link, without a browser: the module
 // is bundled for node and run against a stub location/history/window.
 // Run with:  node test/sessionLink.test.mjs

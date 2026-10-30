@@ -20,7 +20,8 @@ const shownDetails = (details) => String(details || '')
 
 // A decision may only be taken from chat when the approver saw all of the request
 // (as shown, escapes included): not clipped, and without a code fence, which a
-// chat message cannot show as written. inputCard clips the same shown text.
+// chat message cannot show as written. inputCard clips the same shown text;
+// an adapter must show all of it (Slack splits it: adapters/slack.js detailBlocks).
 export const reviewable = (item) => {
   const details = shownDetails(item.details);
   return details.length <= DETAILS_MAX && !details.includes('```');

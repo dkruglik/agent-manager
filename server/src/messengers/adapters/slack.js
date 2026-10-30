@@ -37,7 +37,8 @@ export function fromMrkdwn(text) {
 
 // Slack reads <...> as links and mentions, so details are escaped to show as
 // written. Escaping can grow text fivefold, past one block's limit: it is split
-// across blocks between characters, never cut or dropped.
+// across blocks between characters, never truncated or dropped, because an
+// approval needs the whole request on screen (cards.js `reviewable`).
 function detailBlocks(details, max = 2900) {
   const parts = [];
   let part = '';

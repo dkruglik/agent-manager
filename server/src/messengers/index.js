@@ -7,7 +7,7 @@ import { hookItem, hookOutput } from './claude-approvals.js';
 import { SlackAdapter } from './adapters/slack.js';
 
 // Built-in messengers. Any object implementing the adapter interface in
-// docs/messengers.md will do (Slack's is a class), so adding Telegram or Discord is one file here and nothing in the bridge.
+// docs/messengers.md will do (Slack's is a class).
 /**
  * @typedef {object} Adapter The messenger contract (docs/messengers.md, "Adding a messenger").
  * @property {() => boolean} configured  True when its tokens are set.

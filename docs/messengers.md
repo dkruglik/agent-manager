@@ -95,10 +95,10 @@ Claude Code exposes no typed answer path into a running TUI, but it does run
 The server writes these hooks into `$CLAUDE_CONFIG_DIR/settings.json` when it
 starts, and only when `CLAUDE_CONFIG_DIR` is set (the container image sets it).
 On a VPS or a local install, set it yourself, for example to `~/.claude`, before
-starting the server ([configuration table](development.md#configuration)). The
-hook script needs `jq` and `curl` on `PATH`; without either, or without the
-setting, nothing is installed or the hook does nothing, and prompts stay in the
-terminal. When the request to Agent Manager fails (unreachable, or refused with
+starting the server ([configuration table](development.md#configuration)).
+Without `CLAUDE_CONFIG_DIR` no hook is installed. The installed hook script
+needs `jq` and `curl` on `PATH`; without either it exits at once and prints
+nothing. Either way prompts stay in the terminal. When the request to Agent Manager fails (unreachable, or refused with
 an HTTP error), the hook prints nothing on stdout, so the terminal dialog stays,
 and writes one line on stderr, which Claude shows only in verbose mode; the
 server logs every refusal as `hook-rejected` with its status and reason.
@@ -123,8 +123,13 @@ server logs every refusal as `hook-rejected` with its status and reason.
    in the terminal*; if the hook is stopped (Claude moved on, or the terminal
    answered), they say *Stopped waiting — answer in the terminal*; if Agent
    Manager stops (SIGTERM or SIGINT; it waits up to 2 s for this), they say
-   *Agent Manager is stopping — answer in the terminal*. In each case the hook prints nothing and
-   Claude falls back to its dialog. The hook's own timeout is 150 s.
+   *Agent Manager is stopping — answer in the terminal*; if a card cannot be
+   posted, the cards already posted say *Could not be posted*. In each case the
+   hook prints nothing and Claude falls back to its dialog. A card whose post
+   finishes after the decision was settled is closed with the same text (*No
+   longer waiting — answer in the terminal* if there is none), and a press on a
+   card whose hook is gone gets *This request is no longer waiting — answer in
+   the terminal*. The hook's own timeout is 150 s.
 
 Limits:
 
@@ -208,7 +213,7 @@ operator-facing setting. It knows nothing about agents:
 
 ```js
 export class XAdapter {
-  constructor({ token = '' } = {}) { this.id = 'x'; this.token = token; }
+  constructor({ token = '' } = {}) { this.token = token; }
   configured() { return !!this.token; }
   start({ onReply, onCommand, onStatus, log }) {}   // connect; call onStatus({connected, error})
   async stop() {}
@@ -244,22 +249,28 @@ option ids already fit), `reply_to_message_id` for threads and
 One file per concern, all under `server/test/`; no suite talks to Slack or runs a
 real Claude.
 
-- `messengers.test.mjs`: the bridge with a fake adapter and host (baselines,
-  settle window, redelivery, allow-list, group addressing, typed questions,
-  opt-in approvals, cards closed elsewhere, the lock, restart) and the Slack
-  adapter with a fake socket and `fetch` (acks, bot filtering, slash commands).
+- `messengers.test.mjs`: the bridge with a fake adapter and host (binding
+  defaults, baselines, settle window, redelivery, allow-list, group addressing,
+  typed questions, opt-in approvals, cards closed elsewhere, the lock, restart,
+  `/am status`).
 - `messengers-bridge.test.mjs`: failure paths (lookups, posts, transcript
-  reads), escaping and review limits of approval details, back-off.
+  reads, a corrupt `messengers.json`), escaping and review limits of approval
+  details, back-off and the public `lastError`.
 - `messengers-cards.test.mjs`: which buttons a card carries, invisible
   characters shown escaped, and the unreviewable-details refusal.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
 - `messengers-store.test.mjs`: binding validation and what is kept on disk.
+- `messengers-slack-protocol.test.mjs`: Slack rendering and escaping, Socket
+  Mode acks and replies (bot filtering, slash commands), and where the tokens
+  are read.
 - `messengers-slack.test.mjs`: the Slack socket (malformed frames, start/stop,
-  silent connections).
+  silent connections, reconnect back-off, replaced sockets, a failing slash
+  command, public API errors).
 - `messengers-claude.test.mjs`: the hook payload mapping and its output.
 - `messengers-hooks.test.mjs`: hook decisions on the bridge (opt-in, timeout,
-  abort, several channels, no leftover state).
+  abort, several channels, failed posts and their log lines, no leftover state).
+  `messengers-fixtures.mjs` holds the fixtures it shares with other suites.
 - `messengers-claude-hook.test.mjs`: the hook script against a local server
   (guards, pass-through, failures reported on stderr only) and its installation.
 - `messengers-http.test.mjs`: the routes on a real server (error envelope,
