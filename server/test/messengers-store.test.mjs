@@ -114,3 +114,30 @@ test('an unreadable messengers.json that cannot be renamed aside is copied, or n
   assert.throws(() => stuck.putSeen('k', 'v'), /not overwriting/);
   assert.equal(fs.readFileSync(file, 'utf8'), '{not json', 'the unreadable file is left as it was');
 });
+
+test('dropping malformed bindings keeps a copy of the original file first', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-dropped-'));
+  const file = path.join(dir, 'messengers.json');
+  const good = { id: 'b1', adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'group', id: 'g1' }, events: ['finished'], allowedUsers: [], approvals: false };
+  const original = JSON.stringify({ bindings: [good, { ...good, id: 'b2', approvals: 'yes' }] });
+  fs.writeFileSync(file, original);
+  const warnings = [];
+  t.mock.method(console, 'warn', (...a) => warnings.push(a.join(' ')));
+  const store = new BindingStore(file, { now: () => 9 });
+  store.putSeen('k', 'v');
+  assert.equal(fs.readFileSync(`${file}.dropped-9`, 'utf8'), original, 'the dropped binding is still on disk');
+  assert.match(warnings.join('\n'), /dropped-9/);
+});
+
+test('posted and seen that are not plain objects load as empty', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-maps-'));
+  for (const [posted, seen] of [[[], 'x'], [null, [1]], ['s', 3]]) {
+    const file = path.join(dir, `m-${JSON.stringify(posted)}.json`);
+    fs.writeFileSync(file, JSON.stringify({ bindings: [], posted, seen }));
+    const store = new BindingStore(file);
+    assert.deepEqual(store.allPosted(), []);
+    assert.equal(store.seen('0'), null);
+    store.putSeen('k', 'v');
+    assert.equal(store.seen('k'), 'v');
+  }
+});

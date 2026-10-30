@@ -22,6 +22,8 @@ const wellFormed = (b) => !!b && typeof b === 'object' && typeof b.id === 'strin
   && SCOPES.has(b.scope?.type) && typeof b.scope?.id === 'string'
   && Array.isArray(b.events) && Array.isArray(b.allowedUsers) && typeof b.approvals === 'boolean';
 
+const isPlain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const plain = (v) => (isPlain(v) ? v : {});
 const text = (v, max) => typeof v === 'string' ? v.trim().slice(0, max) : '';
 
 export function validateBinding(input, { adapters, existing = null, scopeExists = () => true } = {}) {
@@ -91,11 +93,23 @@ export class BindingStore {
       const raw = JSON.parse(text);
       if (!raw || !Array.isArray(raw.bindings)) throw new Error('no bindings array');
       const bindings = raw.bindings.filter(wellFormed);
-      if (bindings.length !== raw.bindings.length) {
-        console.warn(`messengers: ignored ${raw.bindings.length - bindings.length} malformed binding(s) in ${this.file}`);
-      }
-      this.data = { bindings, posted: raw.posted || {}, seen: raw.seen || {} };
+      if (bindings.length !== raw.bindings.length) this.keepDropped(raw.bindings.length - bindings.length);
+      const posted = Object.entries(plain(raw.posted)).filter(([, p]) => isPlain(p));
+      this.data = { bindings, posted: Object.fromEntries(posted), seen: plain(raw.seen) };
     } catch (e) { this.setAside(e); }
+  }
+
+  // The next persist() would remove dropped bindings from disk for good: copy the file first.
+  keepDropped(count) {
+    const aside = `${this.file}.dropped-${this.now()}`;
+    const problem = `messengers: ignored ${count} malformed binding(s) in ${this.file}`;
+    try {
+      fs.copyFileSync(this.file, aside, fs.constants.COPYFILE_EXCL);
+      console.warn(`${problem}; the original is kept as ${aside}`);
+    } catch (e) {
+      this.readOnly = true;
+      console.warn(`${problem}. It could not be copied (${e.message}), so nothing will be saved until it is fixed by hand.`);
+    }
   }
 
   // Moved aside, else copied; if neither works the store refuses to persist,
