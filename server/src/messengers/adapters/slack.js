@@ -30,6 +30,23 @@ export function fromMrkdwn(text) {
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
+const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Slack reads <...> as links and mentions, so details are escaped to show as
+// written. Escaping can grow text fivefold, past one block's limit: it is split
+// across blocks between characters, never cut or dropped.
+function detailBlocks(details, max = 2900) {
+  const parts = [];
+  let part = '';
+  for (const ch of details.replace(/```/g, "'''")) {
+    const e = escapeMrkdwn(ch);
+    if (part.length + e.length > max) { parts.push(part); part = ''; }
+    part += e;
+  }
+  if (part) parts.push(part);
+  return parts.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text: `\`\`\`${text}\`\`\`` } }));
+}
+
 export function renderBlocks(card) {
   const blocks = [];
   if (card.title) {
@@ -37,7 +54,7 @@ export function renderBlocks(card) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${toMrkdwn(card.title)}*${where}` } });
   }
   if (card.body) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: toMrkdwn(card.body).slice(0, 2990) } });
-  if (card.details) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `\`\`\`${card.details.replace(/```/g, "'''").slice(0, 2900)}\`\`\`` } });
+  if (card.details) blocks.push(...detailBlocks(card.details));
   if (card.resolved) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `☑️ ${toMrkdwn(card.resolved.text)}` }] });
   } else if (card.options?.length) {

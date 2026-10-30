@@ -10,8 +10,12 @@ export function clip(s, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-// A decision may only be taken from chat when the approver saw all of the request.
-export const reviewable = (item) => String(item.details || '').trim().length <= DETAILS_MAX;
+// A decision may only be taken from chat when the approver saw all of the request:
+// not clipped, and without a code fence, which a chat message cannot show as written.
+export const reviewable = (item) => {
+  const details = String(item.details || '').trim();
+  return details.length <= DETAILS_MAX && !details.includes('```');
+};
 export const TOO_LONG = 'Too long to review here — answer in the terminal.';
 
 function questionOptions(questions, partial) {

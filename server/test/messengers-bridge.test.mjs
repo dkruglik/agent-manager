@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { BindingStore } from '../src/messengers/store.js';
+import { inputCard, reviewable, TOO_LONG } from '../src/messengers/cards.js';
+import { renderBlocks } from '../src/messengers/adapters/slack.js';
 
 // Bridge failure paths: a failed lookup, post or transcript read must neither
 // close cards nor lose or replay events.
@@ -106,4 +108,26 @@ test('a corrupt messengers.json is set aside, not overwritten', () => {
 
   assert.deepEqual(new BindingStore(path.join(dir, 'missing.json')).bindings(), [], 'a missing file just starts empty');
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.startsWith('missing')), []);
+});
+
+test('approval details are escaped for Slack and never cut', () => {
+  const fenced = (blocks) => blocks.filter((b) => b.text?.text.startsWith('```')).map((b) => b.text.text.slice(3, -3));
+  const details = '<https://a|b> <!here> a&lt;b';
+  assert.deepEqual(fenced(renderBlocks({ title: 't', details })), ['&lt;https://a|b&gt; &lt;!here&gt; a&amp;lt;b']);
+
+  // Worst case: every character expands to &amp;. All of it is still shown, whole entities only.
+  const long = '&'.repeat(1800);
+  const parts = fenced(renderBlocks({ title: 't', details: long }));
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((p) => p.length + 6 <= 3000));
+  assert.equal(parts.join(''), '&amp;'.repeat(1800));
+});
+
+test('details containing a code fence are not reviewable from chat', () => {
+  const item = { kind: 'permission', details: 'echo ```x```', choices: [{ value: 'accept', label: 'Approve once' }] };
+  assert.equal(reviewable(item), false);
+  const card = inputCard({ agent: { name: 'a' }, link: null, item, approvals: true });
+  assert.deepEqual(card.options, []);
+  assert.equal(card.hint, TOO_LONG);
+  assert.equal(reviewable({ ...item, details: 'echo x' }), true);
 });
