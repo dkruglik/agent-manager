@@ -47,7 +47,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
       const status = bridge.status();
       return {
         adapters: ids.map((id) => ({ id, configured: adapters.get(id).configured(), ...status[id] })),
-        bindings: store.bindings(),
+        bindings: store.bindings().map((b) => ({ ...b, lastError: bridge.lastError(b.id) })),
       };
     },
     create: (body) => store.putBinding(validateBinding(body, { adapters: ids, scopeExists })),

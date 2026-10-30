@@ -85,6 +85,7 @@ export function MessengersSection() {
                 <input type="checkbox" checked={b.approvals} onChange={() => run(() => messengers.updateMessengerBinding(b.id, { approvals: !b.approvals }))} /> allow approvals (Codex, Claude Code)
               </label>
               <div>Allowed users: <span className="mono">{b.allowedUsers.join(', ') || 'nobody'}</span></div>
+              {b.lastError && <div className="s-muted">Posting is failing — <span className="mono">{b.lastError}</span>. Retrying with a growing delay.</div>}
             </div>
           </div>
           <span className="confirm-del">

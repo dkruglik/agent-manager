@@ -14,6 +14,9 @@ import { HookDecisions } from './hook-decisions.js';
 // chat service through an adapter, so this file knows neither. See
 // docs/messengers.md for both contracts.
 
+const BACKOFF_MIN_MS = 5000;
+const BACKOFF_MAX_MS = 5 * 60_000;
+
 export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {},
@@ -26,6 +29,7 @@ export class MessengerBridge {
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
+    this.failing = new Map();      // bindingId → {count, error, retryAt} while its posts keep failing
     this.timer = null;
     this.ticking = false;
     this.replies = new ReplyRouter({
@@ -157,19 +161,37 @@ export class MessengerBridge {
       const sessions = this.host.sessions();
       for (const binding of this.store.bindings()) {
         if (!this.statuses.get(binding.adapter)?.connected) continue;
-        for (const s of this.sessionsFor(binding, sessions)) await this.checkSession(binding, s);
+        if (this.now() < (this.failing.get(binding.id)?.retryAt || 0)) continue;
+        let failure = null;
+        for (const s of this.sessionsFor(binding, sessions)) failure = (await this.checkSession(binding, s)) || failure;
+        this.noteOutcome(binding, failure);
       }
     } finally { this.ticking = false; }
   }
 
+  // Returns the error when the check failed, so the binding can be backed off.
   async checkSession(binding, s) {
     try {
       if (binding.events.includes('input-required')) await this.checkInput(binding, s);
       await this.checkFinished(binding, s);
+      return null;
     } catch (e) {
       this.log({ event: 'tick-failed', binding: binding.id, session: s.id, error: e.message });
+      return e;
     }
   }
+
+  // A binding that fails keeps being skipped for 5 s, doubling to 5 min, so a
+  // dead channel costs neither a request every tick nor a log line every tick.
+  noteOutcome(binding, failure) {
+    if (!failure) { this.failing.delete(binding.id); return; }
+    const count = (this.failing.get(binding.id)?.count || 0) + 1;
+    const wait = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (count - 1));
+    this.failing.set(binding.id, { count, error: String(failure.message).slice(0, 200), retryAt: this.now() + wait });
+  }
+
+  /** The last error of a binding whose posts are failing, else null. */
+  lastError(bindingId) { return this.failing.get(bindingId)?.error ?? null; }
 
   handleReply(adapterId, r) { return this.replies.handle(adapterId, r); }
   handleCommand(adapterId, c) { return this.replies.command(adapterId, c); }

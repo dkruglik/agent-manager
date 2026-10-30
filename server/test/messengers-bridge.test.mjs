@@ -154,7 +154,7 @@ test('a finished card whose post failed is posted on the next tick', async () =>
   await t.tick();
   assert.equal(t.slack.posts.length, 0);
   assert.ok(t.logs.some((e) => e.event === 'tick-failed'));
-  await t.tick(1000);
+  await t.tick(5000); // past the failed binding's first backoff
   assert.equal(t.slack.posts.length, 1, 'retried');
   assert.equal(t.slack.posts[0].card.body, 'new answer');
   await t.tick(1000);
@@ -183,4 +183,35 @@ test('/am status lists nothing while locked', async () => {
   const reply = await ask();
   assert.equal(reply, 'Agent Manager is locked.');
   assert.doesNotMatch(reply, /alpha/);
+});
+
+test('a binding whose posts keep failing is backed off, reported, and cleared on success', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'new answer' });
+  t.host.list[0].state = 'waiting';
+  let attempts = 0;
+  t.slack.post = async () => { attempts += 1; throw new Error('slack chat.postMessage: channel_not_found'); };
+  await t.tick(1000);
+  assert.equal(attempts, 1);
+  assert.equal(t.bridge.lastError('b0'), 'slack chat.postMessage: channel_not_found');
+  await t.tick(4000);
+  assert.equal(attempts, 1, 'skipped while backing off');
+  await t.tick(1000);
+  assert.equal(attempts, 2, 'retried after 5 s');
+  await t.tick(9000);
+  assert.equal(attempts, 2, 'the wait doubled to 10 s');
+  await t.tick(1000);
+  assert.equal(attempts, 3);
+  assert.equal(t.logs.filter((e) => e.event === 'tick-failed').length, 3, 'one log line per attempt, not per tick');
+  for (let i = 0; i < 10; i++) t.bridge.noteOutcome({ id: 'b0' }, new Error('x'));
+  assert.equal(t.bridge.failing.get('b0').retryAt - t.bridge.now(), 300_000, 'capped at 5 minutes');
+  t.bridge.waitingSince.clear(); // a long wait leaves the look-for window; start a new one
+
+  const real = fakeAdapter();
+  t.slack.post = real.post;
+  await t.tick(300_000);
+  assert.equal(t.bridge.lastError('b0'), null, 'cleared by a success');
+  assert.equal(t.bridge.failing.size, 0);
 });

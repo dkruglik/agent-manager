@@ -15,6 +15,8 @@ export interface MessengerBinding {
   scope: { type: 'session' | 'group'; id: string };
   events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
   label: string | null; createdAt: string;
+  /** Set while the binding's posts are failing (a Slack error code, never a token). */
+  lastError?: string | null;
 }
 export interface MessengerAdapter { id: string; configured: boolean; connected: boolean; error: string | null; }
 export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt' | 'label'>;
