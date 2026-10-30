@@ -137,6 +137,10 @@ try {
   const ops = fs.readFileSync(path.join(DATA_DIR, 'operations.jsonl'), 'utf8');
   assert.ok(ops.includes('/api/messengers/bindings'), 'binding changes are in the API log');
   assert.ok(!ops.includes(BOT) && !ops.includes(APP), 'tokens never reach the API log');
+  // SIGTERM reaches the bridge, so hooks still waiting are told Agent Manager is stopping.
+  server.kill('SIGTERM');
+  await new Promise((resolve) => { server.once('exit', resolve); setTimeout(resolve, 5000); });
+  assert.ok(hookLog().some((e) => e.event === 'stopping'), 'the signal handler stops the messengers');
   console.log('messengers-http: all assertions passed');
 } catch (error) {
   console.error(log.slice(-1500));

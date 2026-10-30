@@ -119,7 +119,8 @@ terminal.
 5. With no answer within **120 s**, the cards say *No answer in time — answer
    in the terminal*; if the hook is stopped (Claude moved on, or the terminal
    answered), they say *Stopped waiting — answer in the terminal*; if Agent
-   Manager stops, they say so too. In each case the hook prints nothing and
+   Manager stops (SIGTERM or SIGINT; it waits up to 2 s for this), they say
+   *Agent Manager is stopping — answer in the terminal*. In each case the hook prints nothing and
    Claude falls back to its dialog. The hook's own timeout is 150 s.
 
 Limits:
@@ -152,7 +153,7 @@ Limits:
   `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
   `user-not-allowed`, `no-session`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
-  `hook-rejected`, `hook-response-lost`, and the failures `tick-failed`,
+  `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
   `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
   `hook-post-failed`, `digest-failed`, `requests-failed`, plus the Slack
   socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error` and

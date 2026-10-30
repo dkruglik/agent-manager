@@ -40,6 +40,11 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
   return {
     log,
     start: () => bridge.start(),
+    // Waiting hooks are told Agent Manager is stopping; adapters disconnect.
+    async stop() {
+      log({ event: 'stopping' });
+      await bridge.stop();
+    },
     list() {
       const status = bridge.status();
       return {

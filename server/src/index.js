@@ -232,11 +232,15 @@ await Promise.race([
 // running instead of exiting.
 // No tmux to outlive us any more: kill the PTYs we hold on the way out so a
 // restart can't leave orphaned agents writing into the workspace.
+// Messengers go first, bounded: a Claude hook still waiting on a chat answer is
+// told Agent Manager is stopping instead of hanging until its own timeout.
 let shutdownStarted = false;
+let stopMessengers = async () => {};
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    try { await Promise.race([stopMessengers(), new Promise((r) => setTimeout(r, 2000).unref())]); } catch {}
     try { await stopAll(); } catch {}
     process.exit(0);
   });
@@ -3988,6 +3992,7 @@ api.post('/api/messengers/claude-hook', async (req, res) => {
   res.json(result);
 });
 messengers.start();
+stopMessengers = () => messengers.stop();
 
 app.use(apiNotFound);
 // Serve the built frontend with SPA fallback.
