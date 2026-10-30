@@ -134,7 +134,10 @@ export class ReplyRouter {
     return { prompted: session.id };
   }
 
-  async answer([k, p], binding, session, r, text, reply) {
+  async answer([k, snapshot], binding, session, r, text, reply) {
+    // The snapshot was taken before the awaits in handle(): a press that arrived
+    // together with this one may have closed the card since.
+    const p = this.store.posted(k) || snapshot;
     if (p.status !== 'open') { await reply('This request is already closed.'); return this.refused('closed', binding, session); }
     if (p.item.generic) {
       await reply('This dialog cannot be answered from chat yet — open the terminal.');
@@ -153,7 +156,12 @@ export class ReplyRouter {
       await this.cards.refresh(p, session, outcome.partial);
       return { partial: true };
     }
-    await this.answerer(session, p.item, outcome.response, by, { binding, text: outcome.text });
+    // Claimed before the first await, so a second press sees the card taken.
+    this.store.putPosted(k, { ...p, status: 'answering' });
+    try { await this.answerer(session, p.item, outcome.response, by, { binding, text: outcome.text }); } catch (e) {
+      this.store.putPosted(k, p);
+      throw e;
+    }
     this.log({ event: 'answered', binding: binding.id, session: session.id, key: p.item.key, user: r.user.id });
     await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text);
     return { answered: p.item.key };

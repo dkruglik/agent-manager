@@ -112,3 +112,23 @@ test('a closed input card keeps no tool input on disk but is still closed with i
   assert.equal(updates.at(-1).details, typed.details, 'the closed card in chat still shows what was decided');
   assert.match(updates.at(-1).resolved.text, /Approve once/);
 });
+
+test('two presses together answer a typed card once', async () => {
+  const t = setup();
+  const release = Promise.withResolvers();
+  t.host.answer = async (...a) => { t.host.answers.push(a); await release.promise; };
+  const first = t.bridge.handleReply('slack', press(1, 'd:accept'));
+  const second = t.bridge.handleReply('slack', press(2, 'd:decline', { id: 'U1', name: 'bob' }));
+  await new Promise((r) => setImmediate(r));
+  release.resolve();
+  const outcomes = await Promise.all([first, second]);
+  assert.equal(t.host.answers.length, 1, 'host.answer ran once');
+  assert.deepEqual(outcomes.map((o) => Object.keys(o)[0]).sort(), ['answered', 'refused']);
+  assert.equal(t.store.posted('b0|s1|req1').status, 'closed');
+
+  // A failed answer gives the card back, so the press can be retried.
+  const u = setup();
+  u.host.answer = async () => { throw new Error('app-server down'); };
+  await u.bridge.handleReply('slack', press(3));
+  assert.equal(u.store.posted('b0|s1|req1').status, 'open');
+});
