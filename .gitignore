@@ -10,3 +10,6 @@ data/
 .env.local
 __pycache__/
 *.pyc
+
+# Local Slack secrets
+.secrets.env
