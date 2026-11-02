@@ -20,8 +20,9 @@ import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS
 import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
-  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote,
+  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice,
 } from './config.js';
+import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice } from './model-catalog.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
@@ -37,8 +38,8 @@ import * as crons from './crons.js';
 import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js';
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
-  waitForInputReady, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
-  installClaudeRepinHook, installOpencodeRepinPlugin, runIdOf,
+  waitForInputReady, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
+  installClaudeRepinHook, installOpencodeRepinPlugin,
 } from './runner.js';
 
 // Control frames ride the terminal socket behind a leading NUL pair, which real
@@ -85,6 +86,7 @@ const requestPolicy = createRequestPolicy(process.env, INTERNAL_HOST);
 const FRAME_ANCESTORS = frameAncestorOrigins(process.env);
 ensureDirs();
 refreshVersions();
+startModelCatalog();
 store.init();
 crons.init();
 pruneAttachmentDirs(store.list().map((session) => session.id))
@@ -403,7 +405,26 @@ api.get('/api/visibility', (_req, res) => res.json(visibility()));
 api.get('/api/health', (_req, res) =>
   res.json({ ok: true, engine: 'libghostty', ghostty: ghosttyReady(), ghosttyError }));
 
-api.get('/api/clis', (_req, res) => res.json(cliCatalog()));
+// `launch` says what the create form may offer for this CLI: a model select
+// (only when its model list was built) and an effort select. The lists
+// themselves are in GET /api/launch-options, so this poll stays small.
+api.get('/api/clis', (_req, res) => {
+  const launch = new Map(launchOptions().clis.map((c) => [c.id, c]));
+  res.json(cliCatalog().map((c) => {
+    const l = launch.get(c.id);
+    return { ...c, launch: { model: !!l?.model, effort: !!(l?.efforts || (l?.perModelEfforts && l.models.some((m) => m.efforts?.length))) } };
+  }));
+});
+
+// The model list each CLI offered when it was last asked (built after boot
+// and cached; see model-catalog.js), with the effort values per CLI or per
+// model. A creation's model / effort must come from here.
+api.get('/api/launch-options', (_req, res) => res.json(launchOptions()));
+// Ask the CLIs again (a new install, a new credential). Answers when done.
+api.post('/api/launch-options/refresh', async (_req, res) => {
+  await refreshModelLists({ force: true });
+  res.json(launchOptions());
+});
 
 // Observation only, behind the same privacy/admission boundary as other APIs.
 api.get('/api/codex/shared', async (req, res) => {
@@ -584,7 +605,9 @@ api.get('/api/codex/client-target', async (req, res) => {
     if (read?.thread?.id !== binding.threadId || fs.realpathSync(read.thread.cwd) !== context.workdir) throw new ApiError(409, 'codex-thread-mismatch', 'Thread verification failed.');
     // Re-read after network awaits. A deleted/changed session must not launch.
     contextForThread(binding.threadId, { sessions: store.list(), endpoint });
-    res.set('Cache-Control', 'no-store').json({ ...context, socket: endpoint.socket, codexHome: endpoint.home });
+    // The session's model / effort, so the helper launches with them too.
+    const { model, effort } = launchChoice(s);
+    res.set('Cache-Control', 'no-store').json({ ...context, socket: endpoint.socket, codexHome: endpoint.home, model, effort });
   } catch (error) { throw contextError(error); }
   finally { client?.close(); }
 });
@@ -806,7 +829,7 @@ const operatorName = () => process.env.SPACE_AUTHOR_NAME || process.env.AM_USER 
  * agent-to-agent API) go through here, which is what makes remote agents
  * reachable from everywhere the local ones are without duplicating either path.
  */
-async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null } = {}) {
+async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null, runId = null } = {}) {
   // The privacy lock cancels admitted-but-uncommitted work: every effect below
   // is preceded by this check, so a prompt that was still waiting for its agent
   // to become ready is dropped when the lock lands — not typed a moment later
@@ -816,13 +839,15 @@ async function deliver(session, { text, attachments = [] }, from, { signal = nul
   const scope = lockScope();
   const cancelled = () => { if (scope.signal.aborted || signal?.aborted) throw lockedError(); };
   try {
-    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId });
+    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId, runId });
   } finally {
     scope.release();
   }
 }
 
-async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId }) {
+// `runId` pins the delivery to one launch of the pane (boot revival's
+// message): it never starts the pane, and a replacement does not receive it.
+async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId, runId }) {
   cancelled();
   assertCodexLaunchAllowed(session);
   if (sessionRuntime.shared(session)) {
@@ -855,7 +880,8 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
     });
     return ensureRunning(store.get(session.id) || session);
   }
-  const started = ensureRunning(session);
+  if (runId && runIdOf(session.id) !== runId) throw new ApiError(409, 'input-not-ready', 'session was stopped or restarted before this could be delivered');
+  const started = runId ? false : ensureRunning(session);
   if (started) {
     // Stop waiting the moment the lock lands rather than at readiness.
     const ready = await Promise.race([
@@ -871,7 +897,7 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
     await sleep(500);
   }
   cancelled();
-  await sendInput(session.id, prompt, { confirmEcho: started && session.cli === 'opencode' });
+  await sendInput(session.id, prompt, { confirmEcho: started && session.cli === 'opencode', runId });
   return started;
 }
 
@@ -1145,8 +1171,9 @@ api.get('/api/agents', async (req, res) => {
     // Which CLIs a spawn can ask for. `ready` = a credential was found.
     // Remote agents are absent from the spawn list on purpose: creating one
     // produces a pane waiting for a human to paste its prompt onto another
-    // machine, which an agent in here cannot do.
-    clis: cliCatalog().filter((c) => isAgentCli(c.id) && c.available && !isRemote(c.id))
+    // machine, which an agent in here cannot do. A deprecated CLI is absent
+    // too: spawn refuses it (assertCreatable).
+    clis: cliCatalog().filter((c) => isAgentCli(c.id) && c.available && !isRemote(c.id) && !c.deprecated)
       .map((c) => ({ id: c.id, label: c.label, ready: c.ready })),
     generatedAt: new Date().toISOString(),
   });
@@ -1363,6 +1390,7 @@ api.post('/api/agents', promptBody, async (req, res) => {
   const cli = String(q.cli || '').trim();
   const def = cliById(cli);
   if (!def || !promptable({ cli })) return res.status(400).json({ error: `unknown agent cli '${cli}' — see clis[] in GET /api/agents` });
+  assertCreatable(cli);
   if (isRemote(cli)) return res.status(400).json({ error: 'a remote agent has to be created by the operator — it needs its prompt pasted onto another machine. Message an existing one instead.' });
   const cat = cliCatalog().find((c) => c.id === cli);
   if (!cat.available) return res.status(400).json({ error: `${def.label} is not installed here` });
@@ -1381,8 +1409,14 @@ api.post('/api/agents', promptBody, async (req, res) => {
     groupId: g.groupId,
     path: where,
     prompt: `[message from ${from.session.name}:] ${prompt}`,
+    // ?model=&effort= — from GET /api/launch-options; absent = CLI default.
+    model: typeof q.model === 'string' ? q.model : undefined,
+    effort: typeof q.effort === 'string' ? q.effort : undefined,
   };
   const shared = cli === 'codex' && sharedCreationEnabled();
+  if (shared && (creation.model || creation.effort)) {
+    throw new ApiError(400, 'invalid-launch-option', 'Model and effort are not available for shared Codex tasks yet.');
+  }
   if (shared) {
     const chosen = cleanRelPath(where);
     if (chosen === null || chosen === remote.REMOTE_FOLDER || chosen.startsWith(`${remote.REMOTE_FOLDER}/`)) {
@@ -1574,7 +1608,7 @@ const NON_SECRET = new Set([
   'GEMINI_CLI_HOME', 'GEMINI_LIVE', 'GEMINI_DURABLE',
   'OPENCLAW_STATE_DIR', 'OPENCLAW_HOME', 'OPENCLAW_DURABLE',
   'OPENCODE_LIVE', 'OPENCODE_DURABLE', 'HERMES_LIVE', 'HERMES_DURABLE',
-  'FX_LIVE', 'FX_DURABLE',
+  'FX_LIVE', 'FX_DURABLE', 'ANTIGRAVITY_LIVE', 'ANTIGRAVITY_DURABLE',
   'AGENT_STATE_SCRIPT', 'AGENT_STATE_CHECKPOINT_SECONDS', 'DATA_DIR',
   'NPM_CONFIG_PREFIX', 'PWD', 'OLDPWD', 'SHLVL', '_', 'HOSTNAME',
   'ACCELERATOR', 'COMMIT_SHA', 'CPU_CORES', 'HF_DATASETS_TRUST_REMOTE_CODE', 'IMAGE_SHA', 'MEMORY', 'OMP_NUM_THREADS',
@@ -1934,10 +1968,12 @@ function normalizeAmConfig(saved) {
     },
     // After a restart, start the sessions that were running again — the ones you
     // prompted within `days`, plus any that still had work in flight (see
-    // runstate.js). `days` is only read when enabled.
+    // runstate.js). `days` is only read when enabled. `continue` tells each
+    // revived agent its work was interrupted, so it carries on by itself.
     revive: {
       enabled: saved.revive?.enabled !== false,
       days: [1, 3, 7].includes(saved.revive?.days) ? saved.revive.days : 3,
+      continue: saved.revive?.continue !== false,
     },
     // How often the bucket is copied to private Hub storage. Off by default: it
     // copies this machine's contents — saved logins included — into another Hub
@@ -1985,6 +2021,7 @@ api.put('/api/config', async (req, res) => {
     revive: {
       enabled: !!(b.revive?.enabled ?? true),
       days: [1, 3, 7].includes(b.revive?.days) ? b.revive.days : 3,
+      continue: !!(b.revive?.continue ?? true),
     },
     backup: {
       every: backup.INTERVALS.includes(b.backup?.every) ? b.backup.every : 'never',
@@ -2195,8 +2232,8 @@ description: "READ THIS BEFORE STARTING ANY WORK. How this workspace actually be
 
 You are running as a terminal session inside **Agent Manager**, a private cloud
 workspace (a Hugging Face Space) operated by a single user. Several AI coding
-CLIs run here side by side — Claude Code, Codex, Gemini CLI, opencode, and
-Hermes — alongside plain shells and a file browser.
+CLIs run here side by side — Claude Code, Codex, Antigravity CLI, opencode, and Hermes —
+alongside plain shells and a file browser.
 
 ## Where you are
 - Your working directory is a **workspace folder** under \`/data/workspaces/\`. Everything you create here is saved.
@@ -3197,6 +3234,16 @@ api.post('/api/overview/hidden', (req, res) => {
 // Backwards-compatible flat list (used by probes/tests).
 api.get('/api/sessions', (_req, res) => res.json(sessionsWithState()));
 
+// A deprecated CLI keeps every existing session working (launch, revive,
+// prompts) but takes no new ones. Every creation path goes through
+// createSession, so this one check covers the UI, spawn and cron fires.
+function assertCreatable(cli) {
+  const def = cliById(cli);
+  if (def?.deprecated) {
+    throw new ApiError(400, 'cli-deprecated', def.deprecated.refusal);
+  }
+}
+
 // Default name for a new agent: "<cli-label-slug>-<n>", e.g. claude-code-1.
 function nextName(cli) {
   const base = slugify(cliById(cli).label) || cli;
@@ -3229,8 +3276,11 @@ api.get('/api/next-name', (req, res) => {
 // Create a session and (optionally) start it on an initial prompt. Shared by
 // the UI's POST /api/sessions and the agent API's spawn — one creation path, so
 // quickstart behaves identically whoever asked. Returns null for a bad path.
-function createSession({ name, cli, groupId, path: reqPath, prompt }) {
+function createSession({ name, cli, groupId, path: reqPath, prompt, model, effort }) {
   assertLegacyCodexCreationAllowed(cli);
+  assertCreatable(cli);
+  // Checked before anything is created: a refused model leaves no session.
+  const launch = checkLaunchChoice(cli, { model, effort });
   const finalName = name && name.trim() ? name.trim() : nextName(cli);
   // A remote agent's slug IS its folder and its API address, so it is minted
   // here, from the name, and never changes afterwards — the display name stays
@@ -3249,7 +3299,7 @@ function createSession({ name, cli, groupId, path: reqPath, prompt }) {
   if (!remoteSlug && (chosen === remote.REMOTE_FOLDER || chosen.startsWith(`${remote.REMOTE_FOLDER}/`))) {
     return { error: `${remote.REMOTE_FOLDER}/ holds remote agents' message logs — pick another folder` };
   }
-  const s = store.create({ name: finalName, cli, path: chosen });
+  const s = store.create({ name: finalName, cli, path: chosen, ...launch });
   if (remoteSlug) {
     remote.ensureFolder(remoteSlug);
     store.update(s.id, { remote: { name: remoteSlug, paused: false, peer: null } });
@@ -3303,7 +3353,7 @@ function adoptClaudeSession({ name, groupId, path: reqPath, adoptSessionUuid, pr
 }
 
 api.post('/api/sessions', async (req, res) => {
-  const { name, cli, groupId, path: reqPath, prompt, adoptSessionUuid } = req.body || {};
+  const { name, cli, groupId, path: reqPath, prompt, adoptSessionUuid, model, effort } = req.body || {};
   if (!cli || !cliById(cli)) return res.status(400).json({ error: 'unknown cli' });
   if (adoptSessionUuid !== undefined) {
     if (cli !== 'claude') return res.status(400).json({ error: 'only a Claude conversation can be adopted (cli=claude)', code: 'adopt-cli' });
@@ -3314,13 +3364,17 @@ api.post('/api/sessions', async (req, res) => {
   }
   if(cli==='codex'&&sharedCreationEnabled()){
     requireReaderOperator(req);
+    // AM sends a shared task's first turn over the app-server, which this
+    // does not yet carry a model for. Refuse rather than store a choice the
+    // first turn would ignore.
+    if(model||effort)throw new ApiError(400,'invalid-launch-option','Model and effort are not available for shared Codex tasks yet.');
     const chosen=cleanRelPath(typeof reqPath==='string'&&reqPath.trim()?reqPath:'.');
     if(chosen===null||chosen===remote.REMOTE_FOLDER||chosen.startsWith(`${remote.REMOTE_FOLDER}/`))throw new ApiError(400,'invalid-input','Choose a valid workspace folder.');
     if(groupId&&!groups.get(groupId))throw new ApiError(400,'invalid-input','The destination group no longer exists.');
     const s=await codexCreation.create({requestId:req.body.requestId,name,path:chosen,groupId,prompt},{signal:res.locals.lockSignal});
     await sessionRuntime.refresh(s);return res.status(201).json({...s,codexShared:true,terminalRunning:isRunning(s.id),...sessionRuntime.presentation(s)});
   }
-  const s = createSession({ name, cli, groupId, path: reqPath, prompt });
+  const s = createSession({ name, cli, groupId, path: reqPath, prompt, model, effort });
   if (!s) return res.status(400).json({ error: 'bad path' });
   if (s.error) return res.status(400).json({ error: s.error });
   res.status(201).json({ ...s, running: false, state: 'stopped' });
@@ -3368,6 +3422,7 @@ function beginCronFire(job, trigger, { signal = null } = {}) {
     if (!session) {
       const invalid = cronCliError(job.agent.cli);
       if (invalid) throw new ApiError(409, 'cron-unavailable', invalid);
+      assertCreatable(job.agent.cli);
       const catalog = cliCatalog().find((candidate) => candidate.id === job.agent.cli);
       if (!catalog?.available) throw new ApiError(409, 'cron-unavailable', `${cliById(job.agent.cli).label} is not installed on this Space`);
       session = createSession({
@@ -3377,6 +3432,8 @@ function beginCronFire(job, trigger, { signal = null } = {}) {
         // the same name sees the session synchronously and cannot create it
         // again, even while the first prompt is still being delivered.
         path: cronAgentFolder(job.agent.name),
+        model: job.agent.model,
+        effort: job.agent.effort,
       });
       if (!session) throw new Error('could not create the agent workspace');
       if (session.error) throw new ApiError(409, 'cron-unavailable', session.error);
@@ -3403,7 +3460,13 @@ function beginCronFire(job, trigger, { signal = null } = {}) {
 
 const validateCronCli = (body) => {
   const cli = body?.agent?.cli;
-  return typeof cli === 'string' ? cronCliError(cli.trim()) : null;
+  if (typeof cli !== 'string') return null;
+  const invalid = cronCliError(cli.trim());
+  if (invalid) return invalid;
+  // A model / effort for the agent the cron creates: checked now, against the
+  // list as it is, and again when the agent is created.
+  checkLaunchChoice(cli.trim(), { model: body.agent.model, effort: body.agent.effort });
+  return null;
 };
 
 api.get('/api/crons', (_req, res) => res.json({ crons: crons.list() }));
@@ -3411,6 +3474,7 @@ api.get('/api/crons', (_req, res) => res.json({ crons: crons.list() }));
 api.post('/api/crons', (req, res) => {
   const cliError = validateCronCli(req.body);
   if (cliError) return res.status(400).json({ error: cliError });
+  assertCreatable(req.body?.agent?.cli?.trim?.());
   try {
     const job = crons.create(req.body || {});
     return res.status(201).json(job);
@@ -3423,6 +3487,10 @@ api.put('/api/crons/:id', (req, res) => {
   if (!crons.get(req.params.id)) return res.status(404).json({ error: 'not found' });
   const cliError = validateCronCli(req.body);
   if (cliError) return res.status(400).json({ error: cliError });
+  // A job that already names a deprecated CLI may still be edited, stopped or
+  // started; it only may not be switched TO one.
+  const nextCli = req.body?.agent?.cli?.trim?.();
+  if (nextCli && nextCli !== crons.get(req.params.id).agent.cli) assertCreatable(nextCli);
   try {
     return res.json(crons.update(req.params.id, req.body || {}));
   } catch (e) {
@@ -4191,7 +4259,12 @@ setTimeout(() => {
   firstVerdict.then(() => {
     const done = isLocked()
       ? Promise.resolve([])
-      : runstate.reviveOnBoot(loadAmConfig().revive).catch((e) => console.error('[revive]', e && e.message));
+      : runstate.reviveOnBoot({
+        ...loadAmConfig().revive,
+        // The Overview reply box's path: privacy-lock aware, submit confirmed.
+        send: (s, text, { runId, signal }) => deliver(s, { text }, 'Agent Manager', { signal, runId }),
+        scope: lockScope,
+      }).catch((e) => console.error('[revive]', e && e.message));
     done.then(() => runstate.startRunstateWatch());
   });
 }, 8000);

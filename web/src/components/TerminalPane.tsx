@@ -13,6 +13,7 @@ import type { Cli, Session } from '../types';
 import { STATE_LABEL, isRemote } from '../types';
 import StateLogo from './StateLogo';
 import TraceInfo from './TraceInfo';
+import DeprecatedNotice, { deprecationNote } from './DeprecatedNotice';
 import ConversationView from './conversation/ConversationView';
 import type { ConversationSeen } from './conversation/ConversationView';
 import { isPassive } from '../types';
@@ -1452,6 +1453,11 @@ export default function TerminalPane({
               moving it did not create room — where the `i` panel carries it
               instead (see TraceInfo's Folder line). */}
           <span className="ph-path" title={pathLabel}>{pathLabel}</span>
+          {(session.model || session.effort) && (
+            <span className="ph-model" title="Model and effort chosen when this agent was created">
+              {[session.model, session.effort].filter(Boolean).join(' · ')}
+            </span>
+          )}
         </div>
         {editing ? (
           <input
@@ -1548,6 +1554,7 @@ export default function TerminalPane({
           <button className="ph-btn ph-close" title={sharedTask ? "Close view — work continues" : "Close"} aria-label={sharedTask ? "Close view" : "Close"} onClick={(e) => { e.stopPropagation(); onClose(); }}><CloseGlyph /></button>
         </div>
       </div>
+      <DeprecatedNotice banner note={deprecationNote(cli)} />
       {interruptError && <div className="cxv-note" role="alert">{interruptError}</div>}
       {interruptedTurn && interruptedTurn === session.interruptTurnId && <div className="cxv-note" role="status">Interruption requested…</div>}
       {/* `reading` releases the frame's touch-action: the phone rule pins it to
