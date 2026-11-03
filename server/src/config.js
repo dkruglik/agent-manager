@@ -353,7 +353,10 @@ export const CLIS = [
   // chat; a restart resumes the pane's own chat by id instead. No `efforts`:
   // the effort tier lives in the model id (`grok-4.7-low`), and the bracket
   // form `grok-4.7[effort=low]` is rejected by the CLI.
-  { id: 'cursor', label: 'Cursor CLI', bin: 'cursor-agent', color: '#8c8c8c', resizeMode: 'repaint',
+  // promptDetector: the placeholder composer row, read from the screen because
+  // Cursor hides the terminal cursor (runner.js emptyCursorComposer; captured
+  // in test/fixtures/cursor-screens.json). No confirmSubmit: see docs/cursor-agent.md.
+  { id: 'cursor', label: 'Cursor CLI', bin: 'cursor-agent', color: '#8c8c8c', resizeMode: 'repaint', promptDetector: true,
     run: (f) => withFlags('cursor-agent --trust', f),
     resume: (id, f) => withFlags(`cursor-agent --trust --resume ${id}`, f),
     launch: { model: true, flags: ({ model }) => join(model && `--model ${shq(model)}`) },
@@ -362,7 +365,7 @@ export const CLIS = [
     // generic withPrompt use. Having it here lets index.js queue a quickstart
     // prompt as pendingPrompt (it does so only for CLIs with withPrompt)
     // instead of the boot-then-type fallback.
-    withPrompt: (q, _images, f) => `${withFlags('cursor-agent --trust', f)} ${q}`,
+    withPrompt: (q, _images, f) => `${withFlags('cursor-agent --trust', f)} -- ${q}`, // `--`: a prompt like `--yolo` is text, not a flag
     noUpdate: 'installed outside this image (not an npm package)',
     secrets: ['CURSOR_API_KEY'],
     setup: 'Add CURSOR_API_KEY as a Space secret. Signing in from the pane (cursor-agent login) has not been checked from a Space.' },

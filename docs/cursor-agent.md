@@ -14,11 +14,14 @@ measured on **cursor-agent 2026.10.22-27dcf5f**, run in a PTY the way
 Every pane launches with the same line, first launch and restart alike:
 
 ```
-cursor-agent --trust --resume <sessionUuid> [--model '<id>'] ['<queued first prompt>']
+cursor-agent --trust --resume <sessionUuid> [--model '<id>'] [-- '<queued first prompt>']
 ```
 
 The positional prompt is appended only on the first launch, and only when a
-prompt was queued. The registry entry also has a `withPrompt`, so a quickstart
+prompt was queued. It follows `--`, so a prompt that reads `--yolo` or
+`--version` reaches the model as text and is not parsed as a flag (checked on
+2026.10.22). A malformed chat id launches unpinned and still carries the queued
+prompt, after `--`. The registry entry also has a `withPrompt`, so a quickstart
 prompt is queued as `pendingPrompt` and rides this line instead of being typed
 into the booting pane. `withPrompt` itself is only the unpinned fallback:
 `runner.commandFor` builds the pinned line above and returns before the generic
@@ -67,7 +70,10 @@ The slug is the cwd with every non-alphanumeric run replaced by `-`. Long paths
 are truncated and suffixed with a hash. The reader therefore never computes it:
 it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id. A
 missing directory is a normal miss. Any other read error (permissions, I/O) is
-logged once per error code, and a cached path survives a transient `stat` error.
+logged once per error code and path, with the error message and the chat id. A
+cached path survives a transient `stat` error (`EIO`, `EMFILE`, `ENFILE`,
+`EAGAIN`, `EBUSY`); a lasting one (`EACCES`, `EPERM`, `ELOOP`, …) drops it and
+rescans.
 
 ## Reader and digest
 
@@ -80,6 +86,8 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
   `<user_query>`. The reader strips both and takes the turn time from the
   timestamp. No other line carries a time, so the digest stamps a reply with the
   time of the latest prompt, which keeps Overview from showing "no reply yet".
+  Every prompt resets that time, so a reply after a prompt whose stamp is
+  missing or does not parse has no time rather than an older prompt's.
 - **Not shareable:** Cursor transcripts are read for the Reader and the digest
   but are not in `SHAREABLE_CLIS`, so they cannot be shared.
 - **Tool results:** the file has no `tool_result`. Tool outputs live only in
@@ -104,15 +112,32 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
 
   These touch `Dockerfile`, `entrypoint.sh` and user data under `DATA_DIR`, so
   they are left for a reviewed change.
-- **Needs-input badge.** Cursor's bundle lists hook events (`sessionStart`,
+- **Hooks.** Cursor's bundle lists hook events (`sessionStart`,
   `notification`, `stop`, …), but this version fired none of them. That was
   checked with `hooks.json` in `$CURSOR_CONFIG_DIR` and in the workspace's
-  `.cursor/`. The approval dialog is plain screen text, `Run this command?`
-  with `Waiting for approval...`, which a screen-based detector could match
-  later.
-- **Revive and confirmed submit.** Both need a captured empty composer in
-  `server/test/fixtures/input-lines.json` (see the rule above `CLIS` in
-  `config.js`), and none was taken. Cursor draws on the primary screen (no
-  `?1049h`). While it works it shows `ctrl+c to stop`.
+  `.cursor/`.
+- **Confirmed submit.** `confirmSubmit` is not set. Its machinery reads the
+  composer through the cursor position, and Cursor hides the terminal cursor
+  (`ESC[?25l`) and draws its own, so the typed text cannot be read back that
+  way (`sameComposer` calls the empty and the typed capture identical). No
+  pasted-text placeholder has been captured either.
+
+## Screen-based detection
+
+Because hooks do not fire and the cursor is hidden, two things are read from
+the visible text (`server/test/fixtures/cursor-screens.json`, captured at
+120x40 on 2026.10.22):
+
+- **Approval badge.** `runner.cursorApprovalOnScreen` matches the `Run this
+  command?` row together with a `→ Run (once)` option row below it or the
+  `Waiting for approval...` status, so the question quoted in a reply is not a
+  hit. It is the `native` poll of the input-required tracker; its token hashes
+  the `$  <command>` row, so a new command shows again after a dismissed one.
+- **Empty composer** (`emptyCursorComposer`, so `promptDetector` is on). The
+  bottom-most `→` row is the composer: `→ Plan, search, build anything` on a
+  fresh chat and `→ Add a follow-up` after a turn mean empty. Typed text, the
+  `ctrl+c to stop` marker on the row while it works, and the approval dialog
+  all mean not empty. Cursor draws on the primary screen (no `?1049h`).
+
 - **Not checked:** whether the CLI updates itself, and whether
   `login` with `NO_OPEN_BROWSER` completes from a Space.

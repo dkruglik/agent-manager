@@ -231,13 +231,17 @@ test('cursor: every launch resumes its own chat id, flags kept, prompt only on f
   const f = ["--model", 'grok-4.7-low'];
   const first = make('cursor', { model: 'grok-4.7-low', pendingPrompt: 'do it' });
   const id = first.sessionUuid;
-  assert.deepEqual(launch(runner.commandFor(first)).calls, [['cursor-agent', '--trust', '--resume', id, ...f, 'do it']]);
+  assert.deepEqual(launch(runner.commandFor(first)).calls, [['cursor-agent', '--trust', '--resume', id, ...f, '--', 'do it']]);
   const later = sessions.update(first.id, { everStarted: true });
   assert.deepEqual(launch(runner.commandFor(later)).calls, [['cursor-agent', '--trust', '--resume', id, ...f]]);
   const bad = make('cursor', { sessionUuid: 'x; touch PWNED' });
   assert.deepEqual(launch(runner.commandFor(bad)).calls, [['cursor-agent', '--trust']]);
   const badQ = make('cursor', { sessionUuid: 'x; touch PWNED', pendingPrompt: 'do it' });
-  assert.deepEqual(launch(runner.commandFor(badQ)).calls, [['cursor-agent', '--trust', 'do it']], 'malformed id: unpinned, prompt kept');
+  assert.deepEqual(launch(runner.commandFor(badQ)).calls, [['cursor-agent', '--trust', '--', 'do it']], 'malformed id: unpinned, prompt kept');
+  for (const word of ['--yolo', '--force', '--version']) {
+    const flaggy = make('cursor', { pendingPrompt: word });
+    assert.deepEqual(launch(runner.commandFor(flaggy)).calls, [['cursor-agent', '--trust', '--resume', flaggy.sessionUuid, '--', word]], `${word} reaches cursor-agent as the prompt, after --`);
+  }
   assert.equal(fs.existsSync(PWNED), false);
 });
 
