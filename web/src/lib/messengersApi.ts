@@ -20,8 +20,12 @@ export interface MessengerBinding {
   lastError: string | null;
 }
 export interface MessengerAdapterStatus { id: string; configured: boolean; connected: boolean; error: string | null; }
+/** The server enforces the limits: `id` matches ^[A-Za-z0-9_.:-]{1,128}$ and `name` is cut to 64 characters. */
 export interface MessengerSavedEntry { id: string; name: string }
-export type MessengerSaved = Record<string, { channels: MessengerSavedEntry[]; users: MessengerSavedEntry[] }>;
+export interface MessengerSavedLists { channels: readonly MessengerSavedEntry[]; users: readonly MessengerSavedEntry[] }
+export type MessengerSaved = Record<string, MessengerSavedLists>;
+/** GET /api/messengers; the server always sends `saved`. */
+export interface MessengersResponse { adapters: MessengerAdapterStatus[]; bindings: MessengerBinding[]; saved: MessengerSaved }
 export type NewMessengerBinding = Omit<MessengerBinding, 'id' | 'createdAt' | 'lastError'>;
 
 /** `session:<id>` / `group:<id>` from the scope picker. Splits on the first ':'
@@ -36,7 +40,7 @@ export function parseScope(value: string): MessengerBinding['scope'] | null {
 const HEADERS = { 'content-type': 'application/json' };
 const bindingUrl = (id: string, suffix = ''): string => `/api/messengers/bindings/${encodeURIComponent(id)}${suffix}`;
 
-export const getMessengers = (): Promise<{ adapters: MessengerAdapterStatus[]; bindings: MessengerBinding[]; saved?: MessengerSaved }> =>
+export const getMessengers = (): Promise<MessengersResponse> =>
   requestJson('/api/messengers');
 export const createMessengerBinding = (b: NewMessengerBinding): Promise<MessengerBinding> =>
   requestJson('/api/messengers/bindings', { method: 'POST', headers: HEADERS, body: JSON.stringify(b) });
@@ -46,5 +50,5 @@ export const deleteMessengerBinding = (id: string): Promise<{ ok: boolean }> =>
   requestJson(bindingUrl(id), { method: 'DELETE' });
 export const testMessengerBinding = (id: string): Promise<{ ok: boolean }> =>
   requestJson(bindingUrl(id, '/test'), { method: 'POST' });
-export const saveMessengerTargets = (adapter: string, channels: MessengerSavedEntry[], users: MessengerSavedEntry[]): Promise<MessengerSaved> =>
+export const saveMessengerTargets = (adapter: string, channels: readonly MessengerSavedEntry[], users: readonly MessengerSavedEntry[]): Promise<MessengerSaved> =>
   requestJson('/api/messengers/saved', { method: 'PUT', headers: HEADERS, body: JSON.stringify({ adapter, channels, users }) });

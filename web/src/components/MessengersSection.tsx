@@ -37,9 +37,10 @@ export function MessengersSection() {
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load]);
 
-  const run = async (fn: () => Promise<unknown>, ok = '') => {
+  /** Runs a write, then reloads. True when the write succeeded; the error is shown otherwise. */
+  const run = async (fn: () => Promise<unknown>, ok = ''): Promise<boolean> => {
     setErr(''); setNote('');
-    try { await fn(); if (ok) setNote(ok); await load(); } catch (e) { setErr((e as Error).message); }
+    try { await fn(); if (ok) setNote(ok); await load(); return true; } catch (e) { setErr((e as Error).message); return false; }
   };
   const add = () => run(async () => {
     await messengers.createMessengerBinding(newBinding(draft));

@@ -1,10 +1,9 @@
 // Pure helpers behind Settings → Messengers (MessengersSection), kept apart so
 // they can be tested without a browser. Settings is a lazy chunk, and so is this.
 import { isPassive, type Session, type Tree } from '../types';
-import { parseScope, type MessengerAdapterStatus, type MessengerBinding, type MessengerSaved, type MessengerSavedEntry, type NewMessengerBinding } from './messengersApi';
+import { parseScope, type MessengerBinding, type MessengerSaved, type MessengerSavedEntry, type MessengerSavedLists, type MessengersResponse, type NewMessengerBinding } from './messengersApi';
 
 export interface MessengersDraft { channel: string; scope: string; users: string; approvals: boolean }
-export interface MessengersList { adapters: MessengerAdapterStatus[]; bindings: MessengerBinding[]; saved?: MessengerSaved }
 
 /** The agent or group a binding covers. Called removed only when the tree is known. */
 export function scopeName(b: MessengerBinding, tree: Tree | null): string {
@@ -41,7 +40,7 @@ export function newBinding(draft: MessengersDraft): NewMessengerBinding {
 }
 
 /** Each half of a load stands alone: a failed tree must not hide the bindings. */
-export function settleLoad(m: PromiseSettledResult<MessengersList>, t: PromiseSettledResult<Tree>) {
+export function settleLoad(m: PromiseSettledResult<MessengersResponse>, t: PromiseSettledResult<Tree>) {
   const failed = [m, t].find((r): r is PromiseRejectedResult => r.status === 'rejected');
   return {
     messengers: m.status === 'fulfilled' ? m.value : null,
@@ -51,24 +50,37 @@ export function settleLoad(m: PromiseSettledResult<MessengersList>, t: PromiseSe
 }
 
 /** One adapter's saved channel and user ids; empty lists when the server has none. */
-export function savedFor(saved: MessengerSaved | undefined, adapter: string): { channels: MessengerSavedEntry[]; users: MessengerSavedEntry[] } {
+export function savedFor(saved: MessengerSaved | undefined, adapter: string): MessengerSavedLists {
   const e = saved?.[adapter];
   return { channels: e?.channels ?? [], users: e?.users ?? [] };
 }
 
 /** The list with `id` added (or renamed when already there). Empty ids are ignored. */
-export function addSaved(list: MessengerSavedEntry[], id: string, name: string): MessengerSavedEntry[] {
+export function addSaved(list: readonly MessengerSavedEntry[], id: string, name: string): MessengerSavedEntry[] {
   const cleanId = id.trim();
-  if (!cleanId) return list;
+  if (!cleanId) return [...list];
   const entry = { id: cleanId, name: name.trim() };
-  return list.some((x) => x.id === cleanId) ? list.map((x) => (x.id === cleanId ? entry : x)) : [...list, entry];
+  if (list.some((x) => x.id === cleanId)) return list.map((x) => (x.id === cleanId ? entry : x));
+  return [...list, entry];
 }
 
-export function removeSaved(list: MessengerSavedEntry[], id: string): MessengerSavedEntry[] {
+/** Ids in a draft of user ids (split on spaces and commas) that are not saved yet, once each. */
+export function newUserIds(draftUsers: string, saved: readonly MessengerSavedEntry[]): string[] {
+  const ids = draftUsers.split(/[\s,]+/).filter((id) => id && !saved.some((u) => u.id === id));
+  return [...new Set(ids)];
+}
+
+/** The users list to save: `saved` plus the draft's new ids, unnamed. Saved entries keep their names. */
+export function usersToSave(saved: readonly MessengerSavedEntry[], draftUsers: string): MessengerSavedEntry[] {
+  return newUserIds(draftUsers, saved).reduce((list, id) => addSaved(list, id, ''), [...saved]);
+}
+
+export function removeSaved(list: readonly MessengerSavedEntry[], id: string): MessengerSavedEntry[] {
   return list.filter((x) => x.id !== id);
 }
 
-/** The users draft with `id` appended once; manual text is kept as typed. */
+/** The users draft with `id` appended once; manual text is kept as typed, except that trailing
+ *  spaces and commas are stripped before the id is appended. */
 export function addUserToDraft(users: string, id: string): string {
   const ids = users.split(/[\s,]+/).filter(Boolean);
   if (!id || ids.includes(id)) return users;
