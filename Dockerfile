@@ -98,6 +98,34 @@ RUN (curl -fsSL "$AGY_URL" -o /tmp/agy.tar.gz \
       && install -D -m 0755 /tmp/antigravity /usr/local/bin/agy \
       && HOME=/tmp/agy-home agy --version) || echo "agy install failed"
 RUN rm -rf /tmp/agy.tar.gz /tmp/antigravity /tmp/agy-home
+# Cursor CLI (`cursor-agent`, also installed as `agent`) is a ~185 MB Node
+# bundle: a wrapper script that finds the `node` and `index.js` beside it. Same
+# reasoning as agy: fetch a PINNED build rather than running cursor.com/install,
+# which resolves the newest build, and keep it in the root-owned /opt so the
+# image has one known version; entrypoint.sh puts wrappers for it ahead of any
+# hand install in the durable HOME. Cursor publishes no checksum, so the SHA-256
+# pins what we downloaded (2026-11-03) and a MISMATCH FAILS THE BUILD, unlike a
+# failed download, which only leaves the image without the agent. To upgrade:
+# read the version and URL from cursor.com/install (it is a plain shell script),
+# download the tarball once, measure it with `sha256sum`, and bump the three args.
+ARG CURSOR_VERSION=2026.10.22-27dcf5f
+ARG CURSOR_URL=https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz
+ARG CURSOR_SHA256=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+RUN set -e; \
+    if curl -fsSL "$CURSOR_URL" -o /tmp/cursor-agent.tar.gz; then \
+      if ! echo "$CURSOR_SHA256  /tmp/cursor-agent.tar.gz" | sha256sum -c -; then \
+        echo "ERROR: cursor-agent $CURSOR_VERSION does not match the pinned SHA-256; refusing to install it" >&2; \
+        exit 1; \
+      fi; \
+      (mkdir -p "/opt/cursor-agent/$CURSOR_VERSION" \
+        && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
+        && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
+        && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
+        && HOME=/tmp/cursor-home cursor-agent --version) || echo "cursor-agent install failed"; \
+    else \
+      echo "cursor-agent install failed"; \
+    fi
+RUN rm -rf /tmp/cursor-agent.tar.gz /tmp/cursor-home
 # ccusage powers the Usage page (token/cost aggregation across agents). Its
 # platform binary ships without an execute bit and the package tries to chmod
 # itself on first run — which fails with EPERM at runtime as the non-root user.
@@ -205,7 +233,7 @@ RUN set +e; \
     printf '  %-10s %s\n' python3 "$(python3 --version 2>&1)"; \
     echo "  ----------------------------------------------------------"; \
     missing=""; \
-    for c in claude codex gemini agy opencode openclaw hermes fx ccusage uv hf; do \
+    for c in claude codex gemini agy cursor-agent opencode openclaw hermes fx ccusage uv hf; do \
       path="$(command -v "$c" 2>/dev/null)"; \
       if [ -n "$path" ]; then \
         ver="$(timeout 30 "$c" --version 2>&1 | head -1 | tr -d '\r')"; \

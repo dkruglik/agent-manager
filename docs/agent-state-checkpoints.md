@@ -21,6 +21,37 @@ database is kept, as for opencode and Hermes. A real `~/.gemini/antigravity-cli`
 an earlier agy left in HOME is migrated the same way (`agent-state.sh
 migrate-antigravity`), and kept as a rollback copy.
 
+Cursor CLI (`cursor-agent`) is the same shape and is treated the same way. It
+keeps chats, transcripts and config in `~/.cursor` and its sign-in in
+`~/.config/cursor`; `CURSOR_CONFIG_DIR` does not move the transcripts (they are
+always written under `$HOME/.cursor/projects`), so it is not set and both paths
+are symlinks into one local tree (`dot-cursor/` and `config/` under
+`$AM_LOCAL/cursor-home`). Each chat (`chats/<hash>/<id>/store.db`) and
+`ai-tracking/ai-code-tracking.db` is a WAL-mode database, copied with the same
+read-only online backup as agy's. Excluded, because they name a live process or
+are regenerated: `-wal`/`-shm`, `*.lock`, `*.sock` (the worker's live unix
+socket), `worker.log`, `statsig-cache.json` (1 MB cache) and
+`dot-cursor/worktrees/`. Transcripts (`projects/*/agent-transcripts/`), chat
+metadata, `cli-config.json`, trust markers, skills and the sign-in are kept.
+A hot chat is rewritten every few seconds and a full tree is hundreds of MB, so a
+changed database is backed up at most once per `CURSOR_DB_MIN_INTERVAL` seconds
+(default 120) per file: one that changed inside the interval is remembered
+(`agent-state-stamps/cursor-db.deferred`) and copied on the first pass after the
+interval, so its last turns still arrive. The final checkpoint at shutdown never
+waits. A real `~/.cursor` or `~/.config/cursor` left in HOME by a hand-run
+cursor-agent is migrated the same way (`agent-state.sh migrate-cursor`: files
+with the filters above, databases through the backup, a database that cannot be
+copied is named and stays in the rollback copy) and kept as
+`<dir>.pre-agent-state`.
+
+The image pins the agent itself: `/opt/cursor-agent/<version>` (checksum-verified
+in the Dockerfile; a mismatch fails the build), linked as `cursor-agent` and
+`agent` in `/usr/local/bin`. Because `~/.local/bin` (a hand install, durable
+HOME) is on `PATH` after `$AM_LOCAL/bin`, the entrypoint writes two wrappers
+there that run the pinned build and default `NODE_COMPILE_CACHE` to
+`$AM_LOCAL/cursor-compile-cache`, so Node's compile cache stays off the bucket.
+A hand install is never touched; the boot log says when the pin shadows it.
+
 The old layout also copied opencode and Hermes SQLite databases, WALs, and SHMs
 with `rsync`. Those files can be observed at different transaction boundaries;
 having all three files is not proof that the copy is a consistent database.
@@ -51,6 +82,7 @@ having all three files is not proof that the copy is a consistent database.
 | Hermes | `$AM_LOCAL/hermes` | `/data/state/hermes` | file tree plus online `state.db` backup |
 | fx | `$AM_LOCAL/fx-home` | `/data/state/fx` | file tree; locks and `index.pending` excluded |
 | Antigravity CLI | `$AM_LOCAL/antigravity-home` (`~/.gemini/antigravity-cli` and `~/.gemini/config` link here) | `/data/state/antigravity` | file tree plus an online backup of every changed `*.db`; WAL/SHM, locks, `bin/`, `log/`, `crashes/`, `updater/`, `presence/` excluded |
+| Cursor CLI | `$AM_LOCAL/cursor-home` (`~/.cursor` and `~/.config/cursor` link to `dot-cursor/` and `config/` in it) | `/data/state/cursor` | file tree plus an online backup of every changed `*.db`, at most once per `CURSOR_DB_MIN_INTERVAL` (120 s) per file; WAL/SHM, locks, sockets, `worker.log`, `statsig-cache.json`, `worktrees/` excluded |
 
 Remote agents already use a good object-store pattern: one closed, immutable
 Markdown file per message. Shell sessions have no model transcript; workspace
