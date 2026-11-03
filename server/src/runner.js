@@ -1958,6 +1958,21 @@ export function commandFor(session) {
     return `if ${hasTranscript}; then exec ${cli.resume(session.sessionUuid, f)}; else ${fresh}; fi`;
   }
 
+  // Cursor keys `--continue` by working directory, so grouped sessions sharing a
+  // folder would collide on it. Pin each pane to its own chat instead, reusing
+  // the session's sessionUuid as the Cursor chat id. `--resume <id>` with an id
+  // that has never been used CREATES the chat under exactly that id (verified on
+  // cursor-agent 2026.10.22), and the same command later resumes it with its
+  // full context, so there is no existence check and no `create-chat`
+  // subprocess: first launch and every later launch are the same line. A queued
+  // first prompt rides after the flags as the positional prompt. Never
+  // `--continue`. The id reaches the shell unquoted, so a missing or malformed
+  // one falls back to a plain run rather than being interpolated.
+  if (cli.id === 'cursor') {
+    if (!UUID.test(session.sessionUuid || '')) return `exec ${run}`;
+    return `exec ${cli.resume(session.sessionUuid, f)}${q0 ? ` ${q0}` : ''}`;
+  }
+
   // OpenClaw: first run needs its onboarding wizard (keys, workspace); once the
   // config exists, go straight to the TUI. Decided by config-file existence —
   // same honest pattern as the Claude transcript check.

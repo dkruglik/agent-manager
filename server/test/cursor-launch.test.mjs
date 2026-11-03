@@ -13,15 +13,21 @@ const HOME = path.join(TMP, 'home');
 const BIN = path.join(TMP, 'bin');
 fs.mkdirSync(HOME, { recursive: true });
 fs.mkdirSync(BIN, { recursive: true });
+fs.mkdirSync(path.join(TMP, 'data'), { recursive: true });
 fs.writeFileSync(path.join(BIN, 'cursor-agent'), '#!/bin/sh\necho 0.0.0-stub\n', { mode: 0o755 });
 
 process.env.DATA_DIR = path.join(TMP, 'data');
 process.env.HOME = HOME;
+process.env.AM_REPIN_DIR = path.join(TMP, 'repin');
+process.env.AM_INPUT_REQUIRED_DIR = path.join(TMP, 'input-required');
 process.env.PATH = `${BIN}:${process.env.PATH}`;
 delete process.env.XDG_CONFIG_HOME;
 delete process.env.CURSOR_API_KEY;
 
 const { cliById, cliCatalog, launchFlags } = await import('../src/config.js');
+const sessions = await import('../src/sessions.js');
+const runner = await import('../src/runner.js');
+sessions.init();
 
 let pass = 0, fail = 0;
 const check = (name, got, want) => {
@@ -64,6 +70,36 @@ check('ready with a signed-in auth.json', row().ready, true);
 process.env.XDG_CONFIG_HOME = path.join(TMP, 'xdg');
 check('XDG_CONFIG_HOME moves the lookup', row().ready, false);
 delete process.env.XDG_CONFIG_HOME;
+
+console.log('\nevery pane is pinned to its own chat id');
+const mk = (fields = {}) => {
+  const c = sessions.create({ name: 'cur', cli: 'cursor', path: fields.path ?? 'proj-a' });
+  return sessions.update(c.id, fields);
+};
+const first = mk();
+check('sessionUuid is minted', /^[0-9a-f-]{36}$/.test(first.sessionUuid), true);
+check('first launch resumes its own id', runner.commandFor(first), `exec cursor-agent --trust --resume ${first.sessionUuid}`);
+const seeded = mk({ pendingPrompt: "fix it; don't" });
+check('a queued first prompt is appended, quoted', runner.commandFor(seeded),
+  `exec cursor-agent --trust --resume ${seeded.sessionUuid} 'fix it; don'\\''t'`);
+const again = sessions.update(seeded.id, { everStarted: true, pendingPrompt: "fix it; don't" });
+check('a later launch is the same line without the prompt', runner.commandFor(again),
+  `exec cursor-agent --trust --resume ${seeded.sessionUuid}`);
+const modelled = mk({ model: 'grok-4.7-low' });
+check('the model flag rides the resume line', runner.commandFor(modelled),
+  `exec cursor-agent --trust --resume ${modelled.sessionUuid} --model 'grok-4.7-low'`);
+const modelledSeeded = mk({ model: 'grok-4.7-low', pendingPrompt: 'hi' });
+check('flags come before the positional prompt', runner.commandFor(modelledSeeded),
+  `exec cursor-agent --trust --resume ${modelledSeeded.sessionUuid} --model 'grok-4.7-low' 'hi'`);
+const bad = mk({ sessionUuid: 'x; rm -rf /', pendingPrompt: 'hi' });
+const badLine = runner.commandFor(bad);
+check('a malformed id falls back to a plain run', badLine, "exec cursor-agent --trust");
+check('the malformed id never reaches the line', badLine.includes('rm -rf'), false);
+const gone = mk({ sessionUuid: null });
+check('a missing id falls back to a plain run', runner.commandFor(gone), 'exec cursor-agent --trust');
+const a = mk({ path: 'shared' }), b = mk({ path: 'shared' });
+check('two panes in one folder get different ids', runner.commandFor(a) !== runner.commandFor(b), true);
+check('never --continue', [first, seeded, again, modelled, bad, gone, a, b].some((x) => runner.commandFor(x).includes('--continue')), false);
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
