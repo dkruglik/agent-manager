@@ -19,6 +19,11 @@ answer from the chat:
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
+A prompt from chat carries a request id: a UUID derived from the adapter, the
+channel, and the message `ts`. A redelivery of the same message (a Slack retry
+with a new event id) keeps the same id, so shared Codex, which takes only a
+UUID and records one receipt per id, treats it as the same request.
+
 A card closes itself when its dialog is answered anywhere else (terminal,
 reader, another chat). A closed card loses its buttons; a late click gets
 "This request is already closed."
