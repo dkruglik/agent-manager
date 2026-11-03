@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { WORKSPACES_DIR, DATA_DIR } from './config.js';
+import { followContinuation } from './claude-continuation.js';
 import { sharedCodexRollout } from './codex-reader.js';
 import { agyConversationExists, agyConversationPath, captureAgyConversation } from './antigravity.js';
 
@@ -218,7 +219,7 @@ export async function findTranscript(session, allSessions = []) {
         if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
       } catch { /* raced away */ }
     }
-    if (best) return best.p;
+    if (best) return followContinuation(best.p, files);
   }
 
   // 2. By working directory, only if unambiguous.

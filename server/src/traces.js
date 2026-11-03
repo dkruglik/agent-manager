@@ -14,7 +14,7 @@ import { mark, tracked, PHASE } from './watchdog.js';
 import { findTrace, HARNESS_LABEL } from './share.js';
 import { cachedTrace, traceRevision } from './trace-revision.js';
 import { outputHash } from './output-id.js';
-import { followContinuation } from './claude-continuation.js';
+import { continuationChain, followContinuation } from './claude-continuation.js';
 import { codeModeUses, codeModeResults, patchFiles, stripDataUrls } from './codex-code-mode.js';
 import { STEP, STATUS, readAgySteps, listAgyConversations, agyConversationPath, agyConversationExists, agyChangeKey, stepInFlight } from './antigravity.js';
 
@@ -1485,14 +1485,18 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(
 // restores the prior breadcrumb even if the build throws.
 function build() { return tracked(PHASE.buildTraces, buildImpl); }
 
-// A continued-in successor belongs to the session pinned on the first file.
+// Every later transcript of a continued-in chain (B and C in A -> B -> C)
+// belongs to the session pinned on the first file, unless another session
+// already pins that uuid.
 async function attributeContinuations(byClaudeUuid) {
   const files = await claudeFiles();
   for (const [uuid, s] of [...byClaudeUuid]) {
     for (const p of files) {
       if (!path.basename(p).includes(uuid)) continue;
-      const m = path.basename(await followContinuation(p, files)).match(UUID_RE);
-      if (m && !byClaudeUuid.has(m[1])) byClaudeUuid.set(m[1], s);
+      for (const hop of (await continuationChain(p, files)).slice(1)) {
+        const m = path.basename(hop).match(UUID_RE);
+        if (m && !byClaudeUuid.has(m[1])) byClaudeUuid.set(m[1], s);
+      }
     }
   }
 }
@@ -1705,7 +1709,8 @@ export async function traceDigests({fresh = false} = {}) {
 
 /** Targeted digest for ONE session — parses only its own transcript files so
  *  the Overview can fill tiles progressively instead of waiting for the full
- *  build. Cheap for Claude (transcript filename == sessionUuid) and Codex (the
+ *  build. Cheap for Claude (the files named for sessionUuid, plus the continued-in
+ *  chain from the newest) and Codex (the
  *  pinned rollout); db-backed CLIs return null and ride the bulk pass. Parsed
  *  files land in the shared per-file cache, so nothing is read twice. */
 export async function digestFor(s) {
@@ -1723,8 +1728,12 @@ export async function digestFor(s) {
       }
       if (!best) return null;
       const live = await followContinuation(bestPath, files);
-      const liveParsed = live === bestPath ? best : await statsFor(live, parseClaude);
-      return (liveParsed || best).digest;
+      if (live === bestPath) return best.digest;
+      const liveParsed = await statsFor(live, parseClaude);
+      if (liveParsed) return liveParsed.digest;
+      // The pinned file is sealed, so its digest is stale: let the bulk pass decide.
+      console.warn(`[traces] continued-in successor ${path.basename(live)} is unreadable`);
+      return null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       const parsed = await statsFor(s.codexRollout, parseCodex);
@@ -1754,10 +1763,15 @@ export async function traceLocation(s) {
   try {
     if (s.cli === 'claude' && s.sessionUuid) {
       const files = await claudeFiles();
+      let best = null;
       for (const p of files) {
-        if (path.basename(p).includes(s.sessionUuid)) return { format: 'jsonl', path: await followContinuation(p, files) };
+        if (!path.basename(p).includes(s.sessionUuid)) continue;
+        try {
+          const { mtimeMs } = await fsp.stat(p);
+          if (!best || mtimeMs > best.mtimeMs) best = { p, mtimeMs };
+        } catch { /* raced away */ }
       }
-      return null;
+      return best ? { format: 'jsonl', path: await followContinuation(best.p, files) } : null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       return { format: 'jsonl', path: s.codexRollout };
