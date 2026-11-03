@@ -43,7 +43,7 @@ check('cursor is registered', !!cursor, true);
 check('binary is cursor-agent', cursor?.bin, 'cursor-agent');
 check('not updated through npm', !!cursor?.noUpdate && !cursor?.npm, true);
 check('no cont: --continue is cwd-scoped', cursor?.cont, undefined);
-check('noUpdate does not claim an image install', /pinned prebuilt|downloads\.cursor\.com/.test(cursor?.noUpdate || ''), false);
+check('noUpdate names the image pin', /pinned prebuilt build in the image/.test(cursor?.noUpdate || ''), true);
 check('noUpdate says it is not an npm package', /not an npm package/.test(cursor?.noUpdate || ''), true);
 check('has withPrompt, so a quickstart prompt is queued for the launch line', typeof cursor?.withPrompt, 'function');
 check('unpinned withPrompt carries flags and prompt', cursor?.withPrompt("'hi'", [], "--model 'm'"), "cursor-agent --trust --model 'm' -- 'hi'");

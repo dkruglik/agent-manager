@@ -1,8 +1,9 @@
 # Cursor CLI as an agent
 
-**Status:** partial, 2026-11-03. Launch, per-pane resume, the model picker and
-the Reader/digest are in. The image install, the state checkpoint, the
-needs-input badge and revive are not, for the reasons under **Not done yet**.
+**Status:** in place, 2026-11-03. Launch, per-pane resume, the model picker,
+the Reader and digest, the image install, the state checkpoint, the
+needs-input badge and revive are in. What is still open is under **Not done
+yet**.
 
 Cursor's terminal agent (`cursor-agent`, also installed as `agent`) is
 registered as the `cursor` CLI in `server/src/config.js`. Everything below was
@@ -95,23 +96,27 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
 - **Waiting for approval:** the tool call is not written to the transcript
   until the turn ends. It is not on disk while the call waits for approval.
 
+## Image and state
+
+- **Install.** The `Dockerfile` installs cursor-agent 2026.10.22-27dcf5f from
+  `downloads.cursor.com` into `/opt/cursor-agent/<version>`. Cursor publishes no
+  checksum, so the SHA-256 pins the tarball as downloaded on 2026-11-03, and a
+  mismatch fails the build. `entrypoint.sh` writes `cursor-agent` and `agent`
+  wrappers in `$AM_LOCAL/bin`, which comes before `~/.local/bin` on PATH, so
+  the pin wins over a hand install in the durable HOME. The hand install is
+  left in place. The wrappers also keep Node's compile cache on local disk.
+- **State.** `~/.cursor` and `~/.config/cursor` are links into
+  `$AM_LOCAL/cursor-home` (`dot-cursor/`, `config/`), checkpointed to
+  `$DATA_DIR/state/cursor`. See [state checkpoints](agent-state-checkpoints.md)
+  for which files are copied, how chat databases are backed up, and the
+  per-database throttle.
+- **Migration.** On the first boot with this image, a real `~/.cursor` or
+  `~/.config/cursor` is copied into the durable tree, its databases through
+  SQLite's backup. The original is then kept as `*.pre-agent-state`. Expect the
+  first boot to copy the whole existing tree (about 300 MB here) to the bucket.
+
 ## Not done yet
 
-- **Image install and state checkpoint.** The image does not install the
-  binary (the registry says so). Today it is the hand install
-  in `~/.local/bin`, and Cursor's state is on the durable HOME. What is needed:
-  - a pinned, checksum-verified build in the `Dockerfile`, a 558 MB Node tree
-    rather than one binary;
-  - local live state for `chats/`, the HOME `projects/` tree and the sign-in;
-  - a `cursor` adapter in `scripts/agent-state.sh` that copies each
-    `store.db` with `sqlite3 .backup` and leaves out `*.sock`, `-wal`/`-shm`,
-    `worker.log` and `statsig-cache.json`;
-  - `NODE_COMPILE_CACHE`, which the wrapper puts under `$HOME/.cache`, moved off
-    the bucket;
-  - a one-time migration of the existing state.
-
-  These touch `Dockerfile`, `entrypoint.sh` and user data under `DATA_DIR`, so
-  they are left for a reviewed change.
 - **Hooks.** Cursor's bundle lists hook events (`sessionStart`,
   `notification`, `stop`, …), but this version fired none of them. That was
   checked with `hooks.json` in `$CURSOR_CONFIG_DIR` and in the workspace's
@@ -121,6 +126,10 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
   (`ESC[?25l`) and draws its own, so the typed text cannot be read back that
   way (`sameComposer` calls the empty and the typed capture identical). No
   pasted-text placeholder has been captured either.
+- **Logo.** The CLI package ships no icon file, so the UI uses the shell icon.
+- **Not checked:** an image build and first boot (Docker was not available),
+  whether the CLI updates itself, and whether `login` with `NO_OPEN_BROWSER`
+  completes from a Space.
 
 ## Screen-based detection
 
