@@ -609,7 +609,7 @@ checkpoint_antigravity() {
     [ -s "$live/$rel" ] || continue
     if agy_backup "$live/$rel" "$staged"; then
       mkdir -p "$(dirname "$durable/$rel")"
-      rsync -a --delay-updates "$staged" "$durable/$rel" && continue
+      rsync -a -I --delay-updates "$staged" "$durable/$rel" && continue
     fi
     tries=$(awk -v r="$rel" '{ n = $1; sub(/^[0-9]+ /, "") } $0 == r { print n; exit }' "$db_retry" 2>/dev/null)
     tries=$(( ${tries:-0} + 1 ))
