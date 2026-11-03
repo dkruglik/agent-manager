@@ -44,7 +44,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(ADAPTERS).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = new MessengerBridge({ host, store, adapters, log, ...(config.finishedDelayMs === undefined ? {} : { settleMs: config.finishedDelayMs }) });
+  const bridge = new MessengerBridge({ host, store, adapters, log, settleMs: config.finishedDelayMs });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);

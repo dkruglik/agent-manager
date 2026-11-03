@@ -171,7 +171,7 @@ Limits:
 - **Audit.** Binding changes go through the API and appear in the API log.
   Posted cards, answers, prompts and refusals are written to
   `DATA_DIR/messengers.log.jsonl` (message text is never logged): `posted`,
-  `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
+  `skipped-read`, `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
   `user-not-allowed`, `no-session`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
@@ -301,8 +301,8 @@ real Claude.
   `traceLocation`, the conversation reader, and the bulk digest. No card is
   posted in this suite.
 
-A *finished* card waits `MESSENGER_FINISHED_DELAY_MS` (default 8000) after the
-agent goes idle. It is not sent when that reply was already shown in the web
+A *finished* card waits `MESSENGER_FINISHED_DELAY_MS` (default 8000) while the
+session stays in `waiting`. It is not sent when that reply was already shown in the web
 UI (the server-side read mark covers it); the bridge logs `skipped-read`
 instead. Input-required cards are not delayed or skipped this way.
 

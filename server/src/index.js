@@ -69,6 +69,7 @@ import { findByName, filterAgentsByGroup, normalizeName } from './agent-list.js'
 import { fileLinkRoots, fileLinksRouter } from './file-links.js';
 import { checkAdoption, ADOPT_NOTE } from './claude-adopt.js';
 import { createMessengers } from './messengers/index.js';
+import { finishedDigest } from './messengers/finished-digest.js';
 import { requestView } from './codex-view.js';
 // Absolute path of the repo's scripts/, for helpers the agent guide names.
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
@@ -4024,7 +4025,7 @@ const messengers = createMessengers({
     async digest(s) {
       const { digest } = await agentEvidence(s);
       const out = outputOf(s, digest);
-      return out ? { id: `${out.src}:${out.seq}:${out.hash}`, read: readMarks.covers(readMarks.get(s.id), out), text: digest.lastAssistantMd || digest.lastAssistantText } : null;
+      return finishedDigest(out, digest, readMarks.get(s.id));
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
     async prompt(s, text, { requestId }) {

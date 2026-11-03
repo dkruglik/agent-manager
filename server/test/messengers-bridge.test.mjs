@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
+import { finishedDigest } from '../src/messengers/finished-digest.js';
 import { BindingStore } from '../src/messengers/store.js';
 import { inputCard, reviewable, TOO_LONG } from '../src/messengers/cards.js';
 import { renderBlocks } from '../src/messengers/adapters/slack.js';
@@ -295,4 +296,42 @@ test('a long finished delay still opens the look window after it', async () => {
   assert.equal(t.slack.posts.length, 0, 'still inside the delay');
   await t.tick(100_000);
   assert.equal(t.slack.posts.length, 1, 'posted once the delay has passed');
+});
+
+test('a reply read during the finished delay is skipped once, and not retried', async () => {
+  const t = setup({ events: ['finished'] });
+  t.bridge.settleMs = 8000;
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old', read: false });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'new', read: false });
+  t.host.list[0].state = 'waiting';
+  await t.tick(1000);
+  await t.tick(3000);
+  assert.equal(t.slack.posts.length, 0, 'inside the delay');
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'new', read: true });
+  await t.tick(5000);
+  assert.equal(t.slack.posts.length, 0, 'read before the delay ended');
+  assert.equal(t.store.seen('b0|s1'), 'a:2');
+  assert.equal(t.logs.filter((e) => e.event === 'skipped-read').length, 1);
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0);
+  assert.equal(t.logs.filter((e) => e.event === 'skipped-read').length, 1, 'logged once');
+});
+
+test('a host digest built with finishedDelay mapping: a matching mark posts nothing, a changed hash posts', async () => {
+  const t = setup({ events: ['finished'] });
+  let mark = null;
+  let out = { src: 'rollout', seq: 1, hash: 'h1' };
+  const text = { lastAssistantMd: 'the answer', lastAssistantText: 'plain' };
+  t.host.digestImpl = async () => finishedDigest(out, text, mark);
+  await t.tick();
+  out = { src: 'rollout', seq: 2, hash: 'h2' };
+  mark = { src: 'rollout', seq: 2, hash: 'h2' };
+  t.host.list[0].state = 'waiting';
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0, 'mark covers the reply');
+  out = { src: 'rollout', seq: 3, hash: 'h3' };
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 1, 'new reply, old mark');
+  assert.equal(t.slack.posts[0].card.body, 'the answer');
 });
