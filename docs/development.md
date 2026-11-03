@@ -150,6 +150,7 @@ its state handling in `scripts/agent-state.sh` (`GEMINI_CLI_HOME`,
 | `OPENAI_API_KEY` / `CODEX_API_KEY` | — | Codex (Space secret) |
 | `GEMINI_API_KEY` | — | Antigravity CLI, and Gemini CLI (deprecated) (Space secret) |
 | `AI_GATEWAY_API_KEY` | — | fx (Space secret) |
+| `CURSOR_API_KEY` | — | Cursor CLI (Space secret); a sign-in made in the pane also works |
 | `HF_TOKEN` | — | Hub operations and mounted-bucket discovery; access requirements depend on the operation |
 | `SLACK_BOT_TOKEN` | — | Slack bot token (`xoxb-…`) for [messengers](messengers.md) (secret) |
 | `SLACK_APP_TOKEN` | — | Slack app-level token (`xapp-…`, `connections:write`) for Socket Mode (secret) |
