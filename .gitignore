@@ -13,3 +13,7 @@ __pycache__/
 
 # Local Slack secrets
 .secrets.env
+# Local copy of the shared AI rules kit (AIRules)
+.claude/
+.cursor/
+scripts/sync-ai-rules.mjs
