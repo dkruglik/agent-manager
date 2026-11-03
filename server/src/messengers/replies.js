@@ -103,8 +103,10 @@ export class ReplyRouter {
     if (r.optionId || r.thread) return { ignored: 'no-target' };
     const named = this.byName(bindings, text);
     if (named) return named;
+    // Several agents reachable from this channel: only a named message goes anywhere.
+    if (this.agentCount(bindings) > 1) return { unnamed: bindings };
     const direct = bindings.filter((b) => b.scope.type === 'session');
-    if (direct.length !== 1) return this.agentCount(bindings) > 1 ? { unnamed: bindings } : { ignored: 'no-target' };
+    if (direct.length !== 1) return { ignored: 'no-target' };
     return { binding: direct[0], session: this.sessionById(direct[0].scope.id), text };
   }
 

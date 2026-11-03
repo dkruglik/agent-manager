@@ -254,6 +254,18 @@ test('a group binding covering two sessions skips an unaddressed message too', a
   assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
 });
 
+test('a session binding plus a group reaching another agent: unaddressed is skipped, named still goes', async () => {
+  const t = several();
+  t.store.removeBinding('b1');
+  t.store.putBinding({ adapter: 'slack', target: { channel: 'C0' }, events: [], allowedUsers: ['U1'], approvals: false, createdAt: 'x', id: 'bg', scope: { type: 'group', id: 'g1' } });
+  t.host.sessions = () => [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }, { id: 's2', name: 'beta', cli: 'codex', state: 'working', inputRequired: null, groupId: 'g1' }];
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
+  assert.equal(t.prompts.length, 0, 'the one direct agent does not take it');
+  assert.equal(t.posts.length, 0);
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'alpha: hello')), { prompted: 's1' });
+});
+
 test('a single session binding still takes an unaddressed message', async () => {
   const t = setup();
   const prompts = [];

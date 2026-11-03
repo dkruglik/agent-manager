@@ -15,7 +15,7 @@ answer from the chat:
 | Reply in a question card's thread | Your text answers the first open question |
 | Click **Approve once / Deny** (only with *allow approvals*) | The permission request is decided |
 | Reply in a finished card's thread | Sent to that agent as a normal prompt |
-| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address. In a channel with several agents only the named agent gets the message; an unaddressed one (or one naming an agent not in the channel) is sent to none of them, silently: nothing is posted in the channel, and the log records `refused` with reason `no-agent-named` |
+| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address. In a channel with several agents only the named agent gets the message; an unaddressed one (or one naming an agent not in the channel) is sent to none of them, silently: nothing is posted in the channel, and the log records `refused` with reason `no-agent-named` (or `user-not-allowed` when the sender is on none of the channel's bindings) |
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
