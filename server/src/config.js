@@ -347,6 +347,18 @@ export const CLIS = [
       flags: ({ model, effort }) => join(model && `--model ${shq(model)}`, effort && `--effort ${shq(effort)}`) },
     noUpdate: 'a pinned prebuilt binary from antigravity.google, not an npm package',
     secrets: ['GEMINI_API_KEY'], setup: setupHint('GEMINI_API_KEY') },
+  // --trust skips the per-folder trust dialog (workspaces are operator-owned);
+  // MCP servers are still not auto-approved, and --yolo is never passed.
+  // No `cont`: `--continue` is cwd-scoped and would resume a sibling pane's
+  // chat; a restart resumes the pane's own chat by id instead. No `efforts`:
+  // the effort tier lives in the model id (`grok-4.7-low`), and the bracket
+  // form `grok-4.7[effort=low]` is rejected by the CLI.
+  { id: 'cursor', label: 'Cursor CLI', bin: 'cursor-agent', color: '#8c8c8c', resizeMode: 'repaint',
+    run: (f) => withFlags('cursor-agent --trust', f),
+    resume: (id, f) => withFlags(`cursor-agent --trust --resume ${id}`, f),
+    launch: { model: true, flags: ({ model }) => join(model && `--model ${shq(model)}`) },
+    noUpdate: 'a pinned prebuilt build from downloads.cursor.com, not an npm package',
+    secrets: ['CURSOR_API_KEY'], setup: setupHint('CURSOR_API_KEY') },
   // Model only. `--variant` exists on `opencode run` but not on the TUI, and
   // the TUI ignores `agent.build.variant` from OPENCODE_CONFIG_CONTENT (checked
   // on 1.19.5 with a fresh HOME): it keeps its own saved per-model variant.
@@ -444,6 +456,9 @@ function isConfigured(id) {
     case 'gemini':
       return hasEnv('GEMINI_API_KEY', 'GOOGLE_API_KEY')
         || fileOk(path.join(env.GEMINI_CLI_HOME || home, '.gemini', 'oauth_creds.json'));
+    case 'cursor':
+      return hasEnv('CURSOR_API_KEY')
+        || fileOk(path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'cursor', 'auth.json'));
     case 'antigravity':
       // Only the key is detected. A Google sign-in made inside the pane is not
       // (its credential location is unconfirmed), so it may still show "set up".
