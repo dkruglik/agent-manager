@@ -254,6 +254,7 @@ const GEMINI_DEPRECATED = 'Gemini CLI is deprecated: Google replaced it with Ant
  * rest the sender skips and says so instead of guessing. Gemini, OpenClaw and
  * fx are absent because their only captures are startup dialogs, not a
  * composer; add the flag with a captured empty composer and a test.
+ * Cursor's captures live in test/fixtures/cursor-screens.json.
  * `{ idle: RegExp }` instead of `true` also requires that line below the
  * composer, for a CLI that keeps an empty composer on screen mid-turn.
  */

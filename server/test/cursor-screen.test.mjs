@@ -98,4 +98,41 @@ test('cursor is a promptDetector CLI', () => {
   assert.equal(runner.hasPromptDetector('cursor'), true);
 });
 
+test('approval screens: the waiting status alone, or the option row alone, is a hit; the question alone is not', () => {
+  const statusOnly = ['  $  touch x in .', '', '  Run this command?', '', '  Waiting for approval...'].join('\n');
+  const optionOnly = ['  $  touch x in .', '', '  Run this command?', '', '  \u2192 Run (once) (y)', '    Run Everything (shift+tab)'].join('\n');
+  const questionOnly = ['  $  touch x in .', '', '  Run this command?', '', '  something else'].join('\n');
+  assert.equal(runner.cursorApprovalOnScreen(statusOnly)?.kind, 'permission', 'status without an option row');
+  assert.equal(runner.cursorApprovalOnScreen(optionOnly)?.kind, 'permission', 'option row without the status');
+  assert.equal(runner.cursorApprovalOnScreen(questionOnly), null, 'question alone');
+  assert.equal(runner.cursorApprovalOnScreen(statusOnly).token, runner.cursorApprovalOnScreen(optionOnly).token, 'same command, same token');
+});
+
+test('cursorNativePoll: a throwing screen read keeps the last hit, logs once, and a later null clears it', () => {
+  const logs = [];
+  let screen = text(SCREENS.approval);
+  const poll = runner.cursorNativePoll(() => { if (screen instanceof Error) throw screen; return screen; }, (m) => logs.push(m));
+  const hit = poll();
+  assert.equal(hit?.kind, 'permission');
+  screen = new Error('vt gone');
+  assert.deepEqual(poll(), hit, 'a throw keeps the badge');
+  assert.deepEqual(poll(), hit, 'and keeps it on the next throw');
+  assert.equal(logs.length, 1, 'logged once, not every poll');
+  assert.match(logs[0], /vt gone/);
+  screen = text(SCREENS.busy);
+  assert.equal(poll(), null, 'a real read without the dialog clears it');
+  screen = new Error('again');
+  assert.equal(poll(), null, 'nothing to keep once cleared');
+});
+
+test('the tracker keeps a shown badge through a throwing poll', () => {
+  let screen = text(SCREENS.approval);
+  const poll = runner.cursorNativePoll(() => { if (screen instanceof Error) throw screen; return screen; }, () => {});
+  const t = createInputRequiredTracker({ id: 'cur-2', runId: 'r2', cli: 'cursor', native: poll });
+  assert.equal(t.get()?.kind, 'permission');
+  screen = new Error('boom');
+  assert.equal(t.get()?.kind, 'permission', 'badge not cleared by a failed read');
+  t.close();
+});
+
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
