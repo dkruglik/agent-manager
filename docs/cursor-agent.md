@@ -17,6 +17,13 @@ Every pane launches with the same line, first launch and restart alike:
 cursor-agent --trust --resume <sessionUuid> [--model '<id>'] ['<queued first prompt>']
 ```
 
+The positional prompt is appended only on the first launch, and only when a
+prompt was queued. The registry entry also has a `withPrompt`, so a quickstart
+prompt is queued as `pendingPrompt` and rides this line instead of being typed
+into the booting pane. `withPrompt` itself is only the unpinned fallback:
+`runner.commandFor` builds the pinned line above and returns before the generic
+`withPrompt` use.
+
 - **The pane's `sessionUuid` is its Cursor chat id.** `--resume` with an id
   that has never been used creates the chat under exactly that id. The same
   line later resumes it with its context, which was checked by asking about the
@@ -25,7 +32,8 @@ cursor-agent --trust --resume <sessionUuid> [--model '<id>'] ['<queued first pro
   it hung for 60 s on exit in the test.
 - **Never `--continue`.** It picks the folder's most recent chat, which is
   another pane's when two panes share a folder. The registry entry has no
-  `cont`, and a malformed id falls back to a plain `cursor-agent --trust`.
+  `cont`. A malformed id falls back to a plain unpinned `cursor-agent --trust`,
+  which carries the queued prompt if there is one.
 - **`--trust`** skips the per-folder trust dialog by writing
   `projects/<slug>/.workspace-trusted` (`trustMethod: "cli-flag"`). Workspaces
   are the operator's, as with the Claude and Codex answers in
@@ -35,7 +43,7 @@ cursor-agent --trust --resume <sessionUuid> [--model '<id>'] ['<queued first pro
 - **Sign-in:** `CURSOR_API_KEY` (a Space secret), or a sign-in made in the pane,
   which Cursor keeps in `~/.config/cursor/auth.json`. Either one marks the CLI
   ready. Whether `cursor-agent login` completes from a Space was not checked,
-  so the setup hint recommends the key.
+  so the setup text recommends the key and says so.
 
 ## Model and effort
 
@@ -57,7 +65,9 @@ control. The bracket form from `--help` (`grok-4.7[effort=low]`) was rejected:
 
 The slug is the cwd with every non-alphanumeric run replaced by `-`. Long paths
 are truncated and suffixed with a hash. The reader therefore never computes it:
-it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id.
+it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id. A
+missing directory is a normal miss. Any other read error (permissions, I/O) is
+logged once per error code, and a cached path survives a transient `stat` error.
 
 ## Reader and digest
 
@@ -68,7 +78,10 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
   rewritten each turn. When the last line is anything else, a turn is running.
 - **User messages:** each is wrapped in `<timestamp>…</timestamp>` and
   `<user_query>`. The reader strips both and takes the turn time from the
-  timestamp. No other line carries a time.
+  timestamp. No other line carries a time, so the digest stamps a reply with the
+  time of the latest prompt, which keeps Overview from showing "no reply yet".
+- **Not shareable:** Cursor transcripts are read for the Reader and the digest
+  but are not in `SHAREABLE_CLIS`, so they cannot be shared.
 - **Tool results:** the file has no `tool_result`. Tool outputs live only in
   `store.db`, so the Reader shows each call without its output.
 - **Waiting for approval:** the tool call is not written to the transcript
@@ -76,7 +89,8 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
 
 ## Not done yet
 
-- **Image install and state checkpoint.** Today the binary is the hand install
+- **Image install and state checkpoint.** The image does not install the
+  binary (the registry says so). Today it is the hand install
   in `~/.local/bin`, and Cursor's state is on the durable HOME. What is needed:
   - a pinned, checksum-verified build in the `Dockerfile`, a 558 MB Node tree
     rather than one binary;
