@@ -197,3 +197,79 @@ test('a card that cannot be closed after a delivered answer is logged, not repor
   assert.ok(!t.posts.some((p) => /Could not deliver/.test(p.card.body)), 'the user is not told it failed');
   assert.ok(!t.logs.some((e) => e.event === 'reply-failed'));
 });
+
+// A channel that reaches several agents: only a named agent gets the message; an
+// unaddressed one is skipped without a reply in the channel (logged only).
+function several({ allowedUsers = ['U1'], group = false } = {}) {
+  const t = setup({ allowedUsers });
+  const mk = (id, name) => ({ id, name, cli: 'codex', state: 'working', inputRequired: null });
+  t.host.sessions = () => [mk('s1', 'alpha'), mk('s2', 'beta')];
+  t.prompts = [];
+  t.host.prompt = async (s, body) => { t.prompts.push({ id: s.id, body }); };
+  const base = { adapter: 'slack', target: { channel: 'C0' }, events: [], allowedUsers, approvals: false, createdAt: 'x' };
+  if (group) {
+    t.store.removeBinding('b0');
+    t.store.putBinding({ ...base, id: 'bg', scope: { type: 'group', id: 'g1' } });
+    t.host.sessions = () => [{ ...mk('s1', 'alpha'), groupId: 'g1' }, { ...mk('s2', 'beta'), groupId: 'g1' }];
+  } else {
+    t.store.putBinding({ ...base, id: 'b1', scope: { type: 'session', id: 's2' } });
+  }
+  return t;
+}
+
+test('an unaddressed message in a channel with several agents is skipped silently', async () => {
+  const t = several();
+  const out = await t.bridge.handleReply('slack', text(1, 'run the tests'));
+  assert.deepEqual(out, { refused: 'no-agent-named' });
+  assert.equal(t.prompts.length, 0, 'sent to no agent');
+  assert.equal(t.posts.length, 0, 'nothing is said in the channel');
+  const log = t.logs.find((e) => e.reason === 'no-agent-named');
+  assert.ok(log && !JSON.stringify(log).includes('run the tests'), 'logged without the text');
+});
+
+test('a named agent gets the message and only that agent; an unknown name is skipped', async () => {
+  const t = several();
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha: hi')), { prompted: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, '@beta hi')), { prompted: 's2' });
+  assert.deepEqual(t.prompts, [{ id: 's1', body: 'hi' }, { id: 's2', body: 'hi' }], 'each message reached one agent');
+  const posted = t.posts.length;
+  assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'ghost: hi')), { refused: 'no-agent-named' });
+  assert.equal(t.prompts.length, 2);
+  assert.equal(t.posts.length, posted, 'the skipped message adds nothing to the channel');
+});
+
+test('a sender who is not allowed is skipped the same way', async () => {
+  const t = several({ allowedUsers: ['U9'] });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'user-not-allowed' });
+  assert.equal(t.posts.length, 0);
+  assert.equal(t.prompts.length, 0);
+  assert.ok(t.logs.some((e) => e.event === 'refused' && e.reason === 'user-not-allowed'));
+});
+
+test('a group binding covering two sessions skips an unaddressed message too', async () => {
+  const t = several({ group: true });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
+  assert.equal(t.posts.length, 0);
+  assert.equal(t.prompts.length, 0);
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
+});
+
+test('a session binding plus a group reaching another agent: unaddressed is skipped, named still goes', async () => {
+  const t = several();
+  t.store.removeBinding('b1');
+  t.store.putBinding({ adapter: 'slack', target: { channel: 'C0' }, events: [], allowedUsers: ['U1'], approvals: false, createdAt: 'x', id: 'bg', scope: { type: 'group', id: 'g1' } });
+  t.host.sessions = () => [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }, { id: 's2', name: 'beta', cli: 'codex', state: 'working', inputRequired: null, groupId: 'g1' }];
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
+  assert.equal(t.prompts.length, 0, 'the one direct agent does not take it');
+  assert.equal(t.posts.length, 0);
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'alpha: hello')), { prompted: 's1' });
+});
+
+test('a single session binding still takes an unaddressed message', async () => {
+  const t = setup();
+  const prompts = [];
+  t.host.prompt = async (s, body) => { prompts.push(body); };
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha hello')), { prompted: 's1' });
+  assert.deepEqual(prompts, ['alpha hello']);
+});

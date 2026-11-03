@@ -154,6 +154,7 @@ its state handling in `scripts/agent-state.sh` (`GEMINI_CLI_HOME`,
 | `SLACK_BOT_TOKEN` | — | Slack bot token (`xoxb-…`) for [messengers](messengers.md) (secret) |
 | `SLACK_APP_TOKEN` | — | Slack app-level token (`xapp-…`, `connections:write`) for Socket Mode (secret) |
 | `CLAUDE_CONFIG_DIR` | — | Claude Code's config directory. When set, the server merges its lifecycle and [approval hooks](messengers.md#claude-code-approvals) into `$CLAUDE_CONFIG_DIR/settings.json` at start; when unset it installs nothing (Claude itself then uses `~/.claude`). The container image sets it to `$AM_LOCAL/agent-state/claude` |
+| `MESSENGER_FINISHED_DELAY_MS` | `8000` | How long a [finished card](messengers.md) waits while the session stays in `waiting`, so a reply being read in the web UI is not announced. Integer 0–600000, else startup fails |
 | `AM_PUBLIC_URL` | — | Browser-facing base URL; messenger cards link to `<url>/#session=<id>`. Must be http(s) or startup fails |
 
 The backend binds `127.0.0.1` by default because Agent Manager has no login of

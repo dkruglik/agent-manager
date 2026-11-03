@@ -13,7 +13,7 @@ await build({
   entryPoints: [path.join(HERE, '../src/lib/messengersView.ts')],
   outfile: out, format: 'esm', bundle: true, platform: 'node', logLevel: 'error',
 });
-const { scopeName, pickableAgents, failureText, newBinding, settleLoad } = await import(pathToFileURL(out).href);
+const { scopeName, pickableAgents, failureText, newBinding, settleLoad, savedFor, addSaved, newUserIds, usersToSave, removeSaved, addUserToDraft, savedLabel } = await import(pathToFileURL(out).href);
 
 const tree = {
   order: [], hidden: [],
@@ -61,4 +61,44 @@ const m = { adapters: [{ id: 'slack', configured: true, connected: true, error: 
 assert.deepEqual(settleLoad(ok(m), no('tree down')), { messengers: m, tree: null, error: 'tree down' });
 assert.deepEqual(settleLoad(no('api down'), ok(tree)), { messengers: null, tree, error: 'api down' });
 assert.deepEqual(settleLoad(ok(m), ok(tree)), { messengers: m, tree, error: '' });
+
+// Saved ids: missing adapters give empty lists.
+assert.deepEqual(savedFor(undefined, 'slack'), { channels: [], users: [] });
+assert.deepEqual(savedFor({}, 'slack'), { channels: [], users: [] });
+const savedMap = { slack: { channels: [{ id: 'C1', name: 'ops' }], users: [] } };
+assert.deepEqual(savedFor(savedMap, 'slack'), { channels: [{ id: 'C1', name: 'ops' }], users: [] });
+assert.deepEqual(savedFor(savedMap, 'other'), { channels: [], users: [] });
+
+// addSaved trims, ignores empty ids, replaces a name in place, never mutates.
+const list = [{ id: 'C1', name: 'ops' }];
+assert.deepEqual(addSaved(list, ' C2 ', ' dev '), [{ id: 'C1', name: 'ops' }, { id: 'C2', name: 'dev' }]);
+assert.deepEqual(addSaved(list, '  ', 'x'), list);
+assert.deepEqual(addSaved(list, 'C1', 'renamed'), [{ id: 'C1', name: 'renamed' }]);
+assert.deepEqual(addSaved(list, 'C3', ''), [{ id: 'C1', name: 'ops' }, { id: 'C3', name: '' }]);
+assert.deepEqual(list, [{ id: 'C1', name: 'ops' }], 'input is not mutated');
+
+// removeSaved drops one id only.
+assert.deepEqual(removeSaved([{ id: 'C1', name: '' }, { id: 'C2', name: '' }], 'C1'), [{ id: 'C2', name: '' }]);
+assert.deepEqual(removeSaved(list, 'zz'), list);
+
+// A picked user is appended once, keeping the manual text.
+assert.equal(addUserToDraft('', 'U1'), 'U1');
+assert.equal(addUserToDraft('U1', 'U2'), 'U1, U2');
+assert.equal(addUserToDraft('U1, U2 ', 'U2'), 'U1, U2 ');
+assert.equal(addUserToDraft('U1 U2', 'U3'), 'U1 U2, U3');
+assert.equal(addUserToDraft('U1', ''), 'U1');
+
+assert.equal(savedLabel({ id: 'C1', name: 'ops' }), 'ops (C1)');
+assert.equal(savedLabel({ id: 'C1', name: '' }), 'C1');
+
 console.log('messengersView: ok');
+
+// Saving users from the draft never renames or blanks an entry that is already saved.
+{
+  const saved = [{ id: 'U1', name: 'Ada' }];
+  assert.deepEqual(newUserIds('U1, U2 U2,,U3', saved), ['U2', 'U3'], 'saved ids dropped, repeats once');
+  assert.deepEqual(usersToSave(saved, 'U1'), [{ id: 'U1', name: 'Ada' }], 'U1 keeps its name, not {id:U1,name:""}');
+  assert.deepEqual(usersToSave(saved, 'U1, U2'), [{ id: 'U1', name: 'Ada' }, { id: 'U2', name: '' }]);
+  assert.deepEqual(usersToSave([], ''), []);
+  assert.deepEqual(saved, [{ id: 'U1', name: 'Ada' }], 'input is not changed');
+}

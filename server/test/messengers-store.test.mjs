@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BindingStore, validateBinding } from '../src/messengers/store.js';
+import { BindingStore, validateBinding, validateSaved } from '../src/messengers/store.js';
 import { ApiError } from '../src/api-errors.js';
 
 // Binding validation and what the store keeps on disk.
@@ -193,4 +193,108 @@ test('a binding read from the store is a copy', () => {
   one.approvals = true;
   store.bindings()[0].target.channel = 'C9';
   assert.deepEqual([store.binding('b1').allowedUsers, store.binding('b1').approvals, store.binding('b1').target.channel], [['U1'], false, 'C1']);
+});
+
+// Saved channels and users: a reusable list per adapter, independent of bindings.
+
+const tmpFile = (tag) => path.join(fs.mkdtempSync(path.join(os.tmpdir(), `am-messengers-${tag}-`)), 'messengers.json');
+const fieldOf = (input) => {
+  try { validateSaved(input, { adapters: ['slack'] }); } catch (e) { return e.data?.details?.[0]?.field ?? e.message; }
+  return null;
+};
+
+test('validateSaved trims names, collapses duplicate ids and fills defaults', () => {
+  const v = validateSaved({
+    adapter: 'slack',
+    channels: [{ id: 'C1', name: '  alerts  ' }, { id: 'C1', name: 'other' }, { id: 'C2' }],
+  }, { adapters: ['slack'] });
+  assert.deepEqual(v, { adapter: 'slack', channels: [{ id: 'C1', name: 'alerts' }, { id: 'C2', name: '' }], users: [] });
+  assert.equal(validateSaved({ adapter: 'slack', users: [{ id: 'U1', name: 'x'.repeat(100) }] }, { adapters: ['slack'] }).users[0].name.length, 64);
+});
+
+test('validateSaved names the field it rejects', () => {
+  assert.equal(fieldOf({ adapter: 'nope' }), 'adapter');
+  assert.equal(fieldOf({ adapter: 'slack', channels: [{ id: 'C 1' }] }), 'channels');
+  assert.equal(fieldOf({ adapter: 'slack', users: [{ id: 5 }] }), 'users');
+  assert.equal(fieldOf({ adapter: 'slack', channels: [{ id: 'C1', name: 1 }] }), 'channels', 'a non-string name');
+  assert.equal(fieldOf({ adapter: 'slack', users: ['U1'] }), 'users', 'a non-object entry');
+  assert.equal(fieldOf({ adapter: 'slack', channels: 'C1' }), 'channels', 'not an array');
+  assert.equal(fieldOf({ adapter: 'slack', users: { id: 'U1' } }), 'users', 'not an array');
+  const many = (n) => Array.from({ length: n }, (_, i) => ({ id: `C${i}` }));
+  assert.equal(fieldOf({ adapter: 'slack', channels: many(101) }), 'channels');
+  assert.equal(fieldOf({ adapter: 'slack', channels: many(100) }), null, '100 is allowed');
+  assert.equal(fieldOf({ adapter: 'slack' }), null, 'both lists are optional');
+});
+
+test('putSaved persists, survives a reload and keeps the file owner-only', () => {
+  const file = tmpFile('saved');
+  const store = new BindingStore(file);
+  assert.deepEqual(store.saved(), {});
+  store.putSaved({ adapter: 'slack', channels: [{ id: 'C1', name: 'alerts' }], users: [{ id: 'U1', name: 'Dima' }] });
+  const want = { slack: { channels: [{ id: 'C1', name: 'alerts' }], users: [{ id: 'U1', name: 'Dima' }] } };
+  assert.deepEqual(new BindingStore(file).saved(), want);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  store.putSaved({ adapter: 'slack', channels: [], users: [] });
+  assert.deepEqual(new BindingStore(file).saved(), { slack: { channels: [], users: [] } }, 'replaces, not merges');
+  store.saved().slack.channels.push({ id: 'C9', name: '' });
+  assert.deepEqual(store.saved().slack.channels, [], 'saved() is a copy');
+});
+
+test('putSaved copies the lists, so later caller changes do not reach the store', () => {
+  const store = new BindingStore(tmpFile('saved-copy'));
+  const channels = [{ id: 'C1', name: 'a' }];
+  const users = [{ id: 'U1', name: 'b' }];
+  store.putSaved({ adapter: 'slack', channels, users });
+  channels.push({ id: 'C9', name: '' });
+  users[0].name = 'changed';
+  assert.deepEqual(store.saved(), { slack: { channels: [{ id: 'C1', name: 'a' }], users: [{ id: 'U1', name: 'b' }] } });
+});
+
+test('putSaved for one adapter leaves another adapter and the delivery state alone', () => {
+  const file = tmpFile('saved-other');
+  const store = new BindingStore(file, { now: () => 1000 });
+  store.putBinding({ ...validateBinding(base, { adapters: ['slack'] }), id: 'b1' });
+  store.putPosted('b1|s1|k', { bindingId: 'b1', sessionId: 's1', key: 'k', status: 'open' });
+  store.putSeen('b1|s1', 'a:1');
+  const other = { channels: [{ id: 'T1', name: 'tg' }], users: [] };
+  store.putSaved({ adapter: 'telegram', ...other });
+  store.putSaved({ adapter: 'slack', channels: [{ id: 'C1', name: 'a' }], users: [] });
+  for (const s of [store, new BindingStore(file)]) {
+    assert.deepEqual(s.saved().telegram, other);
+    assert.deepEqual(s.saved().slack, { channels: [{ id: 'C1', name: 'a' }], users: [] });
+    assert.deepEqual(s.bindings().map((b) => b.id), ['b1']);
+    assert.ok(s.posted('b1|s1|k'));
+    assert.equal(s.seen('b1|s1'), 'a:1');
+  }
+});
+
+test('removing a binding keeps the saved lists', () => {
+  const file = tmpFile('saved-remove');
+  const store = new BindingStore(file);
+  store.putBinding({ ...validateBinding(base, { adapters: ['slack'] }), id: 'b1' });
+  store.putSaved({ adapter: 'slack', channels: [{ id: 'C1', name: 'a' }], users: [] });
+  assert.equal(store.removeBinding('b1'), true);
+  const want = { slack: { channels: [{ id: 'C1', name: 'a' }], users: [] } };
+  assert.deepEqual(store.saved(), want);
+  assert.deepEqual(new BindingStore(file).saved(), want, 'and on disk');
+});
+
+test('malformed saved data on disk is dropped without setting the file aside or losing bindings', (t) => {
+  const file = tmpFile('saved-bad');
+  const good = { id: 'b1', adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'group', id: 'g1' }, events: ['finished'], allowedUsers: [], approvals: false };
+  const saved = {
+    slack: { channels: [{ id: 'C1', name: 'ok' }, { id: 'bad id', name: 'x' }, { id: 'C2' }, null, 'C3'], users: 'nope' },
+    telegram: 'x',
+    other: [],
+  };
+  fs.writeFileSync(file, JSON.stringify({ bindings: [good], saved }));
+  const warnings = [];
+  t.mock.method(console, 'warn', (...a) => warnings.push(a.join(' ')));
+  const store = new BindingStore(file);
+  assert.deepEqual(store.saved(), { slack: { channels: [{ id: 'C1', name: 'ok' }], users: [] } });
+  assert.deepEqual(store.bindings(), [good]);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['messengers.json'], 'nothing set aside');
+  assert.deepEqual(warnings, []);
+  fs.writeFileSync(file, JSON.stringify({ bindings: [good], saved: [1] }));
+  assert.deepEqual(new BindingStore(file).saved(), {}, 'a non-object saved is empty');
 });

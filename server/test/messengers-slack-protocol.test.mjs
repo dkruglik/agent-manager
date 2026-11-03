@@ -83,7 +83,17 @@ test('Slack Socket Mode: frames are acknowledged and turned into replies', async
 
 test('messenger configuration is read once, in config.js', () => {
   const cfg = resolveMessengerConfig({ SLACK_BOT_TOKEN: 'xoxb-2', SLACK_APP_TOKEN: 'xapp-2', AM_PUBLIC_URL: 'https://am.example.test/' });
-  assert.deepEqual(cfg, { publicUrl: 'https://am.example.test', slack: { botToken: 'xoxb-2', appToken: 'xapp-2' } });
-  assert.deepEqual(resolveMessengerConfig({}), { publicUrl: '', slack: { botToken: '', appToken: '' } });
+  assert.deepEqual(cfg, { publicUrl: 'https://am.example.test', finishedDelayMs: 8000, slack: { botToken: 'xoxb-2', appToken: 'xapp-2' } });
+  assert.deepEqual(resolveMessengerConfig({}), { publicUrl: '', finishedDelayMs: 8000, slack: { botToken: '', appToken: '' } });
   assert.throws(() => resolveMessengerConfig({ AM_PUBLIC_URL: 'am.example.test' }), /AM_PUBLIC_URL/, 'a bad URL fails at startup');
+});
+
+test('MESSENGER_FINISHED_DELAY_MS is an integer from 0 to 600000, default 8000', () => {
+  assert.equal(resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: '30000' }).finishedDelayMs, 30000);
+  assert.equal(resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: '0' }).finishedDelayMs, 0);
+  assert.equal(resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: '600000' }).finishedDelayMs, 600000);
+  for (const bad of ['-1', '600001', '1.5', 'soon', '']) {
+    if (bad === '') { assert.equal(resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: bad }).finishedDelayMs, 8000, 'empty means unset'); continue; }
+    assert.throws(() => resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: bad }), /MESSENGER_FINISHED_DELAY_MS must be an integer from 0 to 600000/, bad);
+  }
 });

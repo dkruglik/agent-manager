@@ -2,7 +2,8 @@
 
 **Status:** phase 2 implemented — Slack adapter, typed answers for shared Codex,
 Claude Code permission prompts and questions answered from chat (opt-in per
-binding), free-text prompts for every agent CLI. 2026-10-29.
+binding), free-text prompts for every agent CLI (2026-10-29). Saved channels
+and users (2026-11-03).
 
 Connect a chat channel to one agent or to a whole group. The channel then gets a
 card when an agent **needs input** and when it **finishes a turn**, and you can
@@ -14,7 +15,7 @@ answer from the chat:
 | Reply in a question card's thread | Your text answers the first open question |
 | Click **Approve once / Deny** (only with *allow approvals*) | The permission request is decided |
 | Reply in a finished card's thread | Sent to that agent as a normal prompt |
-| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address |
+| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address. In a channel with several agents only the named agent gets the message; an unaddressed one (or one naming an agent not in the channel) is sent to none of them, silently: nothing is posted in the channel, and the log records `refused` with reason `no-agent-named` (or `user-not-allowed` when the sender is on none of the channel's bindings) |
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
@@ -84,6 +85,13 @@ laptop and in a private Space.
    `CLAUDE_CONFIG_DIR` is set and `jq` and `curl` are on `PATH`.
 8. In **Settings → General → Messengers**, connect the channel to an agent or a
    group, list the allowed user IDs, and press **Send test**.
+
+To connect more agents without pasting the same IDs again, save them once:
+**Save channel** stores the typed channel ID (with an optional name), and **Save
+users** stores the typed user IDs. Saved entries then appear in the *Saved
+channel* and *Add saved user* pickers of the connect form. Typing IDs by hand
+still works. A saved entry is only a shortcut: it is not a binding, connects
+nothing by itself, and removing a binding leaves it in place.
 
 ## Claude Code approvals
 
@@ -163,8 +171,8 @@ Limits:
 - **Audit.** Binding changes go through the API and appear in the API log.
   Posted cards, answers, prompts and refusals are written to
   `DATA_DIR/messengers.log.jsonl` (message text is never logged): `posted`,
-  `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
-  `user-not-allowed`, `no-session`, `locked`, `closed`, `untyped`,
+  `skipped-read`, `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
+  `user-not-allowed`, `no-agent-named`, `no-session`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
   `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
@@ -181,7 +189,10 @@ Limits:
 `DATA_DIR/messengers.json` holds the bindings plus delivery state: which cards
 are in which channel (so a restart neither re-posts nor loses the ability to
 answer) and the newest reply already accounted for per agent (so connecting a
-channel does not replay old answers). Card records expire after 7 days.
+channel does not replay old answers). Card records expire after 7 days. It also
+holds the saved channels and users per messenger,
+`saved: {slack: {channels: [{id, name}], users: [{id, name}]}}`; malformed saved
+entries are dropped on load without setting the file aside.
 
 A `messengers.json` that cannot be read or parsed is moved (or, failing that,
 copied) to `messengers.json.corrupt-<ms>` and the bridge starts empty. If it
@@ -196,6 +207,7 @@ under the same rule.
 | --- | --- |
 | `GET /api/messengers` | Adapters (configured / connected / error) and bindings; each binding carries `lastError`, `null` unless its posts or dialog lookups keep failing, then the adapter's public error, such as `slack chat.postMessage: channel_not_found`, or a generic "see the server log" line — never a path or network detail; such a binding is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
+| `PUT /api/messengers/saved` | `{adapter, channels:[{id, name?}], users:[{id, name?}]}` replaces **both** of that messenger's saved lists; it is not a partial update, so an omitted list is stored empty. Ids match `^[A-Za-z0-9_.:-]{1,128}$`, at most 100 entries per list (`400 invalid-input` otherwise), names are cut to 64 characters, and a repeated id keeps its first entry. Returns every messenger's `saved`; `GET /api/messengers` returns the same map as `saved` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
 | `POST /api/messengers/bindings/:id/test` | Posts a test card; `409 messenger-offline` when the messenger is not connected |
@@ -260,7 +272,8 @@ real Claude.
   characters shown escaped, and the unreviewable-details refusal.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
-- `messengers-store.test.mjs`: binding validation and what is kept on disk.
+- `messengers-store.test.mjs`: binding and saved-list validation, and what is
+  kept on disk (saved lists survive a reload and a binding's removal).
 - `messengers-slack-protocol.test.mjs`: Slack rendering and escaping, Socket
   Mode acks and replies (bot filtering, slash commands), and where the tokens
   are read.
@@ -280,4 +293,27 @@ real Claude.
   `hook-response-lost`).
 - `web/test/messengersApi.test.mjs` and `web/test/messengersView.test.mjs`: the
   Settings section's pure helpers (scope parsing and names, the agent picker,
-  the failure line, a tree that fails to load without hiding the bindings).
+  the failure line, a tree that fails to load without hiding the bindings, and
+  adding, removing and picking saved channels and users).
+- `claude-continuation.test.mjs`: every reader of a Claude session's
+  transcript opens the same file, the last one of the `continued-in` chain
+  that starts at the newest pinned copy (`liveTranscript`). Covered:
+  `continuedIn` (also past the 64 KB tail window), `followContinuation`,
+  `digestFor` (which feeds *finished* cards), `traceLocation`,
+  `findTranscript` and the conversation reader, and the bulk digest, which
+  must agree with `digestFor` even when a middle hop has the newest
+  timestamp, when one uuid sits in two project dirs, and when two sessions
+  pin the same chain. No card is posted in this suite.
+
+A *finished* card waits `MESSENGER_FINISHED_DELAY_MS` (default 8000) while the
+session stays in `waiting`. It is not sent when that reply was already shown in the web
+UI (the server-side read mark covers it); the bridge logs `skipped-read`
+instead. Input-required cards are not delayed or skipped this way.
+
+A *finished* card comes from the agent's transcript. Claude Code can move a
+running conversation to a new transcript file and leave a `continued-in` record
+at the end of the old one. Agent Manager follows that chain, up to 8 hops,
+wherever it reads the transcript: digests, the conversation reader, search,
+download, share, and sub-agents. Before that fix, an agent moved this way (typically one created
+before the Slack setup and resumed since) got no *finished* cards, although
+**Send test** worked.

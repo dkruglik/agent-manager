@@ -13,6 +13,8 @@ import { ApiError, invalid } from '../api-errors.js';
 export const EVENTS = ['input-required', 'finished'];
 const SCOPES = new Set(['session', 'group']);
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const SAVED_MAX = 100;
+const SAVED_NAME_MAX = 64;
 // A card posted for a request that never resolves would otherwise be kept forever.
 const POSTED_MAX_AGE_MS = 7 * 24 * 3600_000;
 
@@ -61,6 +63,48 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   };
 }
 
+/** @typedef {{ id: string, name: string }} SavedEntry id matches ID; name is trimmed, at most 64 characters, '' when unnamed. */
+/** @typedef {{ channels: SavedEntry[], users: SavedEntry[] }} SavedTargets One adapter's saved lists. */
+
+// Saved channels/users are a convenience list for Settings, never a security
+// boundary, so the list is kept per adapter and holds no tokens.
+function savedList(input, field) {
+  const list = input ?? [];
+  if (!Array.isArray(list)) throw invalid(field, 'must be a list of {id, name?}');
+  if (list.length > SAVED_MAX) throw invalid(field, `at most ${SAVED_MAX} entries`);
+  const byId = new Map();
+  for (const e of list) {
+    if (!isPlain(e) || typeof e.id !== 'string' || !ID.test(e.id)) throw invalid(field, 'every entry needs a valid id');
+    if (e.name != null && typeof e.name !== 'string') throw invalid(field, 'name must be text');
+    if (!byId.has(e.id)) byId.set(e.id, { id: e.id, name: text(e.name, SAVED_NAME_MAX) });
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Checks a PUT /api/messengers/saved body: a known adapter and two optional lists of
+ * {id, name?} (at most 100 entries each, duplicate ids collapse to the first). Throws an
+ * invalid-input ApiError naming the field.
+ * @returns {{ adapter: string } & SavedTargets}
+ */
+export function validateSaved(input, { adapters }) {
+  const b = plain(input);
+  const adapter = text(b.adapter, 32);
+  if (!adapters.includes(adapter)) throw invalid('adapter', `unknown messenger "${adapter}"`);
+  return { adapter, channels: savedList(b.channels, 'channels'), users: savedList(b.users, 'users') };
+}
+
+// Disk is trusted less than input: keep what is well-formed and drop the rest quietly.
+// Bad entries are dropped, but the 100-entry and 64-character caps of validateSaved are
+// not applied here, so a hand-edited file may hold more or longer.
+function loadSaved(raw) {
+  const keep = (list) => (Array.isArray(list) ? list : [])
+    .filter((e) => isPlain(e) && typeof e.id === 'string' && ID.test(e.id) && typeof e.name === 'string')
+    .map((e) => ({ id: e.id, name: e.name }));
+  return Object.fromEntries(Object.entries(plain(raw)).filter(([, v]) => isPlain(v))
+    .map(([adapter, v]) => [adapter, { channels: keep(v.channels), users: keep(v.users) }]));
+}
+
 // True once `file` is at `aside`, else the reason it is not: a rename, or a copy across devices.
 function keepCopy(file, aside) {
   try { fs.renameSync(file, aside); return true; } catch (e) {
@@ -76,7 +120,7 @@ export class BindingStore {
   constructor(file, { now = () => Date.now() } = {}) {
     this.file = file;
     this.now = now;
-    this.data = { bindings: [], posted: {}, seen: {} };
+    this.data = { bindings: [], posted: {}, seen: {}, saved: {} };
     this.readOnly = false;
     this.load();
   }
@@ -95,7 +139,7 @@ export class BindingStore {
       const bindings = raw.bindings.filter(wellFormed);
       if (bindings.length !== raw.bindings.length) this.keepDropped(raw.bindings.length - bindings.length);
       const posted = Object.entries(plain(raw.posted)).filter(([, p]) => isPlain(p));
-      this.data = { bindings, posted: Object.fromEntries(posted), seen: plain(raw.seen) };
+      this.data = { bindings, posted: Object.fromEntries(posted), seen: plain(raw.seen), saved: loadSaved(raw.saved) };
     } catch (e) { this.setAside(e); }
   }
 
@@ -156,13 +200,26 @@ export class BindingStore {
     return b;
   }
 
+  saved() { return structuredClone(this.data.saved); }
+
+  /**
+   * Replaces one adapter's saved lists (validateSaved output); other adapters, bindings and
+   * delivery state are kept. The lists are copied, so later changes by the caller do not reach the store.
+   * @param {{ adapter: string } & SavedTargets} saved
+   */
+  putSaved({ adapter, channels, users }) {
+    const copy = (list) => list.map((e) => ({ id: e.id, name: e.name }));
+    this.commit({ ...this.data, saved: { ...this.data.saved, [adapter]: { channels: copy(channels), users: copy(users) } } });
+  }
+
   removeBinding(id) {
     const { data } = this;
     const bindings = data.bindings.filter((b) => b.id !== id);
     if (bindings.length === data.bindings.length) return false;
     const posted = Object.fromEntries(Object.entries(data.posted).filter(([, p]) => p.bindingId !== id));
     const seen = Object.fromEntries(Object.entries(data.seen).filter(([k]) => !k.startsWith(`${id}|`)));
-    this.commit({ bindings, posted, seen });
+    // Keep every other top-level key (saved lists) that removal does not own.
+    this.commit({ ...data, bindings, posted, seen });
     return true;
   }
 

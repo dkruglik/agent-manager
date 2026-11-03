@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api';
 import * as messengers from '../lib/messengersApi';
-import type { MessengerAdapterStatus, MessengerBinding, MessengerEvent } from '../lib/messengersApi';
-import { failureText, newBinding, pickableAgents, scopeName, settleLoad } from '../lib/messengersView';
+import type { MessengerAdapterStatus, MessengerBinding, MessengerEvent, MessengerSaved } from '../lib/messengersApi';
+import { addUserToDraft, failureText, newBinding, pickableAgents, savedFor, savedLabel, scopeName, settleLoad } from '../lib/messengersView';
 import type { Tree } from '../types';
+import { MessengerSavedTargets } from './MessengerSavedTargets';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
 // messenger) to a session or a group; see docs/messengers.md for setup.
@@ -18,6 +19,7 @@ function adapterHelp(a: MessengerAdapterStatus) {
 export function MessengersSection() {
   const [adapters, setAdapters] = useState<MessengerAdapterStatus[]>([]);
   const [bindings, setBindings] = useState<MessengerBinding[]>([]);
+  const [saved, setSaved] = useState<MessengerSaved | undefined>(undefined);
   const [tree, setTree] = useState<Tree | null>(null);
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
@@ -28,15 +30,17 @@ export function MessengersSection() {
     if (loaded.messengers) {
       setAdapters(loaded.messengers.adapters);
       setBindings(loaded.messengers.bindings);
+      setSaved(loaded.messengers.saved);
     }
     if (loaded.tree) setTree(loaded.tree);
     setErr(loaded.error);
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load]);
 
-  const run = async (fn: () => Promise<unknown>, ok = '') => {
+  /** Runs a write, then reloads. True when the write succeeded; the error is shown otherwise. */
+  const run = async (fn: () => Promise<unknown>, ok = ''): Promise<boolean> => {
     setErr(''); setNote('');
-    try { await fn(); if (ok) setNote(ok); await load(); } catch (e) { setErr((e as Error).message); }
+    try { await fn(); if (ok) setNote(ok); await load(); return true; } catch (e) { setErr((e as Error).message); return false; }
   };
   const add = () => run(async () => {
     await messengers.createMessengerBinding(newBinding(draft));
@@ -48,6 +52,7 @@ export function MessengersSection() {
   };
 
   const live = pickableAgents(tree);
+  const mine = savedFor(saved, 'slack');
   return (
     <>
       <h3>Messengers</h3>
@@ -96,6 +101,12 @@ export function MessengersSection() {
             <div className="s-label">Connect a channel</div>
             <input className="cfg-input" aria-label="Channel id" placeholder="Channel id, e.g. C0123ABCD" value={draft.channel}
               onChange={(e) => setDraft({ ...draft, channel: e.target.value })} />
+            {mine.channels.length > 0 && (
+              <select className="cfg-input" aria-label="Saved channel" value="" onChange={(e) => e.target.value && setDraft({ ...draft, channel: e.target.value })}>
+                <option value="">Saved channel…</option>
+                {mine.channels.map((c) => <option key={c.id} value={c.id}>{savedLabel(c)}</option>)}
+              </select>
+            )}
             <select className="cfg-input" aria-label="Agent or group" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>
               <option value="">Agent or group…</option>
               {tree?.groups.length ? <optgroup label="Groups">{tree.groups.map((g) => <option key={g.id} value={`group:${g.id}`}>{g.name}</option>)}</optgroup> : null}
@@ -103,12 +114,22 @@ export function MessengersSection() {
             </select>
             <input className="cfg-input" aria-label="Allowed user ids" placeholder="Allowed user ids, e.g. U0123ABCD" value={draft.users}
               onChange={(e) => setDraft({ ...draft, users: e.target.value })} />
+            {mine.users.length > 0 && (
+              <select className="cfg-input" aria-label="Add saved user" value="" onChange={(e) => e.target.value && setDraft({ ...draft, users: addUserToDraft(draft.users, e.target.value) })}>
+                <option value="">Add saved user…</option>
+                {mine.users.map((u) => <option key={u.id} value={u.id}>{savedLabel(u)}</option>)}
+              </select>
+            )}
             <label className="s-help"><input type="checkbox" checked={draft.approvals}
               onChange={(e) => setDraft({ ...draft, approvals: e.target.checked })} /> allow approving tool calls and answering Claude's questions from chat</label>
             {note && <div className="s-help">{note}</div>}
           </div>
           <button className="btn-ghost" disabled={!draft.channel.trim() || !draft.scope || !draft.users.trim()} onClick={add}>Connect</button>
         </div>
+      )}
+      {adapters.length > 0 && (
+        <MessengerSavedTargets adapter="slack" channels={mine.channels} users={mine.users}
+          draftChannel={draft.channel} draftUsers={draft.users} run={run} />
       )}
     </>
   );

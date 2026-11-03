@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { WORKSPACES_DIR, DATA_DIR } from './config.js';
+import { liveTranscript } from './claude-continuation.js';
 import { sharedCodexRollout } from './codex-reader.js';
 import { agyConversationExists, agyConversationPath, captureAgyConversation } from './antigravity.js';
 
@@ -102,17 +103,6 @@ export async function shareNamespace() {
   }
 }
 
-/**
- * Locate a Claude session's transcript. The filename IS the session id, so this
- * is a search for `<sessionUuid>.jsonl` under any projects/ dir we know about.
- * Returns null when the session has never produced a transcript.
- *
- * Claude keys its project dir on the working directory, so the SAME session id
- * can appear under more than one of them — resuming a session from a different
- * cwd (e.g. after moving into a git worktree) relocates it. Claude normally
- * moves the file rather than forking it, but if both ever exist the newest is
- * the live one, so pick by mtime instead of trusting directory order.
- */
 /** Every Claude transcript on disk. Mirrors claudeFiles() in traces.js. */
 async function claudeTranscripts() {
   const home = process.env.HOME || '';
@@ -188,7 +178,13 @@ async function transcriptCwd(p) {
 }
 
 /**
- * Locate a Claude session's transcript.
+ * Locate a Claude session's live transcript (the one a reader should open).
+ *
+ * The pin names the START of a conversation, not its end: Claude seals a
+ * transcript with a `continued-in` line and carries on in another file. The
+ * newest pinned copy (by mtime; liveTranscript) is only the start of that
+ * chain, and the file returned is the last one of it. traces.js uses the same
+ * helper, so digests and the reader agree.
  *
  * Normally the filename IS the session id. Two things stop that being enough:
  *
@@ -210,15 +206,8 @@ export async function findTranscript(session, allSessions = []) {
   // 1. By pinned id. `startsWith` rather than an exact name, matching the
   //    `<uuid>*` glob runner.js uses for its own transcript check.
   if (session.sessionUuid) {
-    let best = null;
-    for (const p of files) {
-      if (!path.basename(p).startsWith(session.sessionUuid)) continue;
-      try {
-        const st = await fsp.stat(p);
-        if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
-      } catch { /* raced away */ }
-    }
-    if (best) return best.p;
+    const live = await liveTranscript(session.sessionUuid, files);
+    if (live) return live;
   }
 
   // 2. By working directory, only if unambiguous.
