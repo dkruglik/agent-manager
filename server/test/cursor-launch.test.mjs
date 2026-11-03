@@ -46,7 +46,7 @@ check('no cont: --continue is cwd-scoped', cursor?.cont, undefined);
 check('noUpdate does not claim an image install', /pinned prebuilt|downloads\.cursor\.com/.test(cursor?.noUpdate || ''), false);
 check('noUpdate says it is not an npm package', /not an npm package/.test(cursor?.noUpdate || ''), true);
 check('has withPrompt, so a quickstart prompt is queued for the launch line', typeof cursor?.withPrompt, 'function');
-check('unpinned withPrompt carries flags and prompt', cursor?.withPrompt("'hi'", [], "--model 'm'"), "cursor-agent --trust --model 'm' 'hi'");
+check('unpinned withPrompt carries flags and prompt', cursor?.withPrompt("'hi'", [], "--model 'm'"), "cursor-agent --trust --model 'm' -- 'hi'");
 console.log('\nsetup text and credentials');
 check('secrets list the key', JSON.stringify(row().secrets), '["CURSOR_API_KEY"]');
 check('signIn is null', row().signIn ?? null, null);
@@ -90,7 +90,7 @@ check('sessionUuid is minted', /^[0-9a-f-]{36}$/.test(first.sessionUuid), true);
 check('first launch resumes its own id', runner.commandFor(first), `exec cursor-agent --trust --resume ${first.sessionUuid}`);
 const seeded = mk({ pendingPrompt: "fix it; don't" });
 check('a queued first prompt is appended, quoted', runner.commandFor(seeded),
-  `exec cursor-agent --trust --resume ${seeded.sessionUuid} 'fix it; don'\\''t'`);
+  `exec cursor-agent --trust --resume ${seeded.sessionUuid} -- 'fix it; don'\\''t'`);
 const again = sessions.update(seeded.id, { everStarted: true, pendingPrompt: "fix it; don't" });
 check('a later launch is the same line without the prompt', runner.commandFor(again),
   `exec cursor-agent --trust --resume ${seeded.sessionUuid}`);
@@ -99,14 +99,18 @@ check('the model flag rides the resume line', runner.commandFor(modelled),
   `exec cursor-agent --trust --resume ${modelled.sessionUuid} --model 'grok-4.7-low'`);
 const modelledSeeded = mk({ model: 'grok-4.7-low', pendingPrompt: 'hi' });
 check('flags come before the positional prompt', runner.commandFor(modelledSeeded),
-  `exec cursor-agent --trust --resume ${modelledSeeded.sessionUuid} --model 'grok-4.7-low' 'hi'`);
+  `exec cursor-agent --trust --resume ${modelledSeeded.sessionUuid} --model 'grok-4.7-low' -- 'hi'`);
 const bad = mk({ sessionUuid: 'x; rm -rf /', pendingPrompt: 'hi' });
 const badLine = runner.commandFor(bad);
-check('a malformed id falls back to a plain unpinned run (prompt kept)', badLine, "exec cursor-agent --trust 'hi'");
+check('a malformed id runs unpinned, keeping the queued prompt', badLine, "exec cursor-agent --trust -- 'hi'");
 check('the malformed id never reaches the line', badLine.includes('rm -rf'), false);
 const badQ = mk({ sessionUuid: 'x; rm -rf /', pendingPrompt: "it's" });
-check('a malformed id keeps the queued prompt, unpinned', runner.commandFor(badQ), "exec cursor-agent --trust 'it'\\''s'");
+check('a malformed id keeps the queued prompt, unpinned', runner.commandFor(badQ), "exec cursor-agent --trust -- 'it'\\''s'");
 check('a malformed id never gets --resume', runner.commandFor(badQ).includes('--resume'), false);
+const yolo = mk({ pendingPrompt: '--yolo' });
+const yoloLine = runner.commandFor(yolo);
+check('a prompt that looks like a flag follows --', yoloLine.includes(" -- '--yolo'"), true);
+check('a flag-looking prompt is never a bare argument', yoloLine.replace(" -- '--yolo'", '').includes('--yolo'), false);
 const gone = mk({ sessionUuid: null });
 check('a missing id falls back to a plain run', runner.commandFor(gone), 'exec cursor-agent --trust');
 const a = mk({ path: 'shared' }), b = mk({ path: 'shared' });

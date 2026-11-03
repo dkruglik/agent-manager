@@ -1802,6 +1802,24 @@ const agyCapturing = new Map();
 // permission. Only the pinned conversation counts: a pane that holds no pin
 // (shared folder, nothing captured yet) shows nothing rather than a guess, and
 // a new pin is a new token, so the old one's dialog never carries over.
+/**
+ * Cursor CLI's shell-approval dialog on the visible screen (2026.10.22; its
+ * hooks do not fire). Two things must both show: the question row ("Run this
+ * command?") and either its "→ Run (once)" option or the "Waiting for approval"
+ * status, so the question merely quoted in an assistant message is not a hit.
+ * The token hashes the command row above the question ("$  touch x in ."), so
+ * a new command shows again after a dismissed one.
+ */
+export function cursorApprovalOnScreen(screen) {
+  const rows = String(screen || '').split('\n');
+  const q = rows.findIndex((r) => /^\s*Run this command\?\s*$/.test(r));
+  if (q < 0) return null;
+  const option = rows.slice(q + 1, q + 8).some((r) => /^\s*\u2192\s*Run \(once\)/.test(r));
+  if (!option && !rows.some((r) => /Waiting for approval/.test(r))) return null;
+  const command = rows.slice(0, q).findLast((r) => /^\s*\$\s+\S/.test(r)) || rows[q];
+  return { kind: 'permission', source: 'cursor-screen', token: crypto.createHash('sha1').update(command.trim()).digest('hex').slice(0, 12) };
+}
+
 function agyPermissionPending(id) {
   const pin = list().find((s) => s.id === id)?.antigravityConversationId;
   const step = pin ? agyWaitingStep(pin) : null;
@@ -1965,12 +1983,14 @@ export function commandFor(session) {
   // cursor-agent 2026.10.22), and the same command later resumes it with its
   // full context, so there is no existence check and no `create-chat`
   // subprocess: first launch and every later launch are the same line. A queued
-  // first prompt rides after the flags as the positional prompt. Never
-  // `--continue`. The id reaches the shell unquoted, so a missing or malformed
-  // one falls back to a plain run rather than being interpolated.
+  // first prompt rides after the flags as the positional prompt, behind `--` so
+  // a prompt reading `--yolo` or `--version` is sent as text, not parsed as a
+  // flag. Never `--continue`. The id reaches the shell unquoted, so a missing
+  // or malformed one is not interpolated: it launches unpinned (`run`, or the
+  // withPrompt line when a first prompt is queued).
   if (cli.id === 'cursor') {
     if (!UUID.test(session.sessionUuid || '')) return `exec ${q0 ? firstCommand() : run}`;
-    return `exec ${cli.resume(session.sessionUuid, f)}${q0 ? ` ${q0}` : ''}`;
+    return `exec ${cli.resume(session.sessionUuid, f)}${q0 ? ` -- ${q0}` : ''}`;
   }
 
   // OpenClaw: first run needs its onboarding wizard (keys, workspace); once the
@@ -2223,7 +2243,9 @@ export function ensureRunning(session, cols = 120, rows = 34) {
   };
   host.inputRequired = createInputRequiredTracker({
     id: session.id, runId, cli: session.cli,
-    native: session.cli === 'antigravity' ? () => agyPermissionPending(session.id) : null,
+    native: session.cli === 'antigravity' ? () => agyPermissionPending(session.id)
+      : session.cli === 'cursor' ? () => { try { return cursorApprovalOnScreen(host.vt.getVisibleText()); } catch { return null; } }
+        : null,
   });
   host.historyCheckpoint = createTerminalHistoryCheckpoint({
     directory: HISTORY_DIR,
@@ -3019,6 +3041,20 @@ function emptyOpencodeComposer(snapshot) {
   if (i >= lines.length || !/^\s*\u2579/.test(lines[i].text)) return false;
   return !lines.slice(i + 1).some((l) => MENU_ROW.test(l.text) || DIALOG_HINT.test(l.text));
 }
+// Cursor hides the terminal cursor and draws a reverse-video one, so the cursor
+// row is not the input. Its composer is the bottom-most `→` row: the placeholder
+// (`→ Plan, search, build anything` on a fresh chat, `→ Add a follow-up` after a
+// turn) means empty; anything else is typed text. While a turn runs the row
+// ends in `ctrl+c to stop`, which is not the placeholder, so busy reads as not
+// empty; the approval dialog's own `→ Run (once)` row is not it either.
+// Captured from Cursor 2026.10.22.
+function emptyCursorComposer(snapshot) {
+  const lines = snapshot?.visibleLines || [];
+  const composer = lines.findLast((l) => /^\s*\u2192(?:\s|$)/.test(l.text));
+  if (!composer || /ctrl\+c to stop/.test(composer.text)) return false;
+  if (cursorApprovalOnScreen(lines.map((l) => l.text).join('\n'))) return false;
+  return /^\s*\u2192\s+(?:Plan, search, build anything|Add a follow-up)\s*$/.test(composer.text);
+}
 /** Can promptReady ever answer yes for this CLI? (config.js promptDetector) */
 export function hasPromptDetector(cli) {
   return !!cliById(cli)?.promptDetector;
@@ -3028,6 +3064,7 @@ export function emptyPrompt(snapshot, screen, cli) {
   const confirm = cliById(cli)?.confirmSubmit;
   if (confirm?.starting?.test(String(screen || ''))) return false;
   if (cli === 'opencode') return emptyOpencodeComposer(snapshot);
+  if (cli === 'cursor') return emptyCursorComposer(snapshot);
   const shape = liveComposer(snapshot, { notice: confirm?.notice });
   if (!shape || !(shape.located ? shape.cursorInside : shape.marked)) return false;
   if (composerBody(shape) !== '') return false;

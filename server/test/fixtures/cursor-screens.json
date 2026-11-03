@@ -1,0 +1,667 @@
+{
+ "_about": "Cursor CLI 2026.10.22 screens (120x40, raw PTY output replayed through libghostty-vt like runner.js; the working directory is scrubbed to /data/workspaces/cursor-fixture). Kept apart from input-lines.json: Cursor hides the terminal cursor (ESC[?25l) and draws a fake one, so cursorRow/cursorCol are not where the input is, and the cursor-based input guard (composerShape/sameComposer) cannot tell empty from typed here. empty = fresh chat; typed = 'hello there' unsent; busy = mid-turn; approval = shell approval dialog.",
+ "empty": {
+  "cursorRow": 14,
+  "cursorCol": 0,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": ""
+   },
+   {
+    "row": 2,
+    "text": "  Cursor Agent"
+   },
+   {
+    "row": 3,
+    "text": "  v2026.10.22-27dcf5f"
+   },
+   {
+    "row": 4,
+    "text": "  Tip: Hit shift+tab to enable Plan Mode for large or complex changes."
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": "  → Plan, search, build anything"
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": "  Grok 4.7 256K Low"
+   },
+   {
+    "row": 13,
+    "text": "  /data/workspaces/cursor-fixture · main"
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": ""
+   },
+   {
+    "row": 29,
+    "text": ""
+   },
+   {
+    "row": 30,
+    "text": ""
+   },
+   {
+    "row": 31,
+    "text": ""
+   },
+   {
+    "row": 32,
+    "text": ""
+   },
+   {
+    "row": 33,
+    "text": ""
+   },
+   {
+    "row": 34,
+    "text": ""
+   },
+   {
+    "row": 35,
+    "text": ""
+   },
+   {
+    "row": 36,
+    "text": ""
+   },
+   {
+    "row": 37,
+    "text": ""
+   },
+   {
+    "row": 38,
+    "text": ""
+   },
+   {
+    "row": 39,
+    "text": ""
+   }
+  ]
+ },
+ "typed": {
+  "cursorRow": 14,
+  "cursorCol": 0,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": ""
+   },
+   {
+    "row": 2,
+    "text": "  Cursor Agent"
+   },
+   {
+    "row": 3,
+    "text": "  v2026.10.22-27dcf5f"
+   },
+   {
+    "row": 4,
+    "text": "  Tip: Use /run-everything to skip all approvals."
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": "  → hello there"
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": "  Grok 4.7 256K Low"
+   },
+   {
+    "row": 13,
+    "text": "  /data/workspaces/cursor-fixture · main"
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": ""
+   },
+   {
+    "row": 29,
+    "text": ""
+   },
+   {
+    "row": 30,
+    "text": ""
+   },
+   {
+    "row": 31,
+    "text": ""
+   },
+   {
+    "row": 32,
+    "text": ""
+   },
+   {
+    "row": 33,
+    "text": ""
+   },
+   {
+    "row": 34,
+    "text": ""
+   },
+   {
+    "row": 35,
+    "text": ""
+   },
+   {
+    "row": 36,
+    "text": ""
+   },
+   {
+    "row": 37,
+    "text": ""
+   },
+   {
+    "row": 38,
+    "text": ""
+   },
+   {
+    "row": 39,
+    "text": ""
+   }
+  ]
+ },
+ "busy": {
+  "cursorRow": 39,
+  "cursorCol": 0,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": "  A lighthouse is a building that refuses to be merely a building. It stands at the edge of land, where charts grow"
+   },
+   {
+    "row": 2,
+    "text": "  uncertain and weather arrives without announcement, and it spends its life saying the same useful thing: here is"
+   },
+   {
+    "row": 3,
+    "text": "  the shore, and here is the way past it. For centuries that message has been light, and before light it was fire."
+   },
+   {
+    "row": 4,
+    "text": "  The form changed with fuel and glass and electricity, but the job stayed stubbornly simple. Sailors needed a fixed"
+   },
+   {
+    "row": 5,
+    "text": "  point when the sea offered none."
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": "  The earliest lights were practical and crude. Keepers or coastal communities burned wood, coal, or oil in braziers"
+   },
+   {
+    "row": 8,
+    "text": "  and towers so that ships could pick a headland out of the dark. Those flames were bright enough to matter and"
+   },
+   {
+    "row": 9,
+    "text": "  unreliable enough to fail. Smoke, wind, and rain stole from them. What changed the lighthouse from a beacon into"
+   },
+   {
+    "row": 10,
+    "text": "  an instrument was the lens. In the early nineteenth century, Augustin-Jean Fresnel designed a lens of concentric"
+   },
+   {
+    "row": 11,
+    "text": "  rings and prisms that bent and concentrated light into a narrow, powerful beam. A modest lamp could suddenly reach"
+   },
+   {
+    "row": 12,
+    "text": "  the horizon. The Fresnel lens did not invent the idea of warning ships. It made the warning precise, repeatable,"
+   },
+   {
+    "row": 13,
+    "text": "  and far-reaching, which is what navigation requires."
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": "  That precision lives in the character of each light. A lighthouse is identified not only by where it stands but by"
+   },
+   {
+    "row": 16,
+    "text": "  how it shines. Some burn a steady white. Others occult, flash, or group their flashes in a signature a mariner"
+   },
+   {
+    "row": 17,
+    "text": "  can time against a clock and match to a light list. Color sectors matter too: a red glow may mark a shoal, while"
+   },
+   {
+    "row": 18,
+    "text": "  white marks the safe channel. In fog, when light fails, the station speaks in sound—a horn, a bell, a diaphone"
+   },
+   {
+    "row": 19,
+    "text": "  whose blast carries farther than a human voice and less prettily. The romance of the lighthouse often forgets this"
+   },
+   {
+    "row": 20,
+    "text": "  bookkeeping. Beauty is incidental. The point is that no two neighboring lights should be confusable on a bad"
+   },
+   {
+    "row": 21,
+    "text": "  night."
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": "  The people who kept those lights lived inside the instrument. Before automation, a keeper’s work was a loop of"
+   },
+   {
+    "row": 24,
+    "text": "  trimming wicks, polishing brass and glass, winding clockwork that rotated the lens, logging weather, and watching."
+   },
+   {
+    "row": 25,
+    "text": "  The tower was often remote: a rock, a sandbar, an island where supply boats came when the sea allowed. Families"
+   },
+   {
+    "row": 26,
+    "text": "  sometimes lived in the station house, children growing up to the rhythm of the watch. The work could be lonely,"
+   },
+   {
+    "row": 27,
+    "text": "  and it could be lethal. Storms have swept keepers from galleries. Ice has sealed stations for weeks. The job asked"
+   },
+   {
+    "row": 28,
+    "text": "  for competence more than heroism, though the two occasionally arrived together. When a keeper stayed at the lamp"
+   },
+   {
+    "row": 29,
+    "text": "  through a gale, the act"
+   },
+   {
+    "row": 30,
+    "text": ""
+   },
+   {
+    "row": 31,
+    "text": " ⠠⠛ Working  674 tokens"
+   },
+   {
+    "row": 32,
+    "text": ""
+   },
+   {
+    "row": 33,
+    "text": ""
+   },
+   {
+    "row": 34,
+    "text": "  → Add a follow-up                                                                                     ctrl+c to stop"
+   },
+   {
+    "row": 35,
+    "text": ""
+   },
+   {
+    "row": 36,
+    "text": ""
+   },
+   {
+    "row": 37,
+    "text": "  Grok 4.7 256K Low"
+   },
+   {
+    "row": 38,
+    "text": "  /data/workspaces/cursor-fixture · main"
+   },
+   {
+    "row": 39,
+    "text": ""
+   }
+  ]
+ },
+ "approval": {
+  "cursorRow": 24,
+  "cursorCol": 0,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": ""
+   },
+   {
+    "row": 2,
+    "text": "  Cursor Agent"
+   },
+   {
+    "row": 3,
+    "text": "  v2026.10.22-27dcf5f"
+   },
+   {
+    "row": 4,
+    "text": "  Tip: Use /plan to plan execution and reach the right outcome faster."
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": "  Run the shell command: touch spike-file.txt (use the shell tool, then reply DONE)"
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": ""
+   },
+   {
+    "row": 10,
+    "text": "  I'll create spike-file.txt with the shell, then confirm."
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": "  $ touch spike-file.txt Waiting for approval..."
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 15,
+    "text": " $  touch spike-file.txt in ."
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": " Run this command?"
+   },
+   {
+    "row": 18,
+    "text": " Not in allowlist: touch"
+   },
+   {
+    "row": 19,
+    "text": "  → Run (once) (y)"
+   },
+   {
+    "row": 20,
+    "text": "    Add Shell(touch) to allowlist? (tab)"
+   },
+   {
+    "row": 21,
+    "text": "    Run Everything (shift+tab)"
+   },
+   {
+    "row": 22,
+    "text": "    Skip & tell the agent what to do instead (esc or n)"
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": ""
+   },
+   {
+    "row": 29,
+    "text": ""
+   },
+   {
+    "row": 30,
+    "text": ""
+   },
+   {
+    "row": 31,
+    "text": ""
+   },
+   {
+    "row": 32,
+    "text": ""
+   },
+   {
+    "row": 33,
+    "text": ""
+   },
+   {
+    "row": 34,
+    "text": ""
+   },
+   {
+    "row": 35,
+    "text": ""
+   },
+   {
+    "row": 36,
+    "text": ""
+   },
+   {
+    "row": 37,
+    "text": ""
+   },
+   {
+    "row": 38,
+    "text": ""
+   },
+   {
+    "row": 39,
+    "text": ""
+   }
+  ]
+ }
+}
