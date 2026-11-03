@@ -340,8 +340,15 @@ export const CLIS = [
     run: (f) => withFlags('cursor-agent --trust', f),
     resume: (id, f) => withFlags(`cursor-agent --trust --resume ${id}`, f),
     launch: { model: true, flags: ({ model }) => join(model && `--model ${shq(model)}`) },
-    noUpdate: 'a pinned prebuilt build from downloads.cursor.com, not an npm package',
-    secrets: ['CURSOR_API_KEY'], setup: setupHint('CURSOR_API_KEY') },
+    // Only the unpinned fallback: runner.commandFor's cursor branch builds the
+    // pinned `--resume <id> … <prompt>` line itself and returns before the
+    // generic withPrompt use. Having it here lets index.js queue a quickstart
+    // prompt as pendingPrompt (it does so only for CLIs with withPrompt)
+    // instead of the boot-then-type fallback.
+    withPrompt: (q, _images, f) => `${withFlags('cursor-agent --trust', f)} ${q}`,
+    noUpdate: 'installed outside this image (not an npm package)',
+    secrets: ['CURSOR_API_KEY'],
+    setup: 'Add CURSOR_API_KEY as a Space secret. Signing in from the pane (cursor-agent login) has not been checked from a Space.' },
   // Model only. `--variant` exists on `opencode run` but not on the TUI, and
   // the TUI ignores `agent.build.variant` from OPENCODE_CONFIG_CONTENT (checked
   // on 1.19.5 with a fresh HOME): it keeps its own saved per-model variant.

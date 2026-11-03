@@ -236,6 +236,8 @@ test('cursor: every launch resumes its own chat id, flags kept, prompt only on f
   assert.deepEqual(launch(runner.commandFor(later)).calls, [['cursor-agent', '--trust', '--resume', id, ...f]]);
   const bad = make('cursor', { sessionUuid: 'x; touch PWNED' });
   assert.deepEqual(launch(runner.commandFor(bad)).calls, [['cursor-agent', '--trust']]);
+  const badQ = make('cursor', { sessionUuid: 'x; touch PWNED', pendingPrompt: 'do it' });
+  assert.deepEqual(launch(runner.commandFor(badQ)).calls, [['cursor-agent', '--trust', 'do it']], 'malformed id: unpinned, prompt kept');
   assert.equal(fs.existsSync(PWNED), false);
 });
 

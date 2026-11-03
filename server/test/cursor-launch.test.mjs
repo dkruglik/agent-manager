@@ -43,6 +43,15 @@ check('cursor is registered', !!cursor, true);
 check('binary is cursor-agent', cursor?.bin, 'cursor-agent');
 check('not updated through npm', !!cursor?.noUpdate && !cursor?.npm, true);
 check('no cont: --continue is cwd-scoped', cursor?.cont, undefined);
+check('noUpdate does not claim an image install', /pinned prebuilt|downloads\.cursor\.com/.test(cursor?.noUpdate || ''), false);
+check('noUpdate says it is not an npm package', /not an npm package/.test(cursor?.noUpdate || ''), true);
+check('has withPrompt, so a quickstart prompt is queued for the launch line', typeof cursor?.withPrompt, 'function');
+check('unpinned withPrompt carries flags and prompt', cursor?.withPrompt("'hi'", [], "--model 'm'"), "cursor-agent --trust --model 'm' 'hi'");
+console.log('\nsetup text and credentials');
+check('secrets list the key', JSON.stringify(row().secrets), '["CURSOR_API_KEY"]');
+check('signIn is null', row().signIn ?? null, null);
+check('setup recommends the key', /CURSOR_API_KEY/.test(row().setup || ''), true);
+check('setup does not promise a sign-in walkthrough', /walks you through/.test(row().setup || ''), false);
 
 console.log('\nlaunch lines');
 const ID = '79cd3d9b-b387-44da-91c0-2df98a2ae37e';
@@ -93,8 +102,11 @@ check('flags come before the positional prompt', runner.commandFor(modelledSeede
   `exec cursor-agent --trust --resume ${modelledSeeded.sessionUuid} --model 'grok-4.7-low' 'hi'`);
 const bad = mk({ sessionUuid: 'x; rm -rf /', pendingPrompt: 'hi' });
 const badLine = runner.commandFor(bad);
-check('a malformed id falls back to a plain run', badLine, "exec cursor-agent --trust");
+check('a malformed id falls back to a plain unpinned run (prompt kept)', badLine, "exec cursor-agent --trust 'hi'");
 check('the malformed id never reaches the line', badLine.includes('rm -rf'), false);
+const badQ = mk({ sessionUuid: 'x; rm -rf /', pendingPrompt: "it's" });
+check('a malformed id keeps the queued prompt, unpinned', runner.commandFor(badQ), "exec cursor-agent --trust 'it'\\''s'");
+check('a malformed id never gets --resume', runner.commandFor(badQ).includes('--resume'), false);
 const gone = mk({ sessionUuid: null });
 check('a missing id falls back to a plain run', runner.commandFor(gone), 'exec cursor-agent --trust');
 const a = mk({ path: 'shared' }), b = mk({ path: 'shared' });
