@@ -1,9 +1,9 @@
 # Cursor CLI as an agent
 
-**Status:** in place, 2026-11-03. Launch, per-pane resume, the model picker,
-the Reader and digest, the image install, the state checkpoint, the
-needs-input badge and revive are in. What is still open is under **Not done
-yet**.
+**Status:** in place (image build and first boot not yet run), 2026-11-03.
+Launch, per-pane resume, the model picker, the Reader and digest, the image
+install, the state checkpoint, the needs-input badge and revive are in. What
+is still open is under **Not done yet**.
 
 Cursor's terminal agent (`cursor-agent`, also installed as `agent`) is
 registered as the `cursor` CLI in `server/src/config.js`. Everything below was
@@ -147,6 +147,3 @@ the visible text (`server/test/fixtures/cursor-screens.json`, captured at
   fresh chat and `→ Add a follow-up` after a turn mean empty. Typed text, the
   `ctrl+c to stop` marker on the row while it works, and the approval dialog
   all mean not empty. Cursor draws on the primary screen (no `?1049h`).
-
-- **Not checked:** whether the CLI updates itself, and whether
-  `login` with `NO_OPEN_BROWSER` completes from a Space.

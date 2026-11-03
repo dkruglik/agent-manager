@@ -1832,6 +1832,34 @@ export function cursorApprovalOnScreen(screen) {
   return { kind: 'permission', source: 'cursor-screen', token: crypto.createHash('sha1').update(command.trim()).digest('hex').slice(0, 12) };
 }
 
+/**
+ * The `native` poll of one Cursor pane: its approval dialog on the visible
+ * screen. A screen that cannot be read says nothing about the dialog, so a
+ * throw keeps the last hit (the badge stays) instead of reading as "gone"; the
+ * first failure is logged through `log`, later ones are not.
+ */
+export function cursorNativePoll(getText, log) {
+  let last = null;
+  let logged = false;
+  return () => {
+    try {
+      last = cursorApprovalOnScreen(getText());
+    } catch (error) {
+      if (!logged) { logged = true; log(error && error.message ? error.message : String(error)); }
+    }
+    return last;
+  };
+}
+
+function nativeInputPoll(session, host) {
+  if (session.cli === 'antigravity') return () => agyPermissionPending(session.id);
+  if (session.cli === 'cursor') {
+    return cursorNativePoll(() => host.vt.getVisibleText(),
+      (message) => console.error(`[runner] cursor screen read failed for ${session.id}: ${message}`));
+  }
+  return null;
+}
+
 function agyPermissionPending(id) {
   const pin = list().find((s) => s.id === id)?.antigravityConversationId;
   const step = pin ? agyWaitingStep(pin) : null;
@@ -2255,9 +2283,7 @@ export function ensureRunning(session, cols = 120, rows = 34) {
   };
   host.inputRequired = createInputRequiredTracker({
     id: session.id, runId, cli: session.cli,
-    native: session.cli === 'antigravity' ? () => agyPermissionPending(session.id)
-      : session.cli === 'cursor' ? () => { try { return cursorApprovalOnScreen(host.vt.getVisibleText()); } catch { return null; } }
-        : null,
+    native: nativeInputPoll(session, host),
   });
   host.historyCheckpoint = createTerminalHistoryCheckpoint({
     directory: HISTORY_DIR,
