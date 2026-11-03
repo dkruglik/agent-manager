@@ -41,6 +41,8 @@ const env = {
   FX_DURABLE: path.join(data, 'state/fx'),
   ANTIGRAVITY_LIVE: path.join(local, 'antigravity-home'),
   ANTIGRAVITY_DURABLE: path.join(data, 'state/antigravity'),
+  CURSOR_LIVE: path.join(local, 'cursor-home'),
+  CURSOR_DURABLE: path.join(data, 'state/cursor'),
 };
 
 let failures = 0;
@@ -52,8 +54,8 @@ const put = (file, body) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, body);
 };
-const run = (mode, options = {}) => execFileSync('sh', [script, mode], {
-  env, encoding: 'utf8', stdio: options.stdio || 'pipe',
+const run = (mode, options = {}) => execFileSync('sh', [script, mode, ...(options.args || [])], {
+  env: { ...env, ...(options.env || {}) }, encoding: 'utf8', stdio: options.stdio || 'pipe',
 });
 const sql = (db, statement) => execFileSync('sqlite3', [db, statement], { encoding: 'utf8' }).trim();
 const waitFor = (child, marker) => new Promise((resolve, reject) => {
@@ -213,6 +215,123 @@ try {
   check('Antigravity conversation restores from its checkpoint after a fresh container',
     sql(path.join(agy, agyConvRel), 'SELECT count(*) FROM steps;') === '2'
       && fs.existsSync(path.join(agy, 'cache/onboarding.json')));
+
+  // Cursor CLI: ~/.cursor and ~/.config/cursor are linked into one local tree
+  // (dot-cursor/, config/). Each chat is a WAL-mode store.db; the committed
+  // row lives only in the WAL while cursor-agent holds it open. Transcripts
+  // are plain files. The worker's live socket, its log and the 1 MB statsig
+  // cache stay local, and a socket in the tree must not fail the run.
+  const cur = path.join(env.CURSOR_LIVE, 'dot-cursor');
+  const curDurable = path.join(env.CURSOR_DURABLE, 'dot-cursor');
+  const curDbRel = 'chats/5d41402abc4b2a76b9719d911017c592/6f0c1a2e-0000-4000-8000-000000000001/store.db';
+  const curTranscriptRel = 'projects/work-repo/agent-transcripts/6f0c1a2e/6f0c1a2e.jsonl';
+  const bindSocket = (file) => execFileSync('python3', ['-I', '-c',
+    'import socket,sys;s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1])', file]);
+  const findJunk = (dir) => execFileSync('find', [dir, '-name', '*-wal', '-o', '-name', '*-shm',
+    '-o', '-name', '*.sock', '-o', '-name', 'worker.log', '-o', '-name', 'statsig-cache.json'], { encoding: 'utf8' }).trim();
+  put(path.join(cur, curTranscriptRel), '{"role":"user"}\n');
+  put(path.join(cur, 'cli-config.json'), '{"version":1}\n');
+  put(path.join(env.CURSOR_LIVE, 'config/auth.json'), '{"accessToken":"fixture"}\n');
+  put(path.join(cur, 'projects/work-repo/worker.log'), 'noise');
+  put(path.join(cur, 'statsig-cache.json'), '{"cache":true}');
+  const curSock = path.join(cur, 'projects/work-repo/worker.sock');
+  bindSocket(curSock);
+  check('Cursor fixture has a live unix socket', fs.lstatSync(curSock).isSocket());
+  fs.mkdirSync(path.dirname(path.join(cur, curDbRel)), { recursive: true });
+  const curWriter = spawn('sqlite3', [path.join(cur, curDbRel)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  curWriter.stdin.write('PRAGMA journal_mode=WAL;\n');
+  curWriter.stdin.write('PRAGMA wal_autocheckpoint=0;\n');
+  curWriter.stdin.write('CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT);\n');
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('composer said hi');\n");
+  curWriter.stdin.write('.print cur-ready\n');
+  await waitFor(curWriter, 'cur-ready');
+  check('Cursor fixture keeps the committed row in the WAL',
+    fs.existsSync(path.join(cur, `${curDbRel}-wal`)) && fs.statSync(path.join(cur, `${curDbRel}-wal`)).size > 0);
+  let curRunOk = true;
+  try { run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } }); } catch { curRunOk = false; }
+  check('Cursor checkpoint does not fail because of the live socket', curRunOk);
+  const curCheckpoint = path.join(curDurable, curDbRel);
+  check('Cursor chat checkpoints as a valid database',
+    fs.existsSync(curCheckpoint) && sql(curCheckpoint, 'PRAGMA quick_check;') === 'ok');
+  check('Cursor checkpoint includes the row still in the WAL',
+    fs.existsSync(curCheckpoint) && sql(curCheckpoint, 'SELECT body FROM blobs;') === 'composer said hi');
+  check('Cursor transcript, config and sign-in checkpoint',
+    fs.existsSync(path.join(curDurable, curTranscriptRel))
+      && fs.readFileSync(path.join(curDurable, curTranscriptRel), 'utf8') === '{"role":"user"}\n'
+      && fs.existsSync(path.join(curDurable, 'cli-config.json'))
+      && fs.existsSync(path.join(env.CURSOR_DURABLE, 'config/auth.json')));
+  const curJunk = findJunk(env.CURSOR_DURABLE);
+  check('Cursor durable tree has no WAL/SHM, socket, worker log or statsig cache', curJunk === '', curJunk);
+  // Throttle: a changed database is copied at most once per interval, so a
+  // chat being written to is not re-copied every tick ...
+  const touchWal = (offsetMs) => {
+    const t = new Date(Date.now() + offsetMs);
+    fs.utimesSync(path.join(cur, `${curDbRel}-wal`), t, t);
+  };
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('second turn');\n");
+  curWriter.stdin.write('.print cur-second\n');
+  await waitFor(curWriter, 'cur-second');
+  touchWal(5000);
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } });
+  check('Cursor database changed inside the interval is not re-copied',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '1');
+  // ... and is still picked up on a later pass once the interval allows it.
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '0' } });
+  check('Cursor database changed inside the interval is copied on a later pass',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '2');
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('third turn');\n");
+  curWriter.stdin.write('.print cur-third\n');
+  await waitFor(curWriter, 'cur-third');
+  touchWal(10000);
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '0' } });
+  check('Cursor database is copied again with the throttle off',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '3');
+  curWriter.kill('SIGKILL');
+  fs.rmSync(env.CURSOR_LIVE, { recursive: true, force: true });
+  run('restore');
+  check('Cursor chat restores from its checkpoint after a fresh container',
+    fs.existsSync(path.join(cur, curDbRel))
+      && sql(path.join(cur, curDbRel), 'PRAGMA quick_check;') === 'ok'
+      && sql(path.join(cur, curDbRel), 'SELECT count(*) FROM blobs;') === '3');
+  check('Cursor transcript and sign-in restore',
+    fs.existsSync(path.join(cur, curTranscriptRel)) && fs.existsSync(path.join(env.CURSOR_LIVE, 'config/auth.json')));
+
+  // migrate-cursor: a real ~/.cursor from before the links existed. Its
+  // database goes through SQLite's backup (the WAL row comes along); its
+  // socket, WAL/SHM and logs stay in the rollback copy.
+  const legacyHome = path.join(root, 'legacy-home');
+  const legacyCur = path.join(legacyHome, '.cursor');
+  const legacyCfg = path.join(legacyHome, '.config/cursor');
+  put(path.join(legacyCur, curTranscriptRel), '{"role":"user","legacy":true}\n');
+  put(path.join(legacyCur, 'projects/work-repo/worker.log'), 'noise');
+  put(path.join(legacyCfg, 'auth.json'), '{"accessToken":"legacy"}\n');
+  bindSocket(path.join(legacyCur, 'projects/work-repo/worker.sock'));
+  fs.mkdirSync(path.dirname(path.join(legacyCur, curDbRel)), { recursive: true });
+  const legacyWriter = spawn('sqlite3', [path.join(legacyCur, curDbRel)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  legacyWriter.stdin.write('PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n');
+  legacyWriter.stdin.write('CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT);\n');
+  legacyWriter.stdin.write("INSERT INTO blobs(body) VALUES ('legacy row');\n.print leg-ready\n");
+  await waitFor(legacyWriter, 'leg-ready');
+  fs.rmSync(env.CURSOR_DURABLE, { recursive: true, force: true });
+  run('migrate-cursor', { args: [legacyCur] });
+  run('migrate-cursor', { args: [legacyCfg] });
+  const migrated = path.join(curDurable, curDbRel);
+  check('migrate-cursor copies a WAL database as a valid database with its rows',
+    fs.existsSync(migrated) && sql(migrated, 'PRAGMA quick_check;') === 'ok'
+      && sql(migrated, 'SELECT body FROM blobs;') === 'legacy row');
+  check('migrate-cursor copies the transcript and the sign-in',
+    fs.existsSync(path.join(curDurable, curTranscriptRel))
+      && fs.readFileSync(path.join(curDurable, curTranscriptRel), 'utf8').includes('legacy')
+      && fs.readFileSync(path.join(env.CURSOR_DURABLE, 'config/auth.json'), 'utf8').includes('legacy'));
+  const migratedJunk = findJunk(env.CURSOR_DURABLE);
+  check('migrate-cursor leaves WAL/SHM, sockets and logs behind', migratedJunk === '', migratedJunk);
+  check('migrate-cursor leaves the legacy tree untouched',
+    fs.existsSync(path.join(legacyCur, `${curDbRel}-wal`))
+      && fs.lstatSync(path.join(legacyCur, 'projects/work-repo/worker.sock')).isSocket());
+  legacyWriter.kill('SIGKILL');
+  let badMigrate = false;
+  try { run('migrate-cursor', { args: [path.join(root, 'nope')] }); } catch { badMigrate = true; }
+  check('migrate-cursor refuses a directory that is not a Cursor one', badMigrate);
 
   // --files-from supplies descendants explicitly: a directory-only exclusion
   // does not protect the mounted bucket from Codex's temporary plugin files.
@@ -716,7 +835,7 @@ try {
     const log = f.hfLog();
     check('API: the restore succeeds over the bucket API', res.code === 0 && f.restored(), res.out.slice(-800));
     check('API: every adapter is planned and applied over the API',
-      (log.match(/ --plan /g) || []).length === 8 && (log.match(/ --apply /g) || []).length === 8, log);
+      (log.match(/ --plan /g) || []).length === 9 && (log.match(/ --apply /g) || []).length === 9, log);
     check('API: nothing is read from the mount directly', rsyncTrace(f.trace, 'mount').runs === 0, JSON.stringify(rsyncTrace(f.trace, 'mount')));
     check('API: copies from the local mirror still run in parallel', rsyncTrace(f.trace, 'other').most > 1, JSON.stringify(rsyncTrace(f.trace, 'other')));
     check('API: exactly the newest five Claude backups come back', f.backups());
