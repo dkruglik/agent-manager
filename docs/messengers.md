@@ -20,9 +20,11 @@ answer from the chat:
 | `/am status` | Lists agents in scope and their state |
 
 A prompt from chat carries a request id: a UUID derived from the adapter, the
-channel, and the message `ts`. A redelivery of the same message (a Slack retry
-with a new event id) keeps the same id, so shared Codex, which takes only a
-UUID and records one receipt per id, treats it as the same request.
+channel, and the message `ts`. The same message keeps the same id even after a
+restart or once the in-memory list of handled event ids has dropped it, so
+shared Codex, which takes only a UUID and records one receipt per id, treats it
+as the same request. A message without a `ts` is not sent; the log records
+`refused` with reason `no-ts`.
 
 A card closes itself when its dialog is answered anywhere else (terminal,
 reader, another chat). A closed card loses its buttons; a late click gets

@@ -297,7 +297,7 @@ test('the request id follows the message, not the delivering event', async () =>
   const msg = { channel: 'C0', ts: '1700000000.000100' };
   const first = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev1' });
   const retried = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev2-retry' });
-  assert.equal(retried, first, 'a retry with a new event id is the same request');
+  assert.equal(retried, first, 'the same message delivered under another event id (after a restart, when the in-memory duplicate list no longer holds it) keeps the id');
 
   const other = setup();
   assert.equal(await requestIdOf(other, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev9' }), first, 'a fresh router agrees');
@@ -316,4 +316,26 @@ test('the same ts in another channel is another request', async () => {
   const here = await requestIdOf(t, { ...text(1, 'hi'), channel: 'C0', ts });
   const there = await requestIdOf(t, { ...text(2, 'hi'), channel: 'C1', ts });
   assert.notEqual(there, here);
+});
+
+test('a message without ts is not prompted', async () => {
+  const t = setup();
+  const prompts = [];
+  t.host.prompt = async (...a) => { prompts.push(a); };
+  assert.deepEqual(await t.bridge.handleReply('slack', { ...text(1, 'hi'), ts: undefined }), { ignored: 'no-ts' });
+  assert.equal(prompts.length, 0);
+  assert.deepEqual(t.logs.filter((e) => e.reason === 'no-ts'), [{ event: 'refused', reason: 'no-ts', binding: 'b0', session: 's1' }]);
+});
+
+test('two replies in the same finished-card thread are two requests', async () => {
+  const t = setup();
+  t.store.putPosted('b0|s1|done1', {
+    bindingId: 'b0', sessionId: 's1', key: 'done1', kind: 'finished', status: 'closed', adapter: 'slack',
+    ref: { channel: 'C0', ts: 'card2' }, item: typed, partial: {},
+  });
+  const reply = (n, ts) => ({ ...text(n, 'next step'), thread: 'card2', ts });
+  const a = await requestIdOf(t, reply(1, '1700000000.000100'));
+  const b = await requestIdOf(t, reply(2, '1700000000.000200'));
+  assert.match(a, UUID);
+  assert.notEqual(b, a);
 });

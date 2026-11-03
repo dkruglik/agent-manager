@@ -164,7 +164,12 @@ export class ReplyRouter {
 
   async prompt(adapterId, binding, session, r, text, reply) {
     if (!text.trim()) return { ignored: 'empty' };
-    const requestId = requestIdFor(adapterId, r.channel, r.ts || r.messageId);
+    // The id follows the Slack message; without a ts there is nothing stable to derive it from.
+    if (!r.ts) {
+      this.log({ event: 'refused', reason: 'no-ts', binding: binding.id, session: session.id });
+      return { ignored: 'no-ts' };
+    }
+    const requestId = requestIdFor(adapterId, r.channel, r.ts);
     await this.host.prompt(session, text.trim(), { requestId, user: r.user });
     this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id });
     await reply(`➡️ Sent to *${session.name}*.`);
