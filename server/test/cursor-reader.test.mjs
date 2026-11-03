@@ -90,7 +90,7 @@ check('digest last reply', dg?.lastAssistantText, 'The folder has README.md and 
 check('digest counts tools', dg?.sinceToolCalls, 4);
 check('digest not running at turn_ended', dg?.running, false);
 check('digest prompt ts', dg?.lastPromptTs, Date.UTC(2026, 10, 3, 17, 50));
-check('reply has a time (borrowed from the latest prompt)', dg?.lastAssistantTs > 0, true);
+check('reply is dated with the prompt it answers', dg?.lastAssistantTs, Date.UTC(2026, 10, 3, 17, 50));
 check('answer has a time', dg?.lastAnswerTs > 0, true);
 check('reply is not older than the prompt', dg?.lastAssistantTs >= dg?.lastPromptTs, true);
 fs.writeFileSync(FILE, lines.slice(0, -1).join('\n') + '\n');
@@ -111,6 +111,80 @@ const bd = bulk.get ? bulk.get(bulkId) : bulk[bulkId];
 check('bulk digest has the last reply', bd?.lastAssistantText, 'The folder has README.md and src/. README.md says: Demo project.');
 check('bulk digest has the last prompt', bd?.lastPromptText, 'List the files and show README.md.');
 check('bulk digest reply has a time', bd?.lastAssistantTs > 0, true);
+
+console.log('a reply is never dated with an older prompt');
+{
+  const user = (stamp) => JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: `${stamp}<user_query>\nq\n</user_query>` }] } });
+  const reply = JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } });
+  const utc = '<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n';
+  const lastTs = async (...rows) => {
+    const id = '5e5e5e5e-1111-4222-8333-444444444444';
+    const f = put(id, rows.join('\n') + '\n', 'ts-slug');
+    const d = await traces.digestFor({ id: 'am-ts', cli: 'cursor', sessionUuid: id });
+    fs.rmSync(path.dirname(f), { recursive: true });
+    return d?.lastAssistantTs;
+  };
+  check('control: reply after a stamped prompt is dated', await lastTs(user(utc), reply), Date.UTC(2026, 10, 3, 17, 44));
+  check('no stamp on the newer prompt: not dated', await lastTs(user(utc), reply, user(''), reply), 0);
+  check('unparsable stamp on the newer prompt: not dated',
+    await lastTs(user(utc), reply, user('<timestamp>Tuesday, Nov 3, 2026, 5:50 PM (PST)</timestamp>\n'), reply), 0);
+}
+
+console.log('transcript lookup errors');
+{
+  const fsp = (await import('node:fs/promises')).default; // the object share.js calls
+  const realStat = fsp.stat;
+  const errs = [];
+  const origErr = console.error;
+  const failing = new Map(); // path -> error code
+  fsp.stat = (p, ...rest) => {
+    const code = failing.get(String(p));
+    if (!code) return realStat.call(fsp, p, ...rest);
+    return Promise.reject(Object.assign(new Error(`${code}: stat failed`), { code }));
+  };
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const id = '7a7a7a7a-1111-4222-8333-444444444444';
+    const file = put(id, FIX, 'lookup-slug');
+    check('found and cached', await share.cursorTranscriptPath(id), file);
+    check('an ordinary miss logs nothing', errs.length, 0);
+    for (const code of ['EIO', 'EMFILE', 'ENFILE', 'EAGAIN', 'EBUSY']) {
+      failing.set(file, code);
+      check(`${code} on the cached path: same path kept`, await share.cursorTranscriptPath(id), file);
+    }
+    check('transient failures logged once per code', errs.filter((m) => m.includes('[cursor]')).length, 5);
+    check('the log line names the chat id', errs.every((m) => m.includes(id)), true);
+    check('the log line carries the error message', errs.some((m) => m.includes('EIO: stat failed')), true);
+    errs.length = 0;
+    await share.cursorTranscriptPath(id); // EBUSY again, same path
+    check('same code and path again: quiet', errs.length, 0);
+    failing.set(file, 'EACCES');
+    check('EACCES on the cached path: cache dropped, rescan, none found', await share.cursorTranscriptPath(id), null);
+    check('EACCES logged', errs.filter((m) => m.includes('EACCES')).length >= 1, true);
+    // The rescan stat'd the same path again with EACCES: still only one line for (EACCES, path).
+    check('EACCES logged once for its path', errs.filter((m) => m.includes('EACCES') && m.includes(file)).length, 1);
+    failing.clear();
+    check('after recovery the path is found again', await share.cursorTranscriptPath(id), file);
+    failing.set(file, 'EIO');
+    errs.length = 0;
+    check('EIO again on the same path: quiet (already seen)', (await share.cursorTranscriptPath(id), errs.length), 0);
+    // A different path with the same code is a new line.
+    const id2 = '8b8b8b8b-1111-4222-8333-444444444444';
+    const file2 = put(id2, FIX, 'lookup-slug-2');
+    await share.cursorTranscriptPath(id2);
+    failing.set(file2, 'EIO');
+    await share.cursorTranscriptPath(id2);
+    check('same code on another path: logged', errs.filter((m) => m.includes(file2)).length, 1);
+    failing.clear();
+    errs.length = 0;
+    fs.rmSync(path.dirname(file), { recursive: true });
+    check('deleted file (ENOENT): null', await share.cursorTranscriptPath(id), null);
+    check('deleted file: quiet', errs.length, 0);
+  } finally {
+    fsp.stat = realStat;
+    console.error = origErr;
+  }
+}
 
 console.log('unreadable transcript root');
 {

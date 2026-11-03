@@ -345,28 +345,41 @@ const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const cursorPaths = new Map(); // id -> last path found
 const cursorLogged = new Set();
 // ENOENT/ENOTDIR is a normal miss. Anything else (EACCES, EIO, ...) is logged
-// once per code so a broken mount is visible without flooding the log.
-function cursorFsError(e, p) {
+// once per (code, path), with the error's message and the chat id, so a broken
+// mount is visible without flooding the log and a later failure elsewhere is not
+// hidden behind an earlier one.
+function cursorFsError(e, p, id) {
   const code = e?.code || 'UNKNOWN';
   if (code === 'ENOENT' || code === 'ENOTDIR') return code;
-  if (!cursorLogged.has(code)) { cursorLogged.add(code); console.error('[cursor] transcript lookup failed', code, p); }
+  const key = `${code}\0${p}`;
+  if (!cursorLogged.has(key)) {
+    if (cursorLogged.size > 500) cursorLogged.clear();
+    cursorLogged.add(key);
+    console.error('[cursor] transcript lookup failed', code, p, `(chat ${id}):`, e?.message || '');
+  }
   return code;
 }
+// A failed stat that says nothing lasting about the file: keep the cached path.
+// Anything else (EACCES, EPERM, ELOOP, ...) drops it and rescans.
+const CURSOR_TRANSIENT = new Set(['EIO', 'EMFILE', 'ENFILE', 'EAGAIN', 'EBUSY']);
 export async function cursorTranscriptPath(id) {
   if (typeof id !== 'string' || !CURSOR_ID.test(id)) return null;
-  // true = a file; false = a miss; null = could not tell (stat failed oddly).
+  // true = a file; false = a miss or a lasting failure; null = transient failure.
   const isFile = async (p) => {
-    try { return (await fsp.stat(p)).isFile(); } catch (e) { const c = cursorFsError(e, p); return c === 'ENOENT' || c === 'ENOTDIR' ? false : null; }
+    try { return (await fsp.stat(p)).isFile(); } catch (e) {
+      const c = cursorFsError(e, p, id);
+      return CURSOR_TRANSIENT.has(c) ? null : false;
+    }
   };
   const known = cursorPaths.get(id);
   if (known) {
     const k = await isFile(known);
-    if (k !== false) return known; // a transient stat error keeps the cached path
+    if (k !== false) return known;
     cursorPaths.delete(id);
   }
   const root = path.join(process.env.HOME || os.homedir(), '.cursor', 'projects');
   let slugs = [];
-  try { slugs = await fsp.readdir(root); } catch (e) { cursorFsError(e, root); return null; }
+  try { slugs = await fsp.readdir(root); } catch (e) { cursorFsError(e, root, id); return null; }
   for (const slug of slugs) {
     const p = path.join(root, slug, 'agent-transcripts', id, `${id}.jsonl`);
     if (await isFile(p) === true) {

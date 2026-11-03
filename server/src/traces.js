@@ -626,7 +626,9 @@ function parseCursor(txt, dg = emptyDigest()) {
       const { text, ts } = cursorUser(items.filter((c) => c?.type === 'text').map((c) => c.text).join('\n'));
       if (!text) continue;
       const iso = ts ? new Date(ts).toISOString() : '';
-      if (iso) lastUserIso = iso;
+      // Every prompt resets it: a reply after a stamp that did not parse must
+      // not borrow an older prompt's time.
+      lastUserIso = iso;
       addTs(st, iso);
       st.prompts++; st.turns++;
       digestPrompt(dg, text, iso);
