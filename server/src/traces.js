@@ -14,6 +14,7 @@ import { mark, tracked, PHASE } from './watchdog.js';
 import { findTrace, HARNESS_LABEL } from './share.js';
 import { cachedTrace, traceRevision } from './trace-revision.js';
 import { outputHash } from './output-id.js';
+import { followContinuation } from './claude-continuation.js';
 import { codeModeUses, codeModeResults, patchFiles, stripDataUrls } from './codex-code-mode.js';
 import { STEP, STATUS, readAgySteps, listAgyConversations, agyConversationPath, agyConversationExists, agyChangeKey, stepInFlight } from './antigravity.js';
 
@@ -1484,9 +1485,22 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(
 // restores the prior breadcrumb even if the build throws.
 function build() { return tracked(PHASE.buildTraces, buildImpl); }
 
+// A continued-in successor belongs to the session pinned on the first file.
+async function attributeContinuations(byClaudeUuid) {
+  const files = await claudeFiles();
+  for (const [uuid, s] of [...byClaudeUuid]) {
+    for (const p of files) {
+      if (!path.basename(p).includes(uuid)) continue;
+      const m = path.basename(await followContinuation(p, files)).match(UUID_RE);
+      if (m && !byClaudeUuid.has(m[1])) byClaudeUuid.set(m[1], s);
+    }
+  }
+}
+
 async function buildImpl() {
   const sessions = store.list();
   const byClaudeUuid = new Map(sessions.filter((s) => s.cli === 'claude' && s.sessionUuid).map((s) => [s.sessionUuid, s]));
+  await attributeContinuations(byClaudeUuid);
   const byCodexId = new Map(sessions.filter((s) => s.codexSessionId).map((s) => [s.codexSessionId, s]));
 
   const perSession = new Map(); // session id -> aggregate stats
@@ -1700,13 +1714,17 @@ export async function digestFor(s) {
     // and no transcript on this machine to find.
     if (isRemote(s.cli)) return remoteDigest(s);
     if (s.cli === 'claude' && s.sessionUuid) {
-      let best = null;
-      for (const p of await claudeFiles()) {
+      const files = await claudeFiles();
+      let best = null, bestPath = null;
+      for (const p of files) {
         if (!path.basename(p).includes(s.sessionUuid)) continue;
         const parsed = await statsFor(p, parseClaude);
-        if (parsed && (!best || parsed.stats.lastTs > best.stats.lastTs)) best = parsed;
+        if (parsed && (!best || parsed.stats.lastTs > best.stats.lastTs)) { best = parsed; bestPath = p; }
       }
-      return best ? best.digest : null;
+      if (!best) return null;
+      const live = await followContinuation(bestPath, files);
+      const liveParsed = live === bestPath ? best : await statsFor(live, parseClaude);
+      return (liveParsed || best).digest;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       const parsed = await statsFor(s.codexRollout, parseCodex);
@@ -1735,8 +1753,9 @@ export async function digestFor(s) {
 export async function traceLocation(s) {
   try {
     if (s.cli === 'claude' && s.sessionUuid) {
-      for (const p of await claudeFiles()) {
-        if (path.basename(p).includes(s.sessionUuid)) return { format: 'jsonl', path: p };
+      const files = await claudeFiles();
+      for (const p of files) {
+        if (path.basename(p).includes(s.sessionUuid)) return { format: 'jsonl', path: await followContinuation(p, files) };
       }
       return null;
     }
