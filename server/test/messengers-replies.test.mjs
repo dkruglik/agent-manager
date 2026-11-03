@@ -198,7 +198,8 @@ test('a card that cannot be closed after a delivered answer is logged, not repor
   assert.ok(!t.logs.some((e) => e.event === 'reply-failed'));
 });
 
-// A channel that reaches several agents: an unaddressed message gets a hint, not silence.
+// A channel that reaches several agents: only a named agent gets the message; an
+// unaddressed one is skipped without a reply in the channel (logged only).
 function several({ allowedUsers = ['U1'], group = false } = {}) {
   const t = setup({ allowedUsers });
   const mk = (id, name) => ({ id, name, cli: 'codex', state: 'working', inputRequired: null });
@@ -216,29 +217,28 @@ function several({ allowedUsers = ['U1'], group = false } = {}) {
   return t;
 }
 
-test('an unaddressed message in a channel with several agents gets one hint in its thread', async () => {
+test('an unaddressed message in a channel with several agents is skipped silently', async () => {
   const t = several();
   const out = await t.bridge.handleReply('slack', text(1, 'run the tests'));
   assert.deepEqual(out, { refused: 'no-agent-named' });
-  assert.equal(t.prompts.length, 0);
-  assert.equal(t.posts.length, 1);
-  assert.equal(t.posts[0].target.thread, 'x1');
-  assert.match(t.posts[0].card.body, /alpha, beta/);
-  assert.match(t.posts[0].card.body, /Nothing was sent/);
+  assert.equal(t.prompts.length, 0, 'sent to no agent');
+  assert.equal(t.posts.length, 0, 'nothing is said in the channel');
   const log = t.logs.find((e) => e.reason === 'no-agent-named');
   assert.ok(log && !JSON.stringify(log).includes('run the tests'), 'logged without the text');
 });
 
-test('naming an agent still delivers it; an unknown name gets the hint', async () => {
+test('a named agent gets the message and only that agent; an unknown name is skipped', async () => {
   const t = several();
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha: hi')), { prompted: 's1' });
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, '@alpha hi')), { prompted: 's1' });
-  assert.deepEqual(t.prompts.map((p) => p.id), ['s1', 's1']);
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, '@beta hi')), { prompted: 's2' });
+  assert.deepEqual(t.prompts, [{ id: 's1', body: 'hi' }, { id: 's2', body: 'hi' }], 'each message reached one agent');
+  const posted = t.posts.length;
   assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'ghost: hi')), { refused: 'no-agent-named' });
   assert.equal(t.prompts.length, 2);
+  assert.equal(t.posts.length, posted, 'the skipped message adds nothing to the channel');
 });
 
-test('a sender who is not allowed gets no hint and no agent names', async () => {
+test('a sender who is not allowed is skipped the same way', async () => {
   const t = several({ allowedUsers: ['U9'] });
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'user-not-allowed' });
   assert.equal(t.posts.length, 0);
@@ -246,10 +246,12 @@ test('a sender who is not allowed gets no hint and no agent names', async () => 
   assert.ok(t.logs.some((e) => e.event === 'refused' && e.reason === 'user-not-allowed'));
 });
 
-test('a group binding covering two sessions gets the hint too', async () => {
+test('a group binding covering two sessions skips an unaddressed message too', async () => {
   const t = several({ group: true });
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
-  assert.match(t.posts[0].card.body, /alpha, beta/);
+  assert.equal(t.posts.length, 0);
+  assert.equal(t.prompts.length, 0);
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
 });
 
 test('a single session binding still takes an unaddressed message', async () => {
@@ -258,5 +260,4 @@ test('a single session binding still takes an unaddressed message', async () => 
   t.host.prompt = async (s, body) => { prompts.push(body); };
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha hello')), { prompted: 's1' });
   assert.deepEqual(prompts, ['alpha hello']);
-  assert.equal(t.posts.filter((p) => /several agents/.test(p.card.body)).length, 0);
 });

@@ -7,7 +7,6 @@ import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 // binding's allowed users and the privacy lock before anything reaches a session.
 
 const SEEN_MESSAGES = 500;
-const MAX_HINT_NAMES = 20;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
 export class ReplyRouter {
@@ -75,31 +74,19 @@ export class ReplyRouter {
     return null;
   }
 
-  // Agent names a sender may address: `all` over every binding, `mine` over those they are allowed on.
-  agentNames(bindings, user) {
+  // How many distinct agents the channel's bindings reach.
+  agentCount(bindings) {
     const sessions = this.host.sessions();
-    const all = new Set();
-    const mine = new Set();
-    for (const b of bindings) for (const s of this.scope(b, sessions)) {
-      all.add(s.id);
-      if (this.allowed(b, user)) mine.add(s.name);
-    }
-    return { all, mine };
+    return new Set(bindings.flatMap((b) => this.scope(b, sessions).map((s) => s.id))).size;
   }
 
-  // An unaddressed message in a channel with several agents: say how to choose, but only to someone
-  // allowed to talk to at least one of them (the names are not shown to anyone else).
-  async hint(adapterId, r, bindings) {
-    const { mine } = this.agentNames(bindings, r.user);
-    if (!mine.size) {
-      this.log({ event: 'refused', reason: 'user-not-allowed', binding: bindings[0].id, user: r.user?.id });
-      return { refused: 'user-not-allowed' };
-    }
-    const names = [...mine].sort();
-    const shown = names.slice(0, MAX_HINT_NAMES).join(', ') + (names.length > MAX_HINT_NAMES ? ', …' : '');
-    await this.say(adapterId, r.channel, r.ts, `This channel is connected to several agents (${shown}). Start your message with \`${names[0]}:\` or \`@${names[0]}\` to choose one, or reply in the thread of an agent's card. Nothing was sent.`);
-    this.log({ event: 'refused', reason: 'no-agent-named', binding: bindings[0].id, user: r.user?.id });
-    return { refused: 'no-agent-named' };
+  // An unaddressed message in a channel with several agents goes to none of them, and nothing is
+  // said in the channel; only the log records the skip (never the text).
+  skipUnnamed(r, bindings) {
+    const allowed = bindings.some((b) => this.allowed(b, r.user));
+    const reason = allowed ? 'no-agent-named' : 'user-not-allowed';
+    this.log({ event: 'refused', reason, binding: bindings[0].id, user: r.user?.id });
+    return { refused: reason };
   }
 
   /** The binding, session and posted card a reply is about, if any. */
@@ -117,7 +104,7 @@ export class ReplyRouter {
     const named = this.byName(bindings, text);
     if (named) return named;
     const direct = bindings.filter((b) => b.scope.type === 'session');
-    if (direct.length !== 1) return this.agentNames(bindings, r.user).all.size > 1 ? { hint: bindings } : { ignored: 'no-target' };
+    if (direct.length !== 1) return this.agentCount(bindings) > 1 ? { unnamed: bindings } : { ignored: 'no-target' };
     return { binding: direct[0], session: this.sessionById(direct[0].scope.id), text };
   }
 
@@ -128,7 +115,7 @@ export class ReplyRouter {
   async handle(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
     const target = this.resolve(adapterId, r);
-    if (target.hint) return this.hint(adapterId, r, target.hint);
+    if (target.unnamed) return this.skipUnnamed(r, target.unnamed);
     if (!target.binding) return { ignored: target.ignored || 'no-target' };
     const { binding, session, found, text } = target;
     const posted = found?.[1];
