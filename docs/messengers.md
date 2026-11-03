@@ -2,8 +2,8 @@
 
 **Status:** phase 2 implemented — Slack adapter, typed answers for shared Codex,
 Claude Code permission prompts and questions answered from chat (opt-in per
-binding), free-text prompts for every agent CLI. Saved channels and users,
-2026-11-03. 2026-10-29.
+binding), free-text prompts for every agent CLI (2026-10-29). Saved channels
+and users (2026-11-03).
 
 Connect a chat channel to one agent or to a whole group. The channel then gets a
 card when an agent **needs input** and when it **finishes a turn**, and you can
@@ -207,7 +207,7 @@ under the same rule.
 | --- | --- |
 | `GET /api/messengers` | Adapters (configured / connected / error) and bindings; each binding carries `lastError`, `null` unless its posts or dialog lookups keep failing, then the adapter's public error, such as `slack chat.postMessage: channel_not_found`, or a generic "see the server log" line — never a path or network detail; such a binding is retried after 5 s, doubling to 5 min |
 | `POST /api/messengers/bindings` | `{adapter, target:{channel}, scope:{type:"session"\|"group", id}, events?, allowedUsers, approvals?}` |
-| `PUT /api/messengers/saved` | `{adapter, channels?:[{id, name?}], users?:[{id, name?}]}` replaces that messenger's saved lists (at most 100 each, names up to 64 characters) and returns every messenger's `saved`; `GET /api/messengers` returns the same map as `saved` |
+| `PUT /api/messengers/saved` | `{adapter, channels:[{id, name?}], users:[{id, name?}]}` replaces **both** of that messenger's saved lists; it is not a partial update, so an omitted list is stored empty. Ids match `^[A-Za-z0-9_.:-]{1,128}$`, at most 100 entries per list (`400 invalid-input` otherwise), names are cut to 64 characters, and a repeated id keeps its first entry. Returns every messenger's `saved`; `GET /api/messengers` returns the same map as `saved` |
 | `PUT /api/messengers/bindings/:id` | Partial update; `adapter` cannot change |
 | `DELETE /api/messengers/bindings/:id` | |
 | `POST /api/messengers/bindings/:id/test` | Posts a test card; `409 messenger-offline` when the messenger is not connected |
@@ -295,13 +295,16 @@ real Claude.
   Settings section's pure helpers (scope parsing and names, the agent picker,
   the failure line, a tree that fails to load without hiding the bindings, and
   adding, removing and picking saved channels and users).
-- `claude-continuation.test.mjs`: a Claude agent whose transcript ends in a
-  `continued-in` handoff is read from the live successor file, so its
-  *finished* cards keep coming.
+- `claude-continuation.test.mjs`: a Claude transcript that ends in a
+  `continued-in` handoff is followed to its live successor by `continuedIn`,
+  `followContinuation`, `digestFor` (which feeds *finished* cards),
+  `traceLocation`, the conversation reader, and the bulk digest. No card is
+  posted in this suite.
 
 A *finished* card comes from the agent's transcript. Claude Code can move a
 running conversation to a new transcript file and leave a `continued-in` record
-at the end of the old one. Agent Manager follows that chain when it reads the
-transcript; before that fix, an agent moved this way (typically one created
+at the end of the old one. Agent Manager follows that chain, up to 8 hops,
+wherever it reads the transcript: digests, the conversation reader, search,
+download, share, and sub-agents. Before that fix, an agent moved this way (typically one created
 before the Slack setup and resumed since) got no *finished* cards, although
 **Send test** worked.
