@@ -105,7 +105,8 @@ RUN rm -rf /tmp/agy.tar.gz /tmp/antigravity /tmp/agy-home
 # image has one known version; entrypoint.sh puts wrappers for it ahead of any
 # hand install in the durable HOME. Cursor publishes no checksum, so the SHA-256
 # pins what we downloaded (2026-11-03) and a MISMATCH FAILS THE BUILD, unlike a
-# failed download, which only leaves the image without the agent. To upgrade:
+# failed download, which only leaves the image without the agent. A build that
+# matched the checksum but cannot extract, link or run `--version` fails too. To upgrade:
 # read the version and URL from cursor.com/install (it is a plain shell script),
 # download the tarball once, measure it with `sha256sum`, and bump the three args.
 ARG CURSOR_VERSION=2026.10.22-27dcf5f
@@ -121,7 +122,8 @@ RUN set -e; \
         && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
         && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
         && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
-        && HOME=/tmp/cursor-home cursor-agent --version) || echo "cursor-agent install failed"; \
+        && HOME=/tmp/cursor-home cursor-agent --version) \
+        || { echo "ERROR: cursor-agent $CURSOR_VERSION matched its SHA-256 but did not install or run; failing the build" >&2; exit 1; }; \
     else \
       echo "cursor-agent install failed"; \
     fi
