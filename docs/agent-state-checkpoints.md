@@ -68,7 +68,10 @@ having all three files is not proof that the copy is a consistent database.
    state (`rsync --update`).
 6. A normal shutdown stops the server and performs a final checkpoint. An
    ungraceful stop loses at most the checkpoint interval (15 seconds by
-   default), not the lifetime of an open transcript.
+   default), not the lifetime of an open transcript. Cursor chat databases are
+   copied at most once per `CURSOR_DB_MIN_INTERVAL` (120 seconds by default),
+   so for them an ungraceful stop can lose up to that long; the final
+   checkpoint of a normal shutdown ignores it.
 
 ## Layout
 
