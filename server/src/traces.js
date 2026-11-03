@@ -14,14 +14,15 @@ import { mark, tracked, PHASE } from './watchdog.js';
 import { findTrace, HARNESS_LABEL } from './share.js';
 import { cachedTrace, traceRevision } from './trace-revision.js';
 import { outputHash } from './output-id.js';
-import { continuationChain, followContinuation } from './claude-continuation.js';
+import { continuationChain, liveTranscript } from './claude-continuation.js';
 import { codeModeUses, codeModeResults, patchFiles, stripDataUrls } from './codex-code-mode.js';
 import { STEP, STATUS, readAgySteps, listAgyConversations, agyConversationPath, agyConversationExists, agyChangeKey, stepInFlight } from './antigravity.js';
 
 // Workspace-wide trace analytics: parse every Claude transcript and Codex
 // rollout on the Space into per-conversation stats (turns, tool calls, web
 // searches, tokens), attribute them to Agent Manager sessions where possible
-// (Claude: transcript filename == sessionUuid; Codex: pinned codexSessionId),
+// (Claude: transcript filename starts with sessionUuid, plus the later files of
+// its continued-in chain; Codex: pinned codexSessionId),
 // and aggregate the rest as "other".
 //
 // Parsing is memoized per file by (mtime, size), so repeat calls only re-read
@@ -1501,6 +1502,20 @@ async function attributeContinuations(byClaudeUuid) {
   }
 }
 
+// A Claude session's digest comes from its live transcript (the last file of
+// the continued-in chain), the same file digestFor and traceLocation read. The
+// stats of every hop still merge into the session's totals; only the digest is
+// pinned here, so a middle hop with a later timestamp cannot win.
+async function setLiveDigests(sessions, digests) {
+  const files = await claudeFiles();
+  for (const s of sessions) {
+    if (s.cli !== 'claude' || !s.sessionUuid) continue;
+    const live = await liveTranscript(s.sessionUuid, files);
+    const parsed = live && await statsFor(live, parseClaude);
+    if (parsed) digests.set(s.id, { ...parsed.digest, _ts: parsed.stats.lastTs });
+  }
+}
+
 async function buildImpl() {
   const sessions = store.list();
   const byClaudeUuid = new Map(sessions.filter((s) => s.cli === 'claude' && s.sessionUuid).map((s) => [s.sessionUuid, s]));
@@ -1533,6 +1548,7 @@ async function buildImpl() {
     attribute(m ? byClaudeUuid.get(m[1]) : null, await statsFor(p, parseClaude));
     await yieldLoop();
   }
+  await setLiveDigests(sessions, digests);
   // Codex fallback: sessions created before capture-and-pin have no
   // codexSessionId — attribute their rollouts by cwd when it's unambiguous.
   const byCodexCwd = new Map();
@@ -1709,8 +1725,8 @@ export async function traceDigests({fresh = false} = {}) {
 
 /** Targeted digest for ONE session — parses only its own transcript files so
  *  the Overview can fill tiles progressively instead of waiting for the full
- *  build. Cheap for Claude (the files named for sessionUuid, plus the continued-in
- *  chain from the newest) and Codex (the
+ *  build. Cheap for Claude (liveTranscript: the newest file named for
+ *  sessionUuid, followed to the end of its continued-in chain) and Codex (the
  *  pinned rollout); db-backed CLIs return null and ride the bulk pass. Parsed
  *  files land in the shared per-file cache, so nothing is read twice. */
 export async function digestFor(s) {
@@ -1720,19 +1736,12 @@ export async function digestFor(s) {
     if (isRemote(s.cli)) return remoteDigest(s);
     if (s.cli === 'claude' && s.sessionUuid) {
       const files = await claudeFiles();
-      let best = null, bestPath = null;
-      for (const p of files) {
-        if (!path.basename(p).includes(s.sessionUuid)) continue;
-        const parsed = await statsFor(p, parseClaude);
-        if (parsed && (!best || parsed.stats.lastTs > best.stats.lastTs)) { best = parsed; bestPath = p; }
-      }
-      if (!best) return null;
-      const live = await followContinuation(bestPath, files);
-      if (live === bestPath) return best.digest;
-      const liveParsed = await statsFor(live, parseClaude);
-      if (liveParsed) return liveParsed.digest;
-      // The pinned file is sealed, so its digest is stale: let the bulk pass decide.
-      console.warn(`[traces] continued-in successor ${path.basename(live)} is unreadable`);
+      const live = await liveTranscript(s.sessionUuid, files);
+      if (!live) return null;
+      const parsed = await statsFor(live, parseClaude);
+      if (parsed) return parsed.digest;
+      // A sealed pinned file's digest would be stale: let the bulk pass decide.
+      console.warn(`[traces] live transcript ${path.basename(live)} is unreadable`);
       return null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
@@ -1762,16 +1771,8 @@ export async function digestFor(s) {
 export async function traceLocation(s) {
   try {
     if (s.cli === 'claude' && s.sessionUuid) {
-      const files = await claudeFiles();
-      let best = null;
-      for (const p of files) {
-        if (!path.basename(p).includes(s.sessionUuid)) continue;
-        try {
-          const { mtimeMs } = await fsp.stat(p);
-          if (!best || mtimeMs > best.mtimeMs) best = { p, mtimeMs };
-        } catch { /* raced away */ }
-      }
-      return best ? { format: 'jsonl', path: await followContinuation(best.p, files) } : null;
+      const live = await liveTranscript(s.sessionUuid, await claudeFiles());
+      return live ? { format: 'jsonl', path: live } : null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       return { format: 'jsonl', path: s.codexRollout };

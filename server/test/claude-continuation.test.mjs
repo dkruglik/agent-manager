@@ -33,6 +33,7 @@ const write = (id, lines) => fs.writeFileSync(fileOf(id), `${lines.join('\n')}\n
 
 const [A, B, C, X, Y, Z, N, M, OK, BAD] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(uuid);
 const [P, Q, R, U, V, E, F, H1, H2, H3, H4] = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21].map(uuid);
+const [D, T1, T2, T3, BIG, BIGNEXT] = [40, 41, 42, 43, 44, 45].map(uuid);
 // older copy of E in a project dir that sorts first; the newer one is continued to F
 const PROJ_OLD = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-work-aaa');
 fs.mkdirSync(PROJ_OLD, { recursive: true });
@@ -64,6 +65,17 @@ fs.writeFileSync(path.join(PROJ_OLD, `${E}.jsonl`), `${turn('q', 'OLD COPY E', '
 write(E, [...turn('q', 'NEW COPY E', '2026-11-02T10:00:00.000Z'), handoff(E, F, '2026-11-02T11:00:00.000Z')]);
 write(F, turn('q', 'F ANSWER', '2026-11-02T12:00:00.000Z'));
 fs.utimesSync(path.join(PROJ_OLD, `${E}.jsonl`), new Date('2026-01-01'), new Date('2026-01-01'));
+// k: two copies of D in two project dirs. The OLD-mtime copy holds the later
+// timestamps, so "greatest lastTs" and "newest mtime" disagree.
+fs.writeFileSync(path.join(PROJ_OLD, `${D}.jsonl`), `${turn('q', 'D OLD MTIME', '2026-11-02T20:00:00.000Z').join('\n')}\n`);
+write(D, turn('q', 'D NEW MTIME', '2026-11-02T10:00:00.000Z'));
+fs.utimesSync(path.join(PROJ_OLD, `${D}.jsonl`), new Date('2026-01-01'), new Date('2026-01-01'));
+// l: T1 -> T2 -> T3, pinned on T1 and T2; the middle file has the newest timestamp
+write(T1, [...turn('q', 'T1 ANSWER', '2026-11-02T10:00:00.000Z'), handoff(T1, T2, '2026-11-02T11:00:00.000Z')]);
+write(T2, [...turn('q', 'T2 ANSWER', '2026-11-02T20:00:00.000Z'), handoff(T2, T3, '2026-11-02T20:30:00.000Z')]);
+write(T3, turn('q', 'T3 ANSWER', '2026-11-02T12:00:00.000Z'));
+// m: a transcript over the 64 KB tail window whose last line is continued-in
+write(BIG, [turn('q', 'x'.repeat(100 * 1024), '2026-11-02T10:00:00.000Z')[0], handoff(BIG, BIGNEXT, '2026-11-02T11:00:00.000Z')]);
 // j: four-file chain for maxHops
 write(H1, [handoff(H1, H2, '2026-11-02T11:00:00.000Z')]);
 write(H2, [handoff(H2, H3, '2026-11-02T11:00:00.000Z')]);
@@ -74,13 +86,17 @@ const mk = (id, sessionUuid) => ({ id, cli: 'claude', path: 'proj', sessionUuid 
 fs.writeFileSync(path.join(process.env.DATA_DIR, 'sessions.json'), JSON.stringify([
   mk('s-a', A), mk('s-b', B), mk('s-x', X), mk('s-z', Z), mk('s-n', N),
   mk('s-p', P), mk('s-v', V), mk('s-e', E),
+  mk('s-d', D), mk('s-t1', T1), mk('s-t2', T2),
 ]));
 
 const store = await import('../src/sessions.js');
 store.init();
 const traces = await import('../src/traces.js');
 const share = await import('../src/share.js');
-const { continuedIn, followContinuation, continuationChain } = await import('../src/claude-continuation.js');
+const { continuedIn, followContinuation, continuationChain, liveTranscript } = await import('../src/claude-continuation.js');
+
+const listFiles = async () => [PROJ, PROJ_OLD].flatMap((d) => fs.readdirSync(d).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(d, f)));
+const origWarn = console.warn;
 
 try {
   console.log('\na: pinned transcript continued in another file');
@@ -125,11 +141,14 @@ try {
   const all = [A, B, C].map(fileOf);
   check('chain lists every hop', (await continuationChain(fileOf(A), all)).join(','), all.join(','));
   const dg = await traces.traceDigests({ fresh: true });
-  check('middle hop Q is attributed to the pinned session', (dg.get ? dg.get('s-p') : dg['s-p'])?.lastAssistantText, 'Q ANSWER');
+  check('bulk digest is the last file of the chain (R), not the newest timestamp (Q)', dg.get('s-p')?.lastAssistantText, 'R ANSWER');
+  check('digestFor agrees with the bulk digest on P -> Q -> R', (await traces.digestFor(mk('s-p', P)))?.lastAssistantText, dg.get('s-p')?.lastAssistantText);
+  const stats = await traces.buildTraces();
+  const turnsOf = (id) => stats.sessions.find((x) => x.id === id)?.turns;
+  check('P keeps the stats of every hop (3 turns)', turnsOf('s-p'), 3);
 
   console.log('\ni: successor exists but cannot be parsed');
   const warns = [];
-  const origWarn = console.warn;
   console.warn = (...a) => warns.push(a.join(' '));
   let du;
   try { du = await traces.digestFor(mk('s-v', V)); } finally { console.warn = origWarn; }
@@ -159,6 +178,40 @@ try {
   const hs = [H1, H2, H3, H4].map(fileOf);
   check('maxHops 2 stops at the third file', await followContinuation(hs[0], hs, { maxHops: 2 }), hs[2]);
   check('default maxHops reaches the end', await followContinuation(hs[0], hs), hs[3]);
+
+  console.log('\nl: copies of one uuid in two project dirs');
+  check('digestFor reads the newest-mtime copy', (await traces.digestFor(mk('s-d', D)))?.lastAssistantText, 'D NEW MTIME');
+  check('traceLocation picks the newest-mtime copy', (await traces.traceLocation(mk('s-d', D))).path, fileOf(D));
+  check('findTranscript picks the newest-mtime copy', await share.findTranscript(mk('s-d', D)), fileOf(D));
+  check('bulk digest reads the newest-mtime copy', (await traces.traceDigests({ fresh: true })).get('s-d')?.lastAssistantText, 'D NEW MTIME');
+  check('liveTranscript agrees', await liveTranscript(D, await listFiles()), fileOf(D));
+  check('liveTranscript is null without a pinned file', await liveTranscript(uuid(99), await listFiles()), null);
+
+  console.log('\nm: two pins on one chain (T1 and T2 of T1 -> T2 -> T3)');
+  const dl = await traces.traceDigests({ fresh: true });
+  check('session pinned on T1 shows T3', dl.get('s-t1')?.lastAssistantText, 'T3 ANSWER');
+  check('session pinned on the middle hop T2 shows T3', dl.get('s-t2')?.lastAssistantText, 'T3 ANSWER');
+  const sl = await traces.buildTraces();
+  check('T2 stays with its own pin; T1 gets T1 and the unpinned T3', sl.sessions.find((x) => x.id === 's-t1')?.turns, 2);
+  check('middle pin keeps only its own file', sl.sessions.find((x) => x.id === 's-t2')?.turns, 1);
+  check('digestFor on the middle pin shows T3', (await traces.digestFor(mk('s-t2', T2)))?.lastAssistantText, 'T3 ANSWER');
+
+  console.log('\nn: long transcript ending in continued-in');
+  check('continuedIn finds the id past the 64 KB tail window', await continuedIn(fileOf(BIG)), BIGNEXT);
+
+  console.log('\no: readTrace follows the chain');
+  const rt = await traces.readTrace(mk('s-a', A));
+  check('reader for a session pinned on A returns C\'s text', JSON.stringify(rt).includes('NEW ANSWER'), true);
+
+  console.log('\np: stat errors other than ENOENT are reported');
+  const notDir = path.join(fileOf(N), `${B}.jsonl`); // ENOTDIR: N is a file
+  const w3 = [];
+  console.warn = (...a) => w3.push(a.join(' '));
+  try {
+    await followContinuation(fileOf(A), [fileOf(A), notDir]);
+    await liveTranscript(B, [notDir]);
+  } finally { console.warn = origWarn; }
+  check('pickSuccessor and liveTranscript each warn with basename and code', w3.filter((w) => w.includes(`${B}.jsonl`) && w.includes('ENOTDIR')).length, 2);
 } finally {
   try { fs.chmodSync(fileOf(U), 0o600); } catch { /* removed */ }
   fs.rmSync(TMP, { recursive: true, force: true });

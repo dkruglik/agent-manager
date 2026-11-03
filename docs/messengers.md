@@ -295,11 +295,15 @@ real Claude.
   Settings section's pure helpers (scope parsing and names, the agent picker,
   the failure line, a tree that fails to load without hiding the bindings, and
   adding, removing and picking saved channels and users).
-- `claude-continuation.test.mjs`: a Claude transcript that ends in a
-  `continued-in` handoff is followed to its live successor by `continuedIn`,
-  `followContinuation`, `digestFor` (which feeds *finished* cards),
-  `traceLocation`, the conversation reader, and the bulk digest. No card is
-  posted in this suite.
+- `claude-continuation.test.mjs`: every reader of a Claude session's
+  transcript opens the same file, the last one of the `continued-in` chain
+  that starts at the newest pinned copy (`liveTranscript`). Covered:
+  `continuedIn` (also past the 64 KB tail window), `followContinuation`,
+  `digestFor` (which feeds *finished* cards), `traceLocation`,
+  `findTranscript` and the conversation reader, and the bulk digest, which
+  must agree with `digestFor` even when a middle hop has the newest
+  timestamp, when one uuid sits in two project dirs, and when two sessions
+  pin the same chain. No card is posted in this suite.
 
 A *finished* card waits `MESSENGER_FINISHED_DELAY_MS` (default 8000) while the
 session stays in `waiting`. It is not sent when that reply was already shown in the web

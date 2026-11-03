@@ -35,6 +35,17 @@ export async function continuedIn(file) {
   }
 }
 
+/** mtime in ms, or null when the file cannot be stat-ed. A file that raced away
+ *  (ENOENT) is skipped silently; any other error is reported. */
+async function mtimeOf(p) {
+  try {
+    return (await fsp.stat(p)).mtimeMs;
+  } catch (err) {
+    if (err?.code !== 'ENOENT') console.warn(`[claude-continuation] cannot stat ${path.basename(p)}: ${err?.code || err?.message}`);
+    return null;
+  }
+}
+
 async function pickSuccessor(current, files, id) {
   const hits = files.filter((p) => path.basename(p).startsWith(id));
   if (!hits.length) return null;
@@ -44,8 +55,8 @@ async function pickSuccessor(current, files, id) {
   let best = null, bestMs = -Infinity;
   for (const p of pool) {
     let ms;
-    try { ms = (await fsp.stat(p)).mtimeMs; } catch { continue; } // raced away
-    if (ms > bestMs) { best = p; bestMs = ms; }
+    ms = await mtimeOf(p);
+    if (ms !== null && ms > bestMs) { best = p; bestMs = ms; }
   }
   return best;
 }
@@ -76,4 +87,19 @@ export async function continuationChain(file, files, { maxHops = 8 } = {}) {
 export async function followContinuation(file, files, opts) {
   const chain = await continuationChain(file, files, opts);
   return chain[chain.length - 1];
+}
+
+/** The live transcript of a Claude session: the NEWEST (by mtime) of the files
+ *  named for `sessionUuid` (one uuid can sit in several project dirs), then
+ *  followed to the end of its continued-in chain. This is the single answer
+ *  every reader (digestFor, the bulk digest, traceLocation, findTranscript)
+ *  uses, so they cannot disagree. Null when no pinned file exists. */
+export async function liveTranscript(sessionUuid, files) {
+  let best = null, bestMs = -Infinity;
+  for (const p of files) {
+    if (!path.basename(p).startsWith(sessionUuid)) continue;
+    const ms = await mtimeOf(p);
+    if (ms !== null && ms > bestMs) { best = p; bestMs = ms; }
+  }
+  return best && followContinuation(best, files);
 }
