@@ -75,6 +75,7 @@ boot has to write, write once and only when the answer is missing.
 | Claude bypass warning | **boot**, `settings.json` | that file is already written by the app's hooks installer, so it is not CLI-owned state |
 | Codex folder trust | **per launch**, appended to `config.toml` | Codex neither inherits nor honours a `-c` override for trust, so the answer must be in the file — but it is **appended**, never rewritten, and an existing entry is found by parsing the TOML rather than matching text |
 | a session whose path escapes the root | **refused at launch** | `path` is only checked lexically when recorded, so a symlink under a workspace can point out of the tree. Claude applies inherited trust to the RESOLVED directory, so an escaping link lands outside the one trusted root and stops on the dialog. Refusing keeps the boundary the recorded path already implies |
+| Cursor folder trust | **per launch**, `--trust` | the flag writes Cursor's own `.workspace-trusted` for the folder; no AM write to its state (see [Cursor CLI](cursor-agent.md)) |
 | Codex update prompt | **per launch**, `dismissed_version` | the cache is refreshed in the background hours after boot, so once at boot is not enough |
 
 ### Why append instead of rewrite
