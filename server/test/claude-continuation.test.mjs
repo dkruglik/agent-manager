@@ -154,6 +154,10 @@ try {
   try { du = await traces.digestFor(mk('s-v', V)); } finally { console.warn = origWarn; }
   check('no stale digest of the sealed file', du, null);
   check('one warning naming the successor', warns.filter((w) => w.includes('[traces]') && w.includes(`${U}.jsonl`)).length, 1);
+  console.warn = () => {};
+  let bulkV;
+  try { bulkV = (await traces.traceDigests({ fresh: true })).get('s-v'); } finally { console.warn = origWarn; }
+  check('bulk digest drops the sealed reply too, agreeing with digestFor', bulkV?.lastAssistantText ?? null, null);
 
   console.log('\nj: continuedIn / pickSuccessor edge cases');
   const dirAsFile = path.join(PROJ, `${uuid(50)}.jsonl`);

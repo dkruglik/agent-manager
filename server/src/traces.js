@@ -1511,8 +1511,12 @@ async function setLiveDigests(sessions, digests) {
   for (const s of sessions) {
     if (s.cli !== 'claude' || !s.sessionUuid) continue;
     const live = await liveTranscript(s.sessionUuid, files);
-    const parsed = live && await statsFor(live, parseClaude);
+    if (!live) continue;
+    const parsed = await statsFor(live, parseClaude);
     if (parsed) digests.set(s.id, { ...parsed.digest, _ts: parsed.stats.lastTs });
+    // The live file cannot be read: an older hop's reply would be stale, so
+    // publish none (digestFor returns null for the same session).
+    else digests.delete(s.id);
   }
 }
 
@@ -1523,7 +1527,7 @@ async function buildImpl() {
   const byCodexId = new Map(sessions.filter((s) => s.codexSessionId).map((s) => [s.codexSessionId, s]));
 
   const perSession = new Map(); // session id -> aggregate stats
-  const digests = new Map();    // session id -> digest of the freshest file
+  const digests = new Map();    // session id -> digest (Claude: its live transcript; others: the freshest file)
   const other = emptyStats();
   const totals = emptyStats();
 
