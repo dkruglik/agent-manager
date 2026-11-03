@@ -69,10 +69,13 @@ CURSOR_LIVE="${CURSOR_LIVE:-$AM_LOCAL/cursor-home}"
 CURSOR_DURABLE="${CURSOR_DURABLE:-$DATA_DIR/state/cursor}"
 CURSOR_DB_MIN_INTERVAL="${CURSOR_DB_MIN_INTERVAL:-120}"
 
-# rsyncs one big tree may run at once when it is copied from the local API
-# mirror. Claude and Codex each get a pool, the five small adapters one rsync
-# each: at most 2×JOBS+5 concurrent at boot. Reads straight from $DATA_DIR are
-# never split, and run one at a time across all adapters (restore_adapter).
+# rsyncs one tree may run at once when it is copied from the local API mirror.
+# Every one of the nine adapters' trees gets its own pool of that size (the
+# slices are its top-level directories; Claude's projects and file-history are
+# split one level deeper), so the seven small trees, with a handful of
+# directories each, use far fewer than JOBS; the bound is 9×JOBS concurrent at
+# boot. Reads straight from $DATA_DIR are never split, and run one at a time
+# across all adapters (restore_adapter).
 JOBS="${AGENT_STATE_JOBS:-8}"
 HEARTBEAT="${AGENT_STATE_HEARTBEAT:-30}"
 # Claude writes a `.claude.json.backup.<ms>` on every config save and keeps the
@@ -249,8 +252,10 @@ rsync_adapter() {
         --exclude '/antigravity-cli/crashes/***' --exclude '/antigravity-cli/updater/***' \
         --exclude '/antigravity-cli/presence/***' "$@" ;;
     cursor)
-      # Databases go through checkpoint_cursor, never a raw copy.
+      # Databases go through checkpoint_cursor, never a raw copy. On a restore,
+      # the valid live databases restore_cursor listed stay as they are.
       if [ "$_dir" = checkpoint ]; then set -- --exclude '*.db' "$@"; fi
+      if [ "$_dir" = restore ] && [ -s "${AGY_RESTORE_KEEP:-}" ]; then set -- --exclude-from="$AGY_RESTORE_KEEP" "$@"; fi
       rsync_tree --exclude '*-wal' --exclude '*-shm' --exclude '*.lock' --exclude '*.sock' \
         --exclude 'worker.log' --exclude 'statsig-cache.json' \
         --exclude '/dot-cursor/worktrees/***' "$@" ;;
@@ -655,9 +660,16 @@ checkpoint_antigravity() {
 # database whose WAL holds frames (newer than $2, when given). Git worktrees
 # are not state. The pruned names cover a legacy tree listed by its own name.
 cursor_databases() {
+  _found=$(mktemp "$AM_LOCAL/cursor-databases.XXXXXX") || return 1
+  # find's own exit status is what says the listing is complete: through a pipe
+  # an unreadable directory would look like "no databases there". What it did
+  # find is still printed.
   (cd "$1" && find "${3:-.}" \( -path ./dot-cursor/worktrees -o -path ./.cursor/worktrees \) -prune \
-    -o -type f \( -name '*.db' -o \( -name '*.db-wal' -size +32c \) \) ${2:+-newer "$2"} -print) \
-    | sed 's/-wal$//; s|^\./||'
+    -o -type f \( -name '*.db' -o \( -name '*.db-wal' -size +32c \) \) ${2:+-newer "$2"} -print) > "$_found"
+  _rc=$?
+  sed 's/-wal$//; s|^\./||' "$_found"
+  rm -f "$_found"
+  return "$_rc"
 }
 
 # Cursor: the file tree as usual (databases excluded), then a consistent
@@ -680,7 +692,15 @@ checkpoint_cursor() {
   retry_next="$db_retry.next.$$"
   deferred_next="$db_deferred.next.$$"
   mark_checkpoint_floor "$db_next"
-  { cursor_databases "$live" "$db_stamp"; [ -f "$db_retry" ] && cut -d' ' -f2- "$db_retry"; [ -f "$db_deferred" ] && cat "$db_deferred"; } | sort -u > "$db_list"
+  # A listing that failed is not an empty one: what it found is still copied,
+  # but the stamp stays, so the next pass lists everything again.
+  list_failed=0
+  cursor_databases "$live" "$db_stamp" > "$db_list.found" || list_failed=1
+  { cat "$db_list.found"; [ -f "$db_retry" ] && cut -d' ' -f2- "$db_retry"; [ -f "$db_deferred" ] && cat "$db_deferred"; } | sort -u > "$db_list"
+  rm -f "$db_list.found"
+  if [ "$list_failed" -eq 1 ]; then
+    echo "agent-state: could not list the Cursor databases under $live; the stamp stays so the next pass lists them again" >&2
+  fi
   : > "$retry_next"
   : > "$deferred_next"
   stage_dir="$AM_LOCAL/agent-state-snapshots"
@@ -714,43 +734,47 @@ checkpoint_cursor() {
   rm -f "$staged" "$db_list"
   mv "$retry_next" "$db_retry"
   mv "$deferred_next" "$db_deferred"
-  mv "$db_next" "$db_stamp"
-  [ "$db_failed" -eq 0 ]
+  if [ "$list_failed" -eq 1 ]; then rm -f "$db_next"; else mv "$db_next" "$db_stamp"; fi
+  [ "$db_failed" -eq 0 ] && [ "$list_failed" -eq 0 ]
 }
-
-restore_cursor() { restore_tree cursor "$1" "$CURSOR_LIVE"; }
 
 # A live database that is valid is the restore authority on a hot restart: it
 # can hold committed rows newer than its last checkpoint, some still in its
 # WAL, so a newer `.backup` must not replace it (the opencode/Hermes rule, per
 # database). The valid ones are kept out of the restore; an invalid one is moved
-# aside for diagnosis so its checkpoint comes back in its place.
-restore_antigravity() {
-  durable="$1"
-  mkdir -p "$ANTIGRAVITY_LIVE"
+# aside for diagnosis so its checkpoint comes back in its place. Shared by
+# Antigravity and Cursor: $1 the adapter, $2 its durable tree, $3 its live tree,
+# $4 the function that lists its databases under the live tree.
+restore_keeping_live_databases() {
+  _adapter="$1" durable="$2" live="$3" lister="$4"
+  case "$_adapter" in antigravity) _label=Antigravity ;; cursor) _label=Cursor ;; *) _label="$_adapter" ;; esac
+  mkdir -p "$live"
   AGY_RESTORE_KEEP=""
   if [ -z "$DRY_RUN" ]; then
-    AGY_RESTORE_KEEP="$WORK/antigravity-keep"
+    AGY_RESTORE_KEEP="$WORK/$_adapter-keep"
     : > "$AGY_RESTORE_KEEP"
-    step "checking the live Antigravity databases"
-    agy_databases "$ANTIGRAVITY_LIVE" | while IFS= read -r rel; do
-      db="$ANTIGRAVITY_LIVE/$rel"
+    step "checking the live $_label databases"
+    "$lister" "$live" | while IFS= read -r rel; do
+      db="$live/$rel"
       if [ -s "$db" ] && [ "$(sqlite3 "$(sqlite_uri "$db")?mode=ro" 'PRAGMA quick_check;' 2>/dev/null)" = ok ]; then
         # An rsync pattern: anchored, wildcards escaped.
         printf '/%s\n' "$rel" | sed 's/[][*?\\]/\\&/g' >> "$AGY_RESTORE_KEEP"
       else
-        aside="$AM_LOCAL/agent-state-invalid/antigravity.$(date -u +%Y%m%dT%H%M%SZ).$$/$rel"
+        aside="$AM_LOCAL/agent-state-invalid/$_adapter.$(date -u +%Y%m%dT%H%M%SZ).$$/$rel"
         mkdir -p "$(dirname "$aside")"
         for f in "$db" "$db-wal" "$db-shm"; do [ -e "$f" ] && mv "$f" "$aside${f#"$db"}"; done
-        echo "agent-state: invalid live Antigravity database moved to $aside" >&2
+        echo "agent-state: invalid live $_label database moved to $aside" >&2
       fi
     done
   fi
   export AGY_RESTORE_KEEP
-  restore_tree antigravity "$durable" "$ANTIGRAVITY_LIVE"; _rc=$?
+  restore_tree "$_adapter" "$durable" "$live"; _rc=$?
   unset AGY_RESTORE_KEEP
   return "$_rc"
 }
+
+restore_antigravity() { restore_keeping_live_databases antigravity "$1" "$ANTIGRAVITY_LIVE" agy_databases; }
+restore_cursor() { restore_keeping_live_databases cursor "$1" "$CURSOR_LIVE" cursor_databases; }
 
 # ---------- restore source: the bucket API, not the mount ----------
 #
@@ -1157,7 +1181,10 @@ if [ "$MODE" = migrate-cursor ]; then
   staged="$stage_dir/cursor-migrate.$$.tmp"
   moved=0 skipped=0
   list="$stage_dir/cursor-migrate.$$.list"
-  cursor_databases "$parent" "" "./$name" > "$list"
+  if ! cursor_databases "$parent" "" "./$name" > "$list"; then
+    rm -f "$list"
+    echo "agent-state: could not list the databases under $legacy; it stays in place" >&2; exit 1
+  fi
   while IFS= read -r rel; do
     src="$parent/$rel" dst="$CURSOR_DURABLE/$sub/${rel#"$name"/}"
     # --update, as for every other file: a newer durable copy stays.
