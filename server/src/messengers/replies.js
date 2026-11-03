@@ -7,6 +7,7 @@ import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 // binding's allowed users and the privacy lock before anything reaches a session.
 
 const SEEN_MESSAGES = 500;
+const MAX_HINT_NAMES = 20;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
 export class ReplyRouter {
@@ -74,6 +75,33 @@ export class ReplyRouter {
     return null;
   }
 
+  // Agent names a sender may address: `all` over every binding, `mine` over those they are allowed on.
+  agentNames(bindings, user) {
+    const sessions = this.host.sessions();
+    const all = new Set();
+    const mine = new Set();
+    for (const b of bindings) for (const s of this.scope(b, sessions)) {
+      all.add(s.id);
+      if (this.allowed(b, user)) mine.add(s.name);
+    }
+    return { all, mine };
+  }
+
+  // An unaddressed message in a channel with several agents: say how to choose, but only to someone
+  // allowed to talk to at least one of them (the names are not shown to anyone else).
+  async hint(adapterId, r, bindings) {
+    const { mine } = this.agentNames(bindings, r.user);
+    if (!mine.size) {
+      this.log({ event: 'refused', reason: 'user-not-allowed', binding: bindings[0].id, user: r.user?.id });
+      return { refused: 'user-not-allowed' };
+    }
+    const names = [...mine].sort();
+    const shown = names.slice(0, MAX_HINT_NAMES).join(', ') + (names.length > MAX_HINT_NAMES ? ', …' : '');
+    await this.say(adapterId, r.channel, r.ts, `This channel is connected to several agents (${shown}). Start your message with \`${names[0]}:\` or \`@${names[0]}\` to choose one, or reply in the thread of an agent's card. Nothing was sent.`);
+    this.log({ event: 'refused', reason: 'no-agent-named', binding: bindings[0].id, user: r.user?.id });
+    return { refused: 'no-agent-named' };
+  }
+
   /** The binding, session and posted card a reply is about, if any. */
   resolve(adapterId, r) {
     const bindings = this.channelBindings(adapterId, r.channel);
@@ -89,7 +117,7 @@ export class ReplyRouter {
     const named = this.byName(bindings, text);
     if (named) return named;
     const direct = bindings.filter((b) => b.scope.type === 'session');
-    if (direct.length !== 1) return { ignored: 'no-target' };
+    if (direct.length !== 1) return this.agentNames(bindings, r.user).all.size > 1 ? { hint: bindings } : { ignored: 'no-target' };
     return { binding: direct[0], session: this.sessionById(direct[0].scope.id), text };
   }
 
@@ -100,6 +128,7 @@ export class ReplyRouter {
   async handle(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
     const target = this.resolve(adapterId, r);
+    if (target.hint) return this.hint(adapterId, r, target.hint);
     if (!target.binding) return { ignored: target.ignored || 'no-target' };
     const { binding, session, found, text } = target;
     const posted = found?.[1];

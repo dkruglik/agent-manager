@@ -15,7 +15,7 @@ answer from the chat:
 | Reply in a question card's thread | Your text answers the first open question |
 | Click **Approve once / Deny** (only with *allow approvals*) | The permission request is decided |
 | Reply in a finished card's thread | Sent to that agent as a normal prompt |
-| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address |
+| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address. In a channel with several agents an unaddressed message is not sent; the bot replies with the agent names to use |
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
@@ -172,7 +172,7 @@ Limits:
   Posted cards, answers, prompts and refusals are written to
   `DATA_DIR/messengers.log.jsonl` (message text is never logged): `posted`,
   `skipped-read`, `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
-  `user-not-allowed`, `no-session`, `locked`, `closed`, `untyped`,
+  `user-not-allowed`, `no-agent-named`, `no-session`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
   `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
