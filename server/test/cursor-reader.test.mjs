@@ -12,6 +12,7 @@ process.env.DATA_DIR = path.join(TMP, 'data');
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'no-claude');
 process.env.CODEX_HOME = path.join(TMP, 'no-codex');
 process.env.AM_TRACE_WORKERS = '0';
+fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 
 let pass = 0, fail = 0;
 const check = (name, got, want) => {
@@ -89,6 +90,9 @@ check('digest last reply', dg?.lastAssistantText, 'The folder has README.md and 
 check('digest counts tools', dg?.sinceToolCalls, 4);
 check('digest not running at turn_ended', dg?.running, false);
 check('digest prompt ts', dg?.lastPromptTs, Date.UTC(2026, 10, 3, 17, 50));
+check('reply has a time (borrowed from the latest prompt)', dg?.lastAssistantTs > 0, true);
+check('answer has a time', dg?.lastAnswerTs > 0, true);
+check('reply is not older than the prompt', dg?.lastAssistantTs >= dg?.lastPromptTs, true);
 fs.writeFileSync(FILE, lines.slice(0, -1).join('\n') + '\n');
 check('digest running mid-turn', (await traces.digestFor(s))?.running, true);
 fs.writeFileSync(FILE, FIX);
@@ -96,6 +100,43 @@ check('traceLocation', (await traces.traceLocation(s))?.path, FILE);
 check('findTrace returns the file', (await share.findTrace(s, []))?.src, FILE);
 check('not shareable', share.SHAREABLE_CLIS.includes('cursor'), false);
 check('no id, no trace', await share.findTrace({ id: 'x', cli: 'cursor' }, []), null);
+
+console.log('bulk pass (Overview)');
+const store = await import('../src/sessions.js');
+store.init();
+const bulkS = store.create({ name: 'cur-bulk', cli: 'cursor', path: 'proj-bulk' });
+const bulkId = store.update(bulkS.id, { sessionUuid: ID }).id;
+const bulk = await traces.traceDigests({ fresh: true });
+const bd = bulk.get ? bulk.get(bulkId) : bulk[bulkId];
+check('bulk digest has the last reply', bd?.lastAssistantText, 'The folder has README.md and src/. README.md says: Demo project.');
+check('bulk digest has the last prompt', bd?.lastPromptText, 'List the files and show README.md.');
+check('bulk digest reply has a time', bd?.lastAssistantTs > 0, true);
+
+console.log('unreadable transcript root');
+{
+  const errs = [];
+  const origErr = console.error;
+  const home = process.env.HOME;
+  const root = path.join(TMP, 'home2');
+  const proj = path.join(root, '.cursor', 'projects');
+  fs.mkdirSync(proj, { recursive: true });
+  const isRoot = process.getuid?.() === 0;
+  if (isRoot) console.log('  SKIP  running as root: chmod 000 does not block reads');
+  else {
+    fs.chmodSync(proj, 0o000);
+    process.env.HOME = root;
+    console.error = (...a) => errs.push(a.join(' '));
+    let r, threw = null;
+    const id3 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    try { r = await share.cursorTranscriptPath(id3); await share.cursorTranscriptPath(id3); } catch (e) { threw = e; }
+    console.error = origErr;
+    process.env.HOME = home;
+    fs.chmodSync(proj, 0o755);
+    check('unreadable root: no throw', threw, null);
+    check('unreadable root: null', r, null);
+    check('unreadable root: logged once per code', errs.filter((m) => m.includes('[cursor]') && m.includes('EACCES')).length, 1);
+  }
+}
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -327,23 +327,38 @@ async function findFxEvents(session, allSessions = []) {
 
 // Cursor CLI: `cursor-agent --resume <id>` makes the pane's sessionUuid the chat
 // id, and the transcript is $HOME/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl
-// (under HOME even when CURSOR_CONFIG_DIR moves the rest). The slug is a lossy,
+// (under HOME: only chats/ follows CURSOR_CONFIG_DIR; sign-in follows XDG_CONFIG_HOME). The slug is a lossy,
 // sometimes truncated-and-hashed form of the cwd, so it is never computed: the
 // file is found by id. The uuid test keeps the id from being a path.
 const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cursorPaths = new Map(); // id -> last path found
+const cursorLogged = new Set();
+// ENOENT/ENOTDIR is a normal miss. Anything else (EACCES, EIO, ...) is logged
+// once per code so a broken mount is visible without flooding the log.
+function cursorFsError(e, p) {
+  const code = e?.code || 'UNKNOWN';
+  if (code === 'ENOENT' || code === 'ENOTDIR') return code;
+  if (!cursorLogged.has(code)) { cursorLogged.add(code); console.error('[cursor] transcript lookup failed', code, p); }
+  return code;
+}
 export async function cursorTranscriptPath(id) {
   if (typeof id !== 'string' || !CURSOR_ID.test(id)) return null;
-  const isFile = async (p) => { try { return (await fsp.stat(p)).isFile(); } catch { return false; } };
+  // true = a file; false = a miss; null = could not tell (stat failed oddly).
+  const isFile = async (p) => {
+    try { return (await fsp.stat(p)).isFile(); } catch (e) { const c = cursorFsError(e, p); return c === 'ENOENT' || c === 'ENOTDIR' ? false : null; }
+  };
   const known = cursorPaths.get(id);
-  if (known && await isFile(known)) return known;
-  cursorPaths.delete(id);
+  if (known) {
+    const k = await isFile(known);
+    if (k !== false) return known; // a transient stat error keeps the cached path
+    cursorPaths.delete(id);
+  }
   const root = path.join(process.env.HOME || os.homedir(), '.cursor', 'projects');
   let slugs = [];
-  try { slugs = await fsp.readdir(root); } catch { return null; }
+  try { slugs = await fsp.readdir(root); } catch (e) { cursorFsError(e, root); return null; }
   for (const slug of slugs) {
     const p = path.join(root, slug, 'agent-transcripts', id, `${id}.jsonl`);
-    if (await isFile(p)) {
+    if (await isFile(p) === true) {
       if (cursorPaths.size > 500) cursorPaths.clear();
       cursorPaths.set(id, p);
       return p;
