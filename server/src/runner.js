@@ -1981,7 +1981,7 @@ export function commandFor(session) {
   // `--continue`. The id reaches the shell unquoted, so a missing or malformed
   // one falls back to a plain run rather than being interpolated.
   if (cli.id === 'cursor') {
-    if (!UUID.test(session.sessionUuid || '')) return `exec ${run}`;
+    if (!UUID.test(session.sessionUuid || '')) return `exec ${q0 ? firstCommand() : run}`;
     return `exec ${cli.resume(session.sessionUuid, f)}${q0 ? ` ${q0}` : ''}`;
   }
 
