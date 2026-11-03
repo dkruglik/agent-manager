@@ -176,6 +176,12 @@ export class MessengerBridge {
     if (baseline) { this.store.putSeen(k, id); return; }
     if (!id || id === this.store.seen(k) || !d.text) return;
     if (!binding.events.includes('finished')) { this.store.putSeen(k, id); return; }
+    // Already shown to the operator in the web UI: nothing to announce.
+    if (d.read) {
+      this.store.putSeen(k, id);
+      this.log({ event: 'skipped-read', binding: binding.id, session: s.id, kind: 'finished' });
+      return;
+    }
     // Seen only once posted: a failed post is retried on the next look.
     const ref = await this.post(binding, finishedCard({ agent: this.agent(s), link: this.host.link(s), text: d.text }));
     this.store.putSeen(k, id);

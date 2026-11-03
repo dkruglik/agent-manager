@@ -248,3 +248,51 @@ test('lastError shows only what an adapter marked public, never paths or network
   assert.equal(t.bridge.lastError('b0'), 'could not post — see the server log');
   assert.match(t.logs.find((e) => e.event === 'tick-failed').error, /EACCES/, 'the full error is logged');
 });
+
+test('a reply the operator already read in the web UI posts no finished card', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old', read: false });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'seen on screen', read: true });
+  t.host.list[0].state = 'waiting';
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0, 'nothing posted');
+  assert.equal(t.store.seen('b0|s1'), 'a:2', 'recorded as seen');
+  assert.deepEqual(t.logs.filter((e) => e.event === 'skipped-read'), [
+    { event: 'skipped-read', binding: 'b0', session: 's1', kind: 'finished' },
+  ]);
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0, 'and not retried');
+});
+
+test('an unread reply still posts, and a later unread reply after a read one posts too', async () => {
+  const t = setup({ events: ['finished'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old', read: false });
+  await t.tick();
+  t.host.list[0].state = 'waiting';
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'unread answer', read: false });
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 1);
+  assert.equal(t.slack.posts[0].card.body, 'unread answer');
+  t.host.digestImpl = async () => ({ id: 'a:3', text: 'read answer', read: true });
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 1, 'the read one is skipped');
+  t.host.digestImpl = async () => ({ id: 'a:4', text: 'next, unread', read: false });
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 2);
+  assert.equal(t.slack.posts[1].card.body, 'next, unread');
+});
+
+test('a long finished delay still opens the look window after it', async () => {
+  const t = setup({ events: ['finished'] });
+  t.bridge.settleMs = 600_000;
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'late answer' });
+  t.host.list[0].state = 'waiting';
+  await t.tick(1000);
+  await t.tick(500_000);
+  assert.equal(t.slack.posts.length, 0, 'still inside the delay');
+  await t.tick(100_000);
+  assert.equal(t.slack.posts.length, 1, 'posted once the delay has passed');
+});

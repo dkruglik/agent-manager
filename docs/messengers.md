@@ -301,6 +301,11 @@ real Claude.
   `traceLocation`, the conversation reader, and the bulk digest. No card is
   posted in this suite.
 
+A *finished* card waits `MESSENGER_FINISHED_DELAY_MS` (default 8000) after the
+agent goes idle. It is not sent when that reply was already shown in the web
+UI (the server-side read mark covers it); the bridge logs `skipped-read`
+instead. Input-required cards are not delayed or skipped this way.
+
 A *finished* card comes from the agent's transcript. Claude Code can move a
 running conversation to a new transcript file and leave a `continued-in` record
 at the end of the old one. Agent Manager follows that chain, up to 8 hops,

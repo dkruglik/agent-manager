@@ -4024,7 +4024,7 @@ const messengers = createMessengers({
     async digest(s) {
       const { digest } = await agentEvidence(s);
       const out = outputOf(s, digest);
-      return out ? { id: `${out.src}:${out.seq}:${out.hash}`, text: digest.lastAssistantMd || digest.lastAssistantText } : null;
+      return out ? { id: `${out.src}:${out.seq}:${out.hash}`, read: readMarks.covers(readMarks.get(s.id), out), text: digest.lastAssistantMd || digest.lastAssistantText } : null;
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
     async prompt(s, text, { requestId }) {

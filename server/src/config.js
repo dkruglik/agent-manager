@@ -44,7 +44,14 @@ export const PUBLIC_DIR = process.env.PUBLIC_DIR || path.resolve(process.cwd(), 
 export function resolveMessengerConfig(env = process.env) {
   const publicUrl = (env.AM_PUBLIC_URL || '').trim().replace(/\/+$/, '');
   if (publicUrl && !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(publicUrl)) throw new Error('AM_PUBLIC_URL must be an http(s) URL');
-  return { publicUrl, slack: { botToken: env.SLACK_BOT_TOKEN || '', appToken: env.SLACK_APP_TOKEN || '' } };
+  // How long a finished card waits after the agent goes idle, so a reply the
+  // operator is reading in the web UI is marked read before it is announced.
+  const rawDelay = (env.MESSENGER_FINISHED_DELAY_MS ?? '').trim();
+  const finishedDelayMs = rawDelay === '' ? 8000 : Number(rawDelay);
+  if (!/^\d*$/.test(rawDelay) || !Number.isInteger(finishedDelayMs) || finishedDelayMs < 0 || finishedDelayMs > 600000) {
+    throw new Error('MESSENGER_FINISHED_DELAY_MS must be an integer from 0 to 600000');
+  }
+  return { publicUrl, finishedDelayMs, slack: { botToken: env.SLACK_BOT_TOKEN || '', appToken: env.SLACK_APP_TOKEN || '' } };
 }
 export const MESSENGERS = resolveMessengerConfig();
 
