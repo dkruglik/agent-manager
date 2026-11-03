@@ -66,6 +66,28 @@ try {
   r = await api('/api/messengers/bindings', { method: 'POST', body: { ...binding, approvals: 'yes' } });
   assert.equal(r.body.details?.[0]?.field, 'approvals');
 
+  // Saved channels and users: validated, normalized, listed, and behind the same admission.
+  const saved = { adapter: 'slack', channels: [{ id: 'C0123ABCD', name: ' alerts ' }], users: [{ id: 'U0123ABCD' }] };
+  const expectedSaved = { slack: { channels: [{ id: 'C0123ABCD', name: 'alerts' }], users: [{ id: 'U0123ABCD', name: '' }] } };
+  r = await api('/api/messengers/saved', { method: 'PUT', body: saved, origin: false });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'origin-required');
+  r = await api('/api/messengers/saved', { method: 'PUT', body: { ...saved, channels: [{ id: 'bad id!' }] } });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'invalid-input');
+  assert.equal(r.body.details?.[0]?.field, 'channels');
+  r = await api('/api/messengers/saved', { method: 'PUT', body: { ...saved, adapter: 'nope' } });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'invalid-input');
+  assert.equal(r.body.details?.[0]?.field, 'adapter');
+  r = await api('/api/messengers/saved', { method: 'PUT', body: saved });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, expectedSaved);
+  assert.ok(!r.text.includes(BOT) && !r.text.includes(APP), 'tokens never reach the saved response');
+  r = await api('/api/messengers');
+  assert.deepEqual(r.body.saved, expectedSaved);
+  assert.ok(!r.text.includes(BOT) && !r.text.includes(APP), 'tokens never reach the list with saved targets');
+
   // Admission still applies: a write without an origin is refused.
   r = await api('/api/messengers/bindings', { method: 'POST', body: binding, origin: false });
   assert.equal(r.status, 400);

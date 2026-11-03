@@ -4035,6 +4035,7 @@ const messengers = createMessengers({
   },
 });
 api.get('/api/messengers', (_req, res) => res.json(messengers.list()));
+api.put('/api/messengers/saved', (req, res) => res.json(messengers.saveTargets(req.body)));
 api.post('/api/messengers/bindings', (req, res) => res.status(201).json(messengers.create(req.body)));
 api.put('/api/messengers/bindings/:id', (req, res) => res.json(messengers.update(req.params.id, req.body)));
 api.delete('/api/messengers/bindings/:id', (req, res) => res.json(messengers.remove(req.params.id)));
