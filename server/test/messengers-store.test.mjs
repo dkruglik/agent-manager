@@ -216,6 +216,7 @@ test('validateSaved names the field it rejects', () => {
   assert.equal(fieldOf({ adapter: 'nope' }), 'adapter');
   assert.equal(fieldOf({ adapter: 'slack', channels: [{ id: 'C 1' }] }), 'channels');
   assert.equal(fieldOf({ adapter: 'slack', users: [{ id: 5 }] }), 'users');
+  assert.equal(fieldOf({ adapter: 'slack', channels: [{ id: 'C1', name: 1 }] }), 'channels', 'a non-string name');
   assert.equal(fieldOf({ adapter: 'slack', users: ['U1'] }), 'users', 'a non-object entry');
   assert.equal(fieldOf({ adapter: 'slack', channels: 'C1' }), 'channels', 'not an array');
   assert.equal(fieldOf({ adapter: 'slack', users: { id: 'U1' } }), 'users', 'not an array');
@@ -237,6 +238,34 @@ test('putSaved persists, survives a reload and keeps the file owner-only', () =>
   assert.deepEqual(new BindingStore(file).saved(), { slack: { channels: [], users: [] } }, 'replaces, not merges');
   store.saved().slack.channels.push({ id: 'C9', name: '' });
   assert.deepEqual(store.saved().slack.channels, [], 'saved() is a copy');
+});
+
+test('putSaved copies the lists, so later caller changes do not reach the store', () => {
+  const store = new BindingStore(tmpFile('saved-copy'));
+  const channels = [{ id: 'C1', name: 'a' }];
+  const users = [{ id: 'U1', name: 'b' }];
+  store.putSaved({ adapter: 'slack', channels, users });
+  channels.push({ id: 'C9', name: '' });
+  users[0].name = 'changed';
+  assert.deepEqual(store.saved(), { slack: { channels: [{ id: 'C1', name: 'a' }], users: [{ id: 'U1', name: 'b' }] } });
+});
+
+test('putSaved for one adapter leaves another adapter and the delivery state alone', () => {
+  const file = tmpFile('saved-other');
+  const store = new BindingStore(file, { now: () => 1000 });
+  store.putBinding({ ...validateBinding(base, { adapters: ['slack'] }), id: 'b1' });
+  store.putPosted('b1|s1|k', { bindingId: 'b1', sessionId: 's1', key: 'k', status: 'open' });
+  store.putSeen('b1|s1', 'a:1');
+  const other = { channels: [{ id: 'T1', name: 'tg' }], users: [] };
+  store.putSaved({ adapter: 'telegram', ...other });
+  store.putSaved({ adapter: 'slack', channels: [{ id: 'C1', name: 'a' }], users: [] });
+  for (const s of [store, new BindingStore(file)]) {
+    assert.deepEqual(s.saved().telegram, other);
+    assert.deepEqual(s.saved().slack, { channels: [{ id: 'C1', name: 'a' }], users: [] });
+    assert.deepEqual(s.bindings().map((b) => b.id), ['b1']);
+    assert.ok(s.posted('b1|s1|k'));
+    assert.equal(s.seen('b1|s1'), 'a:1');
+  }
 });
 
 test('removing a binding keeps the saved lists', () => {

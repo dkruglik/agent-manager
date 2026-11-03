@@ -76,6 +76,10 @@ try {
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'invalid-input');
   assert.equal(r.body.details?.[0]?.field, 'channels');
+  r = await api('/api/messengers/saved', { method: 'PUT', body: { ...saved, channels: [{ id: 'C1', name: 1 }] } });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'invalid-input');
+  assert.equal(r.body.details?.[0]?.field, 'channels');
   r = await api('/api/messengers/saved', { method: 'PUT', body: { ...saved, adapter: 'nope' } });
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'invalid-input');

@@ -63,6 +63,9 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   };
 }
 
+/** @typedef {{ id: string, name: string }} SavedEntry id matches ID; name is trimmed, at most 64 characters, '' when unnamed. */
+/** @typedef {{ channels: SavedEntry[], users: SavedEntry[] }} SavedTargets One adapter's saved lists. */
+
 // Saved channels/users are a convenience list for Settings, never a security
 // boundary, so the list is kept per adapter and holds no tokens.
 function savedList(input, field) {
@@ -78,6 +81,12 @@ function savedList(input, field) {
   return [...byId.values()];
 }
 
+/**
+ * Checks a PUT /api/messengers/saved body: a known adapter and two optional lists of
+ * {id, name?} (at most 100 entries each, duplicate ids collapse to the first). Throws an
+ * invalid-input ApiError naming the field.
+ * @returns {{ adapter: string } & SavedTargets}
+ */
 export function validateSaved(input, { adapters }) {
   const b = plain(input);
   const adapter = text(b.adapter, 32);
@@ -86,6 +95,8 @@ export function validateSaved(input, { adapters }) {
 }
 
 // Disk is trusted less than input: keep what is well-formed and drop the rest quietly.
+// Bad entries are dropped, but the 100-entry and 64-character caps of validateSaved are
+// not applied here, so a hand-edited file may hold more or longer.
 function loadSaved(raw) {
   const keep = (list) => (Array.isArray(list) ? list : [])
     .filter((e) => isPlain(e) && typeof e.id === 'string' && ID.test(e.id) && typeof e.name === 'string')
@@ -191,8 +202,14 @@ export class BindingStore {
 
   saved() { return structuredClone(this.data.saved); }
 
+  /**
+   * Replaces one adapter's saved lists (validateSaved output); other adapters, bindings and
+   * delivery state are kept. The lists are copied, so later changes by the caller do not reach the store.
+   * @param {{ adapter: string } & SavedTargets} saved
+   */
   putSaved({ adapter, channels, users }) {
-    this.commit({ ...this.data, saved: { ...this.data.saved, [adapter]: { channels, users } } });
+    const copy = (list) => list.map((e) => ({ id: e.id, name: e.name }));
+    this.commit({ ...this.data, saved: { ...this.data.saved, [adapter]: { channels: copy(channels), users: copy(users) } } });
   }
 
   removeBinding(id) {
