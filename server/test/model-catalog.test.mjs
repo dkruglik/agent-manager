@@ -46,6 +46,24 @@ test('agy models: id<TAB>label rows, from real 1.4.10 output', () => {
     [{ id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' }], 'only TSV rows with a valid id; CRs dropped');
 });
 
+test('cursor-agent models: `id - label` rows, from real 2026.10.22 output', () => {
+  const out = fs.readFileSync(fileURLToPath(new URL('./fixtures/cursor-models-2026.10.22.txt', import.meta.url)), 'utf8');
+  const models = catalog.parseCursorModels(out);
+  assert.equal(models.length, 269, '270 rows less `auto`');
+  assert.ok(!models.some((m) => m.id === 'auto'), 'auto is the CLI default, which an empty choice already is');
+  assert.deepEqual(models.find((m) => m.id === 'grok-4.7-low'), { id: 'grok-4.7-low', label: 'Grok 4.7  Low' });
+  assert.deepEqual(models.find((m) => m.id === 'grok-4.7-low-fast'), { id: 'grok-4.7-low-fast', label: 'Grok 4.7  Low Fast' }, 'trailing zero-width chars dropped');
+  assert.ok(models.every((m) => config.LAUNCH_MODEL.test(m.id) && m.label && !/[\u200b\s]$/.test(m.label)));
+  assert.equal(new Set(models.map((m) => m.id)).size, models.length);
+});
+
+test('cursor-agent models: hostile ids, duplicates and error text', () => {
+  assert.deepEqual(catalog.parseCursorModels('Available models\n\nx;rm -rf / - Evil\n$(id) - X\n`id` - Y\na b - Z\nok-1 - One\nok-1 - Again\nauto - Auto (default)\n'),
+    [{ id: 'ok-1', label: 'One' }]);
+  assert.deepEqual(catalog.parseCursorModels('Not logged in. Run cursor-agent login'), []);
+  assert.deepEqual(catalog.parseCursorModels(''), []);
+});
+
 test('claude ids in a binary', () => {
   const ids = catalog.claudeIdsIn('"claude-opus-5-5" xx claude-haiku-4-5-20251001 "claude-mythos-5-1" claude-fable-5');
   assert.deepEqual([...ids].sort(), ['claude-fable-5', 'claude-mythos-5-1', 'claude-opus-5-5']);
