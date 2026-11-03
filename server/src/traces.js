@@ -1744,7 +1744,8 @@ export async function digestFor(s) {
       if (!live) return null;
       const parsed = await statsFor(live, parseClaude);
       if (parsed) return parsed.digest;
-      // A sealed pinned file's digest would be stale: let the bulk pass decide.
+      // The live file cannot be read and an older hop's reply would be stale:
+      // publish no digest (setLiveDigests drops it from the bulk map too).
       console.warn(`[traces] live transcript ${path.basename(live)} is unreadable`);
       return null;
     }
