@@ -7,7 +7,14 @@ import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 // binding's allowed users and the privacy lock before anything reaches a session.
 
 const SEEN_MESSAGES = 500;
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+// Shared Codex (CodexInput.send) needs a UUID; a Slack retry or a re-read of the same message must give the same id.
+const requestIdFor = (adapterId, channel, ts) => {
+  const b = crypto.createHash('sha256').update(`${adapterId}:${channel}:${ts}`).digest().subarray(0, 16);
+  b[6] = (b[6] & 0x0f) | 0x80;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
 
 export class ReplyRouter {
   /**
@@ -157,7 +164,7 @@ export class ReplyRouter {
 
   async prompt(adapterId, binding, session, r, text, reply) {
     if (!text.trim()) return { ignored: 'empty' };
-    const requestId = `msg-${sha(`${adapterId}:${r.channel}:${r.messageId || r.ts}`)}`;
+    const requestId = requestIdFor(adapterId, r.channel, r.ts || r.messageId);
     await this.host.prompt(session, text.trim(), { requestId, user: r.user });
     this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id });
     await reply(`➡️ Sent to *${session.name}*.`);

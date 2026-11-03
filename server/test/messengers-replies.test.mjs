@@ -273,3 +273,47 @@ test('a single session binding still takes an unaddressed message', async () => 
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha hello')), { prompted: 's1' });
   assert.deepEqual(prompts, ['alpha hello']);
 });
+
+// The host takes a UUID as the request id (shared Codex rejects anything else), and the
+// id must follow the Slack message (adapter, channel, ts), not the event that delivered it.
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+
+async function requestIdOf(t, event) {
+  const seen = [];
+  t.host.prompt = async (s, body, opts) => { seen.push(opts); };
+  assert.deepEqual(await t.bridge.handleReply('slack', event), { prompted: 's1' });
+  assert.equal(seen.length, 1);
+  return seen[0].requestId;
+}
+
+test('a Slack prompt passes the host a UUID request id', async () => {
+  const t = setup();
+  const id = await requestIdOf(t, { ...text(1, 'run the tests'), ts: '1700000000.000100' });
+  assert.match(id, UUID);
+});
+
+test('the request id follows the message, not the delivering event', async () => {
+  const t = setup();
+  const msg = { channel: 'C0', ts: '1700000000.000100' };
+  const first = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev1' });
+  const retried = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev2-retry' });
+  assert.equal(retried, first, 'a retry with a new event id is the same request');
+
+  const other = setup();
+  assert.equal(await requestIdOf(other, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev9' }), first, 'a fresh router agrees');
+
+  const next = await requestIdOf(t, { ...text(3, 'run the tests'), channel: 'C0', ts: '1700000000.000200' });
+  assert.notEqual(next, first, 'another message in the channel is another request');
+});
+
+test('the same ts in another channel is another request', async () => {
+  const t = setup();
+  t.store.putBinding({
+    id: 'b2', adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'session', id: 's1' },
+    events: ['input-required'], allowedUsers: ['U1'], approvals: false, createdAt: 'x',
+  });
+  const ts = '1700000000.000100';
+  const here = await requestIdOf(t, { ...text(1, 'hi'), channel: 'C0', ts });
+  const there = await requestIdOf(t, { ...text(2, 'hi'), channel: 'C1', ts });
+  assert.notEqual(there, here);
+});
