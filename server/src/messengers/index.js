@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ApiError } from '../api-errors.js';
 import { MessengerBridge } from './bridge.js';
-import { BindingStore, validateBinding } from './store.js';
+import { BindingStore, validateBinding, validateSaved } from './store.js';
 import { hookItem, hookOutput } from './claude-approvals.js';
 import { SlackAdapter } from './adapters/slack.js';
 
@@ -67,10 +67,16 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
       return {
         adapters: ids.map((id) => ({ id, configured: adapters.get(id).configured(), ...status[id] })),
         bindings: store.bindings().map((b) => ({ ...b, lastError: bridge.lastError(b.id) })),
+        saved: store.saved(),
       };
     },
     create: (body) => store.putBinding(validateBinding(body, { adapters: ids, scopeExists })),
     update: (id, body) => store.putBinding(validateBinding(body, { adapters: ids, existing: existing(id), scopeExists })),
+    // Saved channels and users are independent of bindings: neither creating nor removing one touches them.
+    saveTargets(body) {
+      store.putSaved(validateSaved(body, { adapters: ids }));
+      return store.saved();
+    },
     remove(id) {
       if (!store.removeBinding(id)) throw notFound();
       return { ok: true };
