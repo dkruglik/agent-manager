@@ -617,6 +617,8 @@ function parseCursor(txt, dg = emptyDigest()) {
   const st = emptyStats();
   st.files = 1;
   const lines = cursorLines(txt);
+  // Assistant lines carry no time; the latest prompt's time is the best bound.
+  let lastUserIso = '';
   for (const j of lines) {
     if (!j || !j.message) continue;
     const items = Array.isArray(j.message.content) ? j.message.content : [];
@@ -624,13 +626,14 @@ function parseCursor(txt, dg = emptyDigest()) {
       const { text, ts } = cursorUser(items.filter((c) => c?.type === 'text').map((c) => c.text).join('\n'));
       if (!text) continue;
       const iso = ts ? new Date(ts).toISOString() : '';
+      if (iso) lastUserIso = iso;
       addTs(st, iso);
       st.prompts++; st.turns++;
       digestPrompt(dg, text, iso);
     } else if (j.role === 'assistant') {
       dg.sinceTurns++;
       for (const c of items) {
-        if (c?.type === 'text' && String(c.text || '').trim()) digestAssistant(dg, c.text, '');
+        if (c?.type === 'text' && String(c.text || '').trim()) digestAssistant(dg, c.text, lastUserIso);
         else if (c?.type === 'tool_use') {
           const name = c.name || 'tool';
           st.toolCalls++;
