@@ -365,6 +365,105 @@ try {
   try { run('migrate-cursor', { args: [legacyCurForListing], env: failingFind }); } catch { migrateFailed = true; }
   check('migrate-cursor exits non-zero when the database listing fails', migrateFailed);
 
+  // Restore over a hot live tree. Each case starts from a valid live database
+  // whose newest row is only in its WAL, with a newer durable `.backup` that
+  // rsync --update would otherwise prefer.
+  const asideCount = () => (fs.existsSync(asideRoot)
+    ? execFileSync('find', [asideRoot, '-name', 'store.db', '-path', '*cursor*'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length : 0);
+  const walOnlyRow = async (db, label) => {
+    const w = spawn('sqlite3', [db], { stdio: ['pipe', 'pipe', 'pipe'] });
+    w.stdin.write('PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n');
+    w.stdin.write(`INSERT INTO blobs(body) VALUES ('${label}');\n.print ${label}-ready\n`);
+    await waitFor(w, `${label}-ready`);
+    const future = new Date(Date.now() + 30000);
+    fs.utimesSync(path.join(curDurable, curDbRel), future, future);
+    return w;
+  };
+  const rowsBefore = Number(sql(liveDb, 'SELECT count(*) FROM blobs;'));
+
+  // 1. The live databases cannot be listed (find fails before printing
+  //    anything): the restore fails and touches nothing.
+  const silentShim = path.join(root, 'silent-failing-find');
+  fs.mkdirSync(silentShim, { recursive: true });
+  fs.writeFileSync(path.join(silentShim, 'find'), [
+    '#!/bin/sh',
+    "case \"$*\" in *'*.db'*) echo 'find: .: Permission denied' >&2; exit 1 ;; esac",
+    `exec "${realFind}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  let w = await walOnlyRow(liveDb, 'unlisted');
+  let inode = fs.statSync(liveDb).ino;
+  let restoreFailed = false;
+  try { run('restore', { env: { ...boot.env, PATH: `${silentShim}:${env.PATH}` } }); } catch { restoreFailed = true; }
+  check('Cursor restore fails when the live databases cannot be listed', restoreFailed);
+  check('Cursor restore with a failed listing keeps the live database and its WAL row',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 1));
+  w.kill('SIGKILL');
+
+  // 2. quick_check cannot run (locked): the database is kept, not moved aside.
+  const sqliteShim = path.join(root, 'locked-sqlite');
+  fs.mkdirSync(sqliteShim, { recursive: true });
+  const realSqlite = execFileSync('sh', ['-c', 'command -v sqlite3'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(sqliteShim, 'sqlite3'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    "  *'PRAGMA quick_check;'*) echo 'Error: database is locked' >&2; exit 5 ;;",
+    'esac',
+    `exec "${realSqlite}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  w = await walOnlyRow(liveDb, 'locked');
+  inode = fs.statSync(liveDb).ino;
+  const asideBefore = asideCount();
+  run('restore', { env: { ...boot.env, PATH: `${sqliteShim}:${env.PATH}` } });
+  check('Cursor restore keeps a live database whose check could not run',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 2)
+      && asideCount() === asideBefore);
+  w.kill('SIGKILL');
+
+  // 3. One restore keeps valid A, replaces invalid B from its checkpoint, and
+  //    still brings a newer transcript from the durable tree.
+  const dbB = path.join(cur, 'chats/5d41402abc4b2a76b9719d911017c592/6f0c1a2e-0000-4000-8000-000000000002/store.db');
+  fs.mkdirSync(path.dirname(dbB), { recursive: true });
+  sql(dbB, "CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT); INSERT INTO blobs(body) VALUES ('b');");
+  run('checkpoint-final');
+  w = await walOnlyRow(liveDb, 'mixed');
+  inode = fs.statSync(liveDb).ino;
+  fs.writeFileSync(dbB, 'not a database either\n');
+  put(path.join(curDurable, curTranscriptRel), '{"role":"user","newer":"durable"}\n');
+  const transcriptTime = new Date(Date.now() + 30000);
+  fs.utimesSync(path.join(curDurable, curTranscriptRel), transcriptTime, transcriptTime);
+  const asideBeforeMixed = asideCount();
+  run('restore', boot);
+  check('Cursor restore keeps valid database A while it replaces invalid B',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 3)
+      && sql(dbB, 'PRAGMA quick_check;') === 'ok' && sql(dbB, 'SELECT body FROM blobs;') === 'b');
+  check('Cursor restore moves only the invalid database aside', asideCount() === asideBeforeMixed + 1);
+  check('Cursor restore with kept databases still updates a newer transcript',
+    fs.readFileSync(path.join(cur, curTranscriptRel), 'utf8').includes('"newer":"durable"'));
+  w.kill('SIGKILL');
+
+  // 4. A file vanishing mid-walk is not a failed listing: find reports it and
+  //    exits 1, the checkpoint still succeeds and advances the stamp.
+  const vanishShim = path.join(root, 'vanishing-find');
+  fs.mkdirSync(vanishShim, { recursive: true });
+  fs.writeFileSync(path.join(vanishShim, 'find'), [
+    '#!/bin/sh',
+    `"${realFind}" "$@"; rc=$?`,
+    'case "$*" in',
+    "  *'*.db'*) echo \"find: './chats/gone/store.db-wal': No such file or directory\" >&2; exit 1 ;;",
+    'esac',
+    'exit $rc',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const oldStamp = new Date(Date.now() - 60000);
+  fs.utimesSync(dbStamp, oldStamp, oldStamp);
+  let vanishOk = true;
+  try { run('checkpoint', { env: { PATH: `${vanishShim}:${env.PATH}`, CURSOR_DB_MIN_INTERVAL: '0' } }); } catch { vanishOk = false; }
+  check('Cursor checkpoint succeeds when find only reports vanished files', vanishOk);
+  check('Cursor checkpoint advances the stamp when find only reports vanished files',
+    fs.statSync(dbStamp).mtimeMs > oldStamp.getTime() + 30000);
+
   // migrate-cursor: a real ~/.cursor from before the links existed. Its
   // database goes through SQLite's backup (the WAL row comes along); its
   // socket, WAL/SHM and logs stay in the rollback copy.
