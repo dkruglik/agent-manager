@@ -27,6 +27,7 @@ import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
+import { deliverToSession, readyAfterRevive, bootRevive } from './delivery-outcome.js';
 import * as store from './sessions.js';
 import * as groups from './groups.js';
 import * as order from './order.js';
@@ -38,7 +39,7 @@ import * as crons from './crons.js';
 import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js';
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
-  waitForInputReady, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
+  waitForInputReady, promptReady, hasPromptDetector, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
   installClaudeRepinHook, installOpencodeRepinPlugin,
 } from './runner.js';
 
@@ -70,6 +71,7 @@ import { fileLinkRoots, fileLinksRouter } from './file-links.js';
 import { checkAdoption, ADOPT_NOTE } from './claude-adopt.js';
 import { createMessengers } from './messengers/index.js';
 import { finishedDigest } from './messengers/finished-digest.js';
+import { since } from './transcript-since.js';
 import { requestView } from './codex-view.js';
 // Absolute path of the repo's scripts/, for helpers the agent guide names.
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
@@ -830,7 +832,7 @@ const operatorName = () => process.env.SPACE_AUTHOR_NAME || process.env.AM_USER 
  * agent-to-agent API) go through here, which is what makes remote agents
  * reachable from everywhere the local ones are without duplicating either path.
  */
-async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null, runId = null } = {}) {
+async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null, runId = null, onCommitted = null } = {}) {
   // The privacy lock cancels admitted-but-uncommitted work: every effect below
   // is preceded by this check, so a prompt that was still waiting for its agent
   // to become ready is dropped when the lock lands — not typed a moment later
@@ -840,7 +842,7 @@ async function deliver(session, { text, attachments = [] }, from, { signal = nul
   const scope = lockScope();
   const cancelled = () => { if (scope.signal.aborted || signal?.aborted) throw lockedError(); };
   try {
-    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId, runId });
+    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId, runId, onCommitted });
   } finally {
     scope.release();
   }
@@ -848,7 +850,7 @@ async function deliver(session, { text, attachments = [] }, from, { signal = nul
 
 // `runId` pins the delivery to one launch of the pane (boot revival's
 // message): it never starts the pane, and a replacement does not receive it.
-async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId, runId }) {
+async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId, runId, onCommitted }) {
   cancelled();
   assertCodexLaunchAllowed(session);
   if (sessionRuntime.shared(session)) {
@@ -879,6 +881,7 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
         ? attachments.filter((attachment) => attachment.kind === 'image').map((image) => image.path)
         : undefined,
     });
+    onCommitted?.();
     return ensureRunning(store.get(session.id) || session);
   }
   if (runId && runIdOf(session.id) !== runId) throw new ApiError(409, 'input-not-ready', 'session was stopped or restarted before this could be delivered');
@@ -4016,6 +4019,13 @@ const messengers = createMessengers({
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
     groupOf: (id) => groups.groupOf(id),
     locked: () => isLocked(),
+    // The messengers reach the privacy lock only through these three.
+    lockState: () => { const { locked, reason } = lockState(); return { locked, reason }; },
+    onLock: (fn) => onVisibilityChange((eff) => fn({ locked: eff.locked, reason: eff.reason })),
+    lockScope: () => lockScope(),
+    sourceKey,
+    // The assistant messages after a cursor, for a `transcript` binding (transcript-since.js).
+    since: (s, cursor) => since(s, cursor),
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];
@@ -4028,11 +4038,24 @@ const messengers = createMessengers({
       return finishedDigest(out, digest, readMarks.get(s.id));
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
-    async prompt(s, text, { requestId }) {
-      if (sessionRuntime.shared(s)) await sessionRuntime.send(s, { text, attachments: [], requestId });
-      else await deliver(s, { text }, undefined);
-      touchInput(s.id);
-    },
+    // Resolves once this boot's revive result for the session is known (and, for a CLI with a prompt detector, a
+    // ready prompt): the chat drain sends nothing before it, so it never races the continue message.
+    ready: (s, { signal } = {}) => readyAfterRevive(s, {
+      result: (id) => runstate.reviveResult(id), detector: hasPromptDetector, running: isRunning, promptReady,
+    }, { signal }),
+    // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
+    deliver: (s, { text, requestId, signal }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
+      shared: (session) => sessionRuntime.shared(session),
+      remote: (session) => isRemote(session.cli),
+      limit: remote.MAX_TEXT,
+      log: console.error,
+      touch: touchInput,
+      sendCodex: (session, message) => {
+        if (signal?.aborted) throw lockedError(); // the messenger's lock scope: a lock landed before the call
+        return sessionRuntime.send(session, message, { signal });
+      },
+      sendLocal: (session, text, onCommitted) => deliver(session, { text }, undefined, { onCommitted, signal }),
+    }),
   },
 });
 api.get('/api/messengers', (_req, res) => res.json(messengers.list()));
@@ -4259,14 +4282,16 @@ setTimeout(() => {
   // decision waits for the first (bounded) privacy verdict rather than reading
   // the fail-closed `checking` state as a reason not to revive.
   firstVerdict.then(() => {
-    const done = isLocked()
-      ? Promise.resolve([])
-      : runstate.reviveOnBoot({
+    const done = bootRevive({
+      locked: isLocked(),
+      skipAll: () => runstate.reviveSkipAll(),
+      revive: () => runstate.reviveOnBoot({
         ...loadAmConfig().revive,
         // The Overview reply box's path: privacy-lock aware, submit confirmed.
         send: (s, text, { runId, signal }) => deliver(s, { text }, 'Agent Manager', { signal, runId }),
         scope: lockScope,
-      }).catch((e) => console.error('[revive]', e && e.message));
+      }).catch((e) => console.error('[revive]', e && e.message)),
+    });
     done.then(() => runstate.startRunstateWatch());
   });
 }, 8000);

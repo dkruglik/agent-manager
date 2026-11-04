@@ -20,11 +20,13 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
   const host = {
     isLocked: false, gone: false, answers: [],
     sessions: () => (host.gone ? [] : [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }]),
-    groupOf: () => ({ id: 'g1', name: 'proj' }), locked: () => host.isLocked, link: () => null,
+    groupOf: () => ({ id: 'g1', name: 'proj' }), locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, ready: async () => 'skipped', lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null,
     requests: async () => [], digest: async () => null,
     answer: async (...a) => { host.answers.push(a); }, prompt: async () => {},
+    deliver: async (s, { text, requestId }) => { await host.prompt(s, text, { requestId }); return { state: 'delivered' }; },
   };
   const posts = [];
+  const ephemerals = [];
   const slack = {
     configured: () => true, start() {}, failPosts: false,
     async post(target, card) {
@@ -34,6 +36,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
       return ref;
     },
     async update() {},
+    async postEphemeral(e) { ephemerals.push(e); },
   };
   const logs = [];
   const bridge = new MessengerBridge({ host, store, adapters: new Map([['slack', slack]]), log: (e) => logs.push(e), tickMs: 1e9 });
@@ -45,7 +48,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
     bindingId: 'b0', sessionId: 's1', key: 'req1', kind: 'input', status: 'open', adapter: 'slack',
     ref: { channel: 'C0', ts: 'card1' }, item: typed, partial: {},
   });
-  return { bridge, host, slack, store, posts, logs, root };
+  return { bridge, host, slack, store, posts, ephemerals, logs, root };
 }
 
 const press = (n, optionId = 'd:accept', who = user) => ({ channel: 'C0', ts: 'card1', thread: null, user: who, messageId: `m${n}`, optionId });
@@ -59,12 +62,14 @@ test('internal error text stays out of chat; user-facing errors are shown', asyn
   assert.equal(t.posts.at(-1).card.body, '⚠️ Could not deliver that — see the server log.');
   assert.equal(t.logs.find((e) => e.event === 'reply-failed').error, 'ECONNREFUSED /home/op/.codex/app-server.sock', 'the full error is logged');
 
-  t.host.prompt = async () => { throw new ApiError(409, 'busy', 'alpha is busy right now.'); };
+  // A prompt is delivered by the drain after the ack: its errors are held for retry and logged, never shown in chat.
+  t.host.prompt = async () => { throw new ApiError(409, 'busy', 'disk full at /home/op/.am/data'); };
+  const posted = t.posts.length;
   await t.bridge.handleReply('slack', text(2, 'alpha: hello'));
-  assert.equal(t.posts.at(-1).card.body, '⚠️ alpha is busy right now.');
-  t.host.prompt = async () => { throw new ApiError(500, 'internal-error', 'disk full at /home/op/.am/data'); };
-  await t.bridge.handleReply('slack', text(4, 'alpha: again'));
-  assert.equal(t.posts.at(-1).card.body, '⚠️ Could not deliver that — see the server log.', 'a 5xx ApiError is masked like any internal error');
+  await t.bridge.drain();
+  assert.equal(t.posts.length, posted, 'nothing about the failed delivery is posted');
+  assert.equal(t.logs.find((e) => e.event === 'deliver-failed').error, 'busy', 'the code, not the message');
+  assert.ok(!JSON.stringify(t.logs.filter((e) => e.event === 'deliver-failed')).includes('/home/op'), 'no error message text is logged');
 
   t.bridge.store.putPosted('b0|s1|gone', { ...t.store.posted('b0|s1|req1'), key: 'gone', ref: { channel: 'C0', ts: 'card2' }, item: { ...typed, key: 'gone', source: 'hook' } });
   await t.bridge.handleReply('slack', { ...press(3), ts: 'card2' });
@@ -156,19 +161,22 @@ test('an agent is addressed only with "name:" or "@name", not by a bare first wo
   assert.equal(byName('alpha'), null);
 });
 
-test('a top-level channel message prompts the one session-scoped binding, and is ignored when two compete', async () => {
+test('a top-level channel message prompts the one session-scoped binding, also when a second binding reaches the same agent', async () => {
   const t = setup();
   const prompts = [];
   t.host.prompt = async (s, body) => { prompts.push({ id: s.id, body }); };
-  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'run the tests')), { prompted: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'run the tests')), { queued: 's1' });
+  await t.bridge.drain();
   assert.deepEqual(prompts, [{ id: 's1', body: 'run the tests' }]);
 
   t.store.putBinding({
     id: 'b1', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'session', id: 's1' },
     events: ['input-required'], allowedUsers: ['U1'], approvals: false, createdAt: 'x',
   });
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { ignored: 'no-target' });
-  assert.equal(prompts.length, 1, 'nothing was sent to either session');
+  // Two bindings, one agent: the channel still reaches exactly one session, so it takes the message.
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { queued: 's1' });
+  await t.bridge.drain();
+  assert.equal(prompts.length, 2);
 });
 
 test('an answer in flight is claimed in memory only, and a failed answer leaves the card answerable', async () => {
@@ -224,14 +232,16 @@ test('an unaddressed message in a channel with several agents is skipped silentl
   assert.deepEqual(out, { refused: 'no-agent-named' });
   assert.equal(t.prompts.length, 0, 'sent to no agent');
   assert.equal(t.posts.length, 0, 'nothing is said in the channel');
+  assert.equal(t.ephemerals.length, 1, 'the sender alone is told, once');
   const log = t.logs.find((e) => e.reason === 'no-agent-named');
   assert.ok(log && !JSON.stringify(log).includes('run the tests'), 'logged without the text');
 });
 
 test('a named agent gets the message and only that agent; an unknown name is skipped', async () => {
   const t = several();
-  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha: hi')), { prompted: 's1' });
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, '@beta hi')), { prompted: 's2' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha: hi')), { queued: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, '@beta hi')), { queued: 's2' });
+  await t.bridge.drain();
   assert.deepEqual(t.prompts, [{ id: 's1', body: 'hi' }, { id: 's2', body: 'hi' }], 'each message reached one agent');
   const posted = t.posts.length;
   assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'ghost: hi')), { refused: 'no-agent-named' });
@@ -252,7 +262,7 @@ test('a group binding covering two sessions skips an unaddressed message too', a
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
   assert.equal(t.posts.length, 0);
   assert.equal(t.prompts.length, 0);
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { queued: 's2' });
 });
 
 test('a session binding plus a group reaching another agent: unaddressed is skipped, named still goes', async () => {
@@ -263,15 +273,16 @@ test('a session binding plus a group reaching another agent: unaddressed is skip
   assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'hello')), { refused: 'no-agent-named' });
   assert.equal(t.prompts.length, 0, 'the one direct agent does not take it');
   assert.equal(t.posts.length, 0);
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { prompted: 's2' });
-  assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'alpha: hello')), { prompted: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'beta: hello')), { queued: 's2' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(3, 'alpha: hello')), { queued: 's1' });
 });
 
 test('a single session binding still takes an unaddressed message', async () => {
   const t = setup();
   const prompts = [];
   t.host.prompt = async (s, body) => { prompts.push(body); };
-  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha hello')), { prompted: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', text(1, 'alpha hello')), { queued: 's1' });
+  await t.bridge.drain();
   assert.deepEqual(prompts, ['alpha hello']);
 });
 
@@ -282,7 +293,8 @@ const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 async function requestIdOf(t, event) {
   const seen = [];
   t.host.prompt = async (s, body, opts) => { seen.push(opts); };
-  assert.deepEqual(await t.bridge.handleReply('slack', event), { prompted: 's1' });
+  assert.deepEqual(await t.bridge.handleReply('slack', event), { queued: 's1' });
+  await t.bridge.drain();
   assert.equal(seen.length, 1);
   return seen[0].requestId;
 }
@@ -297,8 +309,8 @@ test('the request id follows the message, not the delivering event', async () =>
   const t = setup();
   const msg = { channel: 'C0', ts: '1700000000.000100' };
   const first = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev1' });
-  const retried = await requestIdOf(t, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev2-retry' });
-  assert.equal(retried, first, 'the same message delivered under another event id (after a restart, when the in-memory duplicate list no longer holds it) keeps the id');
+  const retried = await t.bridge.handleReply('slack', { ...text(1, 'run the tests'), ...msg, messageId: 'Ev2-retry' });
+  assert.deepEqual(retried, { ignored: 'duplicate' }, 'the same message under another event id is refused by its request id, not delivered twice');
 
   const other = setup();
   assert.equal(await requestIdOf(other, { ...text(1, 'run the tests'), ...msg, messageId: 'Ev9' }), first, 'a fresh router agrees');
@@ -349,12 +361,13 @@ test('the prompted log carries the request id the host received', async () => {
   assert.ok(!JSON.stringify(t.logs).includes('run the tests'), 'no message text in the log');
 });
 
-test('reply-failed carries the request id when sending a prompt failed', async () => {
+test('deliver-failed carries the request id when sending a prompt failed', async () => {
   const t = setup();
   let sent;
   t.host.prompt = async (s, body, opts) => { sent = opts.requestId; throw new Error('boom'); };
   await t.bridge.handleReply('slack', { ...text(1, 'hi'), ts: '1700000000.000100' });
-  assert.equal(t.logs.find((e) => e.event === 'reply-failed').requestId, sent);
+  await t.bridge.drain();
+  assert.equal(t.logs.find((e) => e.event === 'deliver-failed').requestId, sent);
 });
 
 test('reply-failed has no request id when no prompt was sent', async () => {

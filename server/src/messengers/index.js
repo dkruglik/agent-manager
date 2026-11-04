@@ -12,16 +12,24 @@ import { SlackAdapter } from './adapters/slack.js';
  * @typedef {object} Adapter The messenger contract (docs/messengers.md, "Adding a messenger").
  * @property {() => boolean} configured  True when its tokens are set.
  * @property {(hooks: {
- *   onReply: (r: {channel: string, ts: string, thread: string|null, user: {id: string, name?: string},
+ *   onReply: (resolves once the event is durable, so the adapter acks it only then; a rejection leaves it
+ *     unacked and the service redelivers) (r: {channel: string, ts: string, thread: string|null, user: {id: string, name?: string},
  *     messageId: string, optionId?: string, text?: string}) => Promise<unknown>,
  *   onCommand: (c: {channel: string, user: {id: string, name?: string}, text: string}) => Promise<string>,
  *   onStatus: (s: {connected: boolean, error: string|null}) => void,
+ *   onConnect: (called once per new connection, not on a service-requested refresh: messages sent while the
+ *     socket was down may be missing, so the bridge reads history) () => Promise<void>,
  *   log: (entry: object) => void,
  * }) => void} start
  * @property {() => Promise<void>} [stop]
  * @property {(target: {channel: string, thread: string|null}, card: object) => Promise<{channel: string, ts: string}>} post
  *   Throws on failure; an error's `publicMessage`, if set, may be shown in Settings.
  * @property {(ref: {channel: string, ts: string}, card: object) => Promise<void>} update
+ * @property {(e: {channel: string, user: string, text: string}) => Promise<void>} postEphemeral
+ *   Shows `text` in the channel to one user only.
+ * @property {(q: {channel: string, thread?: string, oldest?: string}) => Promise<object[]>} [history]
+ *   Messages after `oldest` (exclusive), oldest first, in the shape of an `onReply` event, bot messages left out.
+ *   `thread` reads that thread's replies instead of the channel. Needed for backfill.
  */
 
 /** @type {Record<string, (config: object) => Adapter>} */
@@ -44,7 +52,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(ADAPTERS).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = new MessengerBridge({ host, store, adapters, log, settleMs: config.finishedDelayMs });
+  const bridge = new MessengerBridge({ host, store, adapters, log, dataDir, settleMs: config.finishedDelayMs });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);
@@ -78,7 +86,10 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
       return store.saved();
     },
     remove(id) {
+      const removed = store.binding(id);
       if (!store.removeBinding(id)) throw notFound();
+      // Thread state stays while another binding in the channel still reaches the session.
+      try { bridge.threads.forget(removed); } catch (e) { log({ event: 'forget-failed', binding: id, error: e.message }); }
       return { ok: true };
     },
     // A Claude hook asks for a chat decision; { output: null } means none.

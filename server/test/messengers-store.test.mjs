@@ -298,3 +298,72 @@ test('malformed saved data on disk is dropped without setting the file aside or 
   fs.writeFileSync(file, JSON.stringify({ bindings: [good], saved: [1] }));
   assert.deepEqual(new BindingStore(file).saved(), {}, 'a non-object saved is empty');
 });
+
+test('a messengers.json without thread state loads with empty sections, and writes them back', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-oldfile-'));
+  const file = path.join(dir, 'messengers.json');
+  const good = { id: 'b1', adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'group', id: 'g1' }, events: ['finished'], allowedUsers: [], approvals: false };
+  fs.writeFileSync(file, JSON.stringify({ bindings: [good], posted: {}, seen: { 'b1|s1': 'a:1' } }));
+  const store = new BindingStore(file);
+  assert.deepEqual(store.bindings(), [good]);
+  for (const s of ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'reach']) assert.deepEqual(store.stateKeys(s), [], s);
+  assert.equal(store.state('roots', 'slack|C1|s1'), null);
+  store.patchState({ roots: { 'slack|C1|s1': [{ ts: '1.1', at: 5, count: 1 }] }, channelMarks: { 'slack|C1': '1.1' } });
+  const again = new BindingStore(file);
+  assert.deepEqual(again.state('roots', 'slack|C1|s1'), [{ ts: '1.1', at: 5, count: 1 }]);
+  assert.equal(again.seen('b1|s1'), 'a:1', 'other keys are kept');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  again.patchState({ roots: { 'slack|C1|s1': null } });
+  assert.equal(new BindingStore(file).state('roots', 'slack|C1|s1'), null, 'null deletes');
+  assert.throws(() => again.patchState({ nope: { k: 1 } }), /unknown state section/);
+});
+
+test('malformed thread state on disk is dropped quietly, and the caps hold', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-state-'));
+  const file = path.join(dir, 'messengers.json');
+  const warn = t.mock.method(console, 'warn', () => {});
+  const root = (i) => ({ ts: `r${i}`, at: i, count: 1 });
+  fs.writeFileSync(file, JSON.stringify({
+    bindings: [],
+    roots: {
+      'a|C|s1': [...Array.from({ length: 25 }, (_, i) => root(i)), null, { ts: 'x' }, { ts: 'y', at: 'now', count: 1 }, { ts: 'z', at: 1, count: -1 }],
+      'a|C|s2': 'nope', 'a|C|s3': [{ ts: 'x' }],
+    },
+    threadMarks: { 'a|C|s1': '9.9', 'a|C|s2': 5, 'a|C|s3': '' },
+    channelMarks: { 'a|C': '9.9', 'a|D': {} },
+    deliveredTs: {
+      'a|C': [...Array.from({ length: 60 }, (_, i) => ({ ts: `d${i}`, sessionId: 's1' })), { ts: 'bad' }, 'x'],
+      'a|D': 'x',
+    },
+    recent: {
+      'a|C|s1': { lastSrc: 'src', texts: ['1', '2', 'x'.repeat(3000), '4', 7] },
+      'a|C|s2': 'x', 'a|C|s3': { texts: 'x', lastSrc: 3 },
+    },
+    reach: { 'a|C': 2, 'a|D': 'many', 'a|E': -1 },
+  }));
+  const store = new BindingStore(file);
+  assert.equal(warn.mock.callCount(), 0, 'dropped state entries are not worth a warning');
+  assert.equal(fs.readdirSync(dir).length, 1, 'and the file is not set aside');
+  const list = store.state('roots', 'a|C|s1');
+  assert.deepEqual([list.length, list[0].ts, list.at(-1).ts], [20, 'r5', 'r24']);
+  assert.deepEqual(store.stateKeys('roots'), ['a|C|s1']);
+  assert.deepEqual(store.stateKeys('threadMarks'), ['a|C|s1']);
+  assert.deepEqual(store.stateKeys('channelMarks'), ['a|C']);
+  const delivered = store.state('deliveredTs', 'a|C');
+  assert.deepEqual([delivered.length, delivered[0].ts, delivered.at(-1).ts], [50, 'd10', 'd59']);
+  assert.deepEqual(store.stateKeys('deliveredTs'), ['a|C']);
+  const recent = store.state('recent', 'a|C|s1');
+  assert.deepEqual(recent.texts.map((x) => x.length), [1, 2048, 1], 'last 3 strings, each cut at 2 KB');
+  assert.deepEqual(store.state('recent', 'a|C|s3'), { lastSrc: '', texts: [] });
+  assert.deepEqual(store.stateKeys('reach'), ['a|C']);
+});
+
+test('transcript is an event a binding can opt into, and never a default', () => {
+  const input = { adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'group', id: 'g1' }, allowedUsers: ['U1'] };
+  const fresh = validateBinding(input, { adapters: ['slack'] });
+  assert.deepEqual(fresh.events, ['input-required', 'finished']);
+  const opted = validateBinding({ ...input, events: ['transcript'] }, { adapters: ['slack'] });
+  assert.deepEqual(opted.events, ['transcript']);
+  const kept = validateBinding({ approvals: true }, { adapters: ['slack'], existing: opted });
+  assert.deepEqual(kept.events, ['transcript']);
+});

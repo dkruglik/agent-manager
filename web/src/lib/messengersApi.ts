@@ -9,7 +9,7 @@ const requestJson = async <T>(input: string, init: RequestInit = {}): Promise<T>
   return decodeResponse<T>(await fetch(input, { ...init, headers }));
 };
 
-export type MessengerEvent = 'input-required' | 'finished';
+export type MessengerEvent = 'input-required' | 'finished' | 'transcript';
 export interface MessengerBinding {
   id: string; adapter: string; target: { channel: string };
   scope: { type: 'session' | 'group'; id: string };

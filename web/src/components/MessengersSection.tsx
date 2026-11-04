@@ -8,7 +8,9 @@ import { MessengerSavedTargets } from './MessengerSavedTargets';
 
 // Settings → General → Messengers. Connects a Slack channel (or another
 // messenger) to a session or a group; see docs/messengers.md for setup.
-const EVENT_LABELS: Record<MessengerEvent, string> = { 'input-required': 'needs input', finished: 'finished work' };
+const EVENT_LABELS: Record<MessengerEvent, string> = {
+  'input-required': 'needs input', finished: 'finished work', transcript: 'full transcript (sends agent output to Slack)',
+};
 
 function adapterHelp(a: MessengerAdapterStatus) {
   if (!a.configured) return <>Set <span className="mono">SLACK_BOT_TOKEN</span> and <span className="mono">SLACK_APP_TOKEN</span> and restart.</>;
