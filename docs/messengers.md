@@ -19,6 +19,16 @@ answer from the chat:
 | A plain message in a single-agent channel | Sent to that agent as a normal prompt |
 | `/am status` | Lists agents in scope and their state |
 
+A prompt from chat carries a request id: a version 8 UUID derived from the
+adapter, the channel, and the message `ts`. The same message keeps the same id
+even after a restart or once the in-memory list of handled event ids has
+dropped it, so shared Codex, which takes only a UUID and records one receipt
+per id, treats it as the same request. Codex's app-server takes
+`clientUserMessageId` as a plain string (checked against codex-cli 0.166.0's
+generated schema). A message with text but without a `ts` is not sent; the log
+records `refused` with reason `no-ts`. A blank message is ignored without a
+log.
+
 A card closes itself when its dialog is answered anywhere else (terminal,
 reader, another chat). A closed card loses its buttons; a late click gets
 "This request is already closed."

@@ -7,7 +7,18 @@ import { noticeCard, reviewable, TOO_LONG } from './cards.js';
 // binding's allowed users and the privacy lock before anything reaches a session.
 
 const SEEN_MESSAGES = 500;
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+const LOW_NIBBLE = 0x0f;
+const VERSION_8 = 0x80;
+const LOW_6_BITS = 0x3f;
+const VARIANT_10 = 0x80;
+// Shared Codex (CodexInput.send) needs a UUID; a Slack retry or a re-read of the same message must give the same id.
+export const requestIdFor = (adapterId, channel, ts) => {
+  const b = crypto.createHash('sha256').update(`${adapterId}:${channel}:${ts}`).digest().subarray(0, 16);
+  b[6] = (b[6] & LOW_NIBBLE) | VERSION_8; // RFC 9562 version 8 (custom, name-based)
+  b[8] = (b[8] & LOW_6_BITS) | VARIANT_10; // RFC 9562 variant 10xx
+  const h = b.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
 
 export class ReplyRouter {
   /**
@@ -129,7 +140,10 @@ export class ReplyRouter {
       if (posted?.kind === 'input') return await this.answer(found, binding, session, r, text, reply);
       return await this.prompt(adapterId, binding, session, r, text, reply);
     } catch (e) {
-      this.log({ event: 'reply-failed', binding: binding.id, session: session.id, error: e.message });
+      this.log({
+        event: 'reply-failed', binding: binding.id, session: session.id,
+        ...(e.requestId ? { requestId: e.requestId } : {}), error: e.message,
+      });
       // Only errors written for the operator are shown (a 4xx ApiError, like the API's error envelope);
       // anything else may carry paths or internals.
       const shown = (e instanceof ApiError && e.statusCode < 500) || e.userFacing;
@@ -156,10 +170,19 @@ export class ReplyRouter {
   }
 
   async prompt(adapterId, binding, session, r, text, reply) {
-    if (!text.trim()) return { ignored: 'empty' };
-    const requestId = `msg-${sha(`${adapterId}:${r.channel}:${r.messageId || r.ts}`)}`;
-    await this.host.prompt(session, text.trim(), { requestId, user: r.user });
-    this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id });
+    const body = text.trim();
+    if (!body) return { ignored: 'empty' };
+    // The id follows the Slack message; without a ts there is nothing stable to derive it from.
+    if (!r.ts) {
+      this.log({ event: 'refused', reason: 'no-ts', binding: binding.id, session: session.id });
+      return { ignored: 'no-ts' };
+    }
+    const requestId = requestIdFor(adapterId, r.channel, r.ts);
+    try { await this.host.prompt(session, body, { requestId, user: r.user }); } catch (e) {
+      e.requestId = requestId; // handle() logs it with reply-failed
+      throw e;
+    }
+    this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id, requestId });
     await reply(`➡️ Sent to *${session.name}*.`);
     return { prompted: session.id };
   }
