@@ -100,8 +100,9 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
 
 - **Install.** The `Dockerfile` installs cursor-agent 2026.10.22-27dcf5f from
   `downloads.cursor.com` into `/opt/cursor-agent/<version>`. Cursor publishes no
-  checksum, so the SHA-256 pins the tarball as downloaded on 2026-11-03, and a
-  mismatch fails the build. `entrypoint.sh` writes `cursor-agent` and `agent`
+  checksum, so the SHA-256 pins the tarball as downloaded on 2026-11-03. A
+  mismatch fails the build, and so does a matching tarball that does not unpack
+  or run `--version`. A failed download leaves the image without the agent. `entrypoint.sh` writes `cursor-agent` and `agent`
   wrappers in `$AM_LOCAL/bin`, which comes before `~/.local/bin` on PATH, so
   the pin wins over a hand install in the durable HOME. The hand install is
   left in place. The wrappers also keep Node's compile cache on local disk.
@@ -137,11 +138,13 @@ Because hooks do not fire and the cursor is hidden, two things are read from
 the visible text (`server/test/fixtures/cursor-screens.json`, captured at
 120x40 on 2026.10.22):
 
-- **Approval badge.** `runner.cursorApprovalOnScreen` matches the `Run this
-  command?` row together with a `→ Run (once)` option row below it or the
-  `Waiting for approval...` status, so the question quoted in a reply is not a
-  hit. It is the `native` poll of the input-required tracker; its token hashes
-  the `$  <command>` row, so a new command shows again after a dismissed one.
+- **Approval badge.** The input-required tracker's `native` poll is
+  `runner.cursorNativePoll`: it reads the screen, keeps its last answer when a
+  read throws, and logs the first failure. `runner.cursorApprovalOnScreen`
+  matches the `Run this command?` row together with a `→ Run (once)` option row
+  below it or the `Waiting for approval...` status, so the question quoted in a
+  reply is not a hit. Its token hashes the `$  <command>` row, so a new command
+  shows again after a dismissed one.
 - **Empty composer** (`emptyCursorComposer`, so `promptDetector` is on). The
   bottom-most `→` row is the composer: `→ Plan, search, build anything` on a
   fresh chat and `→ Add a follow-up` after a turn mean empty. Typed text, the

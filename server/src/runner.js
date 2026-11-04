@@ -1845,7 +1845,11 @@ export function cursorNativePoll(getText, log) {
     try {
       last = cursorApprovalOnScreen(getText());
     } catch (error) {
-      if (!logged) { logged = true; log(error && error.message ? error.message : String(error)); }
+      if (!logged) {
+        logged = true;
+        const message = error && error.message ? error.message : String(error);
+        log(message);
+      }
     }
     return last;
   };
