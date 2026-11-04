@@ -76,7 +76,8 @@ sends it one message:
 - The message uses the Overview reply box's delivery path (`deliver()` in
   `index.js`), so submit confirmation applies. It is sent once per boot, only to
   panes that boot started, and never to shells (their command is simply gone),
-  Files, Trace or remote panes. A failed delivery is logged and not retried.
+  Files, Trace or remote panes. A failed delivery is logged, as the error code
+  only (an `input-line-busy` message quotes the terminal), and not retried.
 - "Stopped before the restart" means stopped as of the last snapshot. A session
   stopped less than 30 s before the shutdown can still be revived and told.
 

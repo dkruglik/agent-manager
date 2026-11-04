@@ -140,3 +140,26 @@ test('submit confirmation: not confirmed, not submitted and a stop are typed; a 
   assert.match(stopped.message, /stopped while its prompt/);
   assert.equal(stopped.typed, true);
 });
+
+test('a pty write that throws marks nothing as typed, on the plain path and on the OpenCode path', async () => {
+  as('hermes', 'composer');
+  const s = make('hermes');
+  runner.ensureRunning(s);
+  assert.ok(await ready(s.id), 'the fake composer never became ready');
+  const dead = () => { throw Object.assign(new Error('write EIO'), { code: 'EIO' }); };
+  runner.__hostForTest(s.id).pty.write = dead;
+  const plain = await fails(runner.sendInput(s.id, 'never reaches the terminal'));
+  assert.equal(plain.message, 'write EIO');
+  assert.equal(plain.typed, undefined, 'the first write threw: nothing was typed, a retry is safe');
+  runner.stop(s.id);
+
+  as('opencode', 'silent');
+  const t = make('opencode');
+  runner.ensureRunning(t);
+  assert.ok(await painted(t.id, '┃'), 'the fake box never painted');
+  runner.__hostForTest(t.id).pty.write = dead;
+  const opencode = await fails(runner.sendInput(t.id, 'nor this one', { confirmEcho: true }));
+  assert.equal(opencode.message, 'write EIO');
+  assert.equal(opencode.typed, undefined);
+  runner.stop(t.id);
+});

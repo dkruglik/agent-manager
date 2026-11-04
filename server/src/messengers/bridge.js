@@ -68,7 +68,7 @@ export class MessengerBridge {
     });
     // The old `seen` marks become outbound records before the first tick (outbound.js migrateSeen).
     migrateSeen(store);
-    this.outbound = { host, store, adapters, threads: this.threads, filter, settled: (s) => this.settled(s), log, now: () => this.now() };
+    this.outbound = { host, store, adapters, threads: this.threads, filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now() };
     this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
       host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
@@ -165,14 +165,16 @@ export class MessengerBridge {
     }
   }
 
-  // True once a session has sat in `waiting` for the settle window, and only
-  // for a while after: a reply lands in the transcript within moments of the
-  // turn ending, and an idle agent should not cost a read every few seconds.
-  settled(s) {
+  // True once a session has sat in `waiting` for the settle window. The finished card also stops at the
+  // end of the look window (`bounded`): a reply lands in the transcript within moments of the turn ending,
+  // and an idle agent should not cost a read every few seconds. The transcript mirror is unbounded, so
+  // what was written during a lock, an outage or a backoff still goes out after it; its revision check
+  // is a stat, which keeps an idle session cheap.
+  settled(s, { bounded = true } = {}) {
     if (s.state !== 'waiting' || s.inputRequired) { this.waitingSince.delete(s.id); return false; }
     if (!this.waitingSince.has(s.id)) this.waitingSince.set(s.id, this.now());
     const settledFor = this.now() - this.waitingSince.get(s.id);
-    return settledFor >= this.settleMs && settledFor <= this.settleMs + this.lookForMs;
+    return settledFor >= this.settleMs && (!bounded || settledFor <= this.settleMs + this.lookForMs);
   }
 
   async tick() {
@@ -215,7 +217,9 @@ export class MessengerBridge {
   noteOutcome(binding, failure) {
     if (!failure) { this.failing.delete(binding.id); return; }
     const count = (this.failing.get(binding.id)?.count || 0) + 1;
-    const wait = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (count - 1));
+    // A rate-limited adapter names the wait (slack.js `retryAfter`, seconds); otherwise the backoff doubles.
+    const asked = Number.isFinite(failure.retryAfter) ? failure.retryAfter * 1000 : 0;
+    const wait = Math.min(BACKOFF_MAX_MS, Math.max(asked, BACKOFF_MIN_MS * 2 ** (count - 1)));
     this.failing.set(binding.id, { count, error: publicError(failure), retryAt: this.now() + wait });
   }
 

@@ -313,7 +313,8 @@ async function tellOutcome(id, send, { runId = runIdOf(id), signal = null, ready
     await new Promise((r) => setTimeout(r, pollMs));
   }
   try { await send(getSession(id), CONTINUE_TEXT, { runId, signal }); } catch (e) {
-    console.error(`[revive] ${getSession(id)?.name || id}: continue message not delivered:`, e && e.message);
+    // The code or the error name only: input-line-busy and friends quote terminal text in their message.
+    console.error(`[revive] ${getSession(id)?.name || id}: continue message not delivered:`, e?.code ?? e?.name);
     return 'gave-up';
   }
   return 'sent';
@@ -406,7 +407,7 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
       if (started && carryOn && send && p.tell) {
         tellOutcome(p.id, send, { runId: runIdOf(p.id), signal: lock?.signal || null, readyMs })
           .then((result) => { if (result === 'sent') console.log(`[revive] ${p.name}: told to continue`); return result; })
-          .catch((e) => { console.error(`[revive] ${p.name}: continue message not delivered:`, e && e.message); return 'gave-up'; })
+          .catch((e) => { console.error(`[revive] ${p.name}: continue message not delivered:`, e?.code ?? e?.name); return 'gave-up'; })
           .then((result) => { release(); settle(p.id, result); });
       } else { release(); settle(p.id, 'skipped'); }
     }, i * gapMs);

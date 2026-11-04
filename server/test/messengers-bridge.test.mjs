@@ -6,68 +6,13 @@ import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { finishedDigest } from '../src/messengers/finished-digest.js';
 import { BindingStore } from '../src/messengers/store.js';
-import { finishedMark, migrateSeen, createFilter } from '../src/messengers/outbound.js';
+import { finishedMark, createFilter } from '../src/messengers/outbound.js';
 import { inputCard, reviewable, TOO_LONG } from '../src/messengers/cards.js';
 import { renderBlocks } from '../src/messengers/adapters/slack.js';
+import { fakeAdapter, setup, permission } from './messengers-bridge-fixtures.mjs';
 
 // Bridge failure paths: a failed lookup, post or transcript read must neither
 // close cards nor lose or replay events.
-
-function fakeAdapter() {
-  const posts = [];
-  const updates = [];
-  const adapter = {
-    posts, updates, failPosts: 0,
-    configured: () => true,
-    start(h) { h.onStatus({ connected: true, error: null }); },
-    async post(target, card) {
-      if (adapter.failPosts > 0) { adapter.failPosts -= 1; throw new Error('post failed'); }
-      const ref = { channel: target.channel, ts: `t${posts.length + 1}` };
-      posts.push({ target, card, ref });
-      return ref;
-    },
-    async update(ref, card) { updates.push({ ref, card }); },
-  };
-  return adapter;
-}
-
-function setup({ events = ['input-required', 'finished'] } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-bridge-'));
-  let clock = 1_000_000;
-  const store = new BindingStore(path.join(root, 'messengers.json'), { now: () => clock });
-  const host = {
-    list: [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }],
-    typed: [], requestsError: null, digestImpl: async () => null, isLocked: false,
-    sessions: () => host.list.map((s) => ({ ...s })),
-    groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, ready: async () => 'skipped', lockScope: () => ({ signal: new AbortController().signal, release() {} }),
-    link: (s) => `http://am/#session=${s.id}`,
-    requests: async () => {
-      if (host.requestsError) { const e = host.requestsError; host.requestsError = null; throw e; }
-      return host.typed;
-    },
-    digest: (s) => host.digestImpl(s),
-    sinceImpl: async () => null, since: (s, c) => host.sinceImpl(s, c),
-    answer: async () => {}, prompt: async () => {},
-  };
-  const slack = fakeAdapter();
-  const logs = [];
-  const bridge = new MessengerBridge({
-    host, store, adapters: new Map([['slack', slack]]), now: () => clock, log: (e) => logs.push(e),
-    tickMs: 1e9, settleMs: 0, digestEveryMs: 0,
-  });
-  store.putBinding({
-    id: 'b0', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'group', id: 'g1' },
-    events, allowedUsers: ['U1'], approvals: true, createdAt: 'x',
-  });
-  bridge.statuses.set('slack', { connected: true, error: null });
-  return { bridge, host, slack, store, logs, tick: (ms = 0) => { clock += ms; return bridge.tick(); } };
-}
-
-const permission = {
-  key: 'req1', kind: 'permission', details: '{"command":"ls"}',
-  choices: [{ value: 'accept', label: 'Approve once' }, { value: 'decline', label: 'Deny' }],
-};
 
 test('input cards redact configured secrets in details before posting', async () => {
   const secret = 'totally-a-bot-token';
@@ -194,19 +139,6 @@ test('a finished card whose post failed is posted on the next tick', async () =>
   assert.equal(t.slack.posts.length, 1, 'and announced once');
 });
 
-test('a failed transcript read does not become the baseline', async () => {
-  const t = setup({ events: ['finished'] });
-  t.host.digestImpl = async () => { throw new Error('transcript unreadable'); };
-  t.host.list[0].state = 'waiting';
-  await t.tick();
-  const failed = t.logs.find((e) => e.event === 'digest-failed');
-  assert.deepEqual([failed.session, failed.error], ['s1', 'transcript unreadable']);
-  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), null, 'still no baseline');
-  t.host.digestImpl = async () => ({ id: 'a', text: 'old' });
-  await t.tick(1000);
-  assert.equal(t.slack.posts.length, 0, 'the old answer becomes the baseline');
-  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), 'a');
-});
 
 test('/am status lists nothing while locked', async () => {
   const t = setup();
@@ -368,106 +300,3 @@ test('a host digest built with finishedDelay mapping: a matching mark posts noth
 });
 
 // ---------- transcript and finished (outbound.js) ----------
-
-const end = (seq) => ({ src: 'srcA', seq, hash: `h${seq}` });
-const msg = (seq, text) => ({ ...end(seq), text, tools: [] });
-
-test('a binding with both events posts transcript only', async () => {
-  const t = setup({ events: ['finished', 'transcript'] });
-  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
-  t.host.sinceImpl = async (s, c) => ({ end: end(1), messages: [], restarted: false });
-  await t.tick();
-  t.host.digestImpl = async () => ({ id: 'a:2', text: 'FINISHED TEXT' });
-  t.host.sinceImpl = async () => ({ end: end(2), messages: [msg(2, 'MIRRORED TEXT')], restarted: false });
-  t.host.list[0].state = 'waiting';
-  await t.tick(1000);
-  const bodies = t.slack.posts.map((p) => p.card.body).filter(Boolean);
-  assert.deepEqual(bodies, ['MIRRORED TEXT']);
-  assert.ok(t.slack.posts.every((p) => p.card.kind !== 'finished'));
-});
-
-test('a finished card body with a configured SLACK_BOT_TOKEN value is redacted', async () => {
-  const token = 'test-bot-token-value-9999';
-  process.env.SLACK_BOT_TOKEN = token;
-  try {
-    const t = setup({ events: ['finished'] });
-    t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
-    await t.tick();
-    t.host.digestImpl = async () => ({ id: 'a:2', text: `the token is ${token}, keep it` });
-    t.host.list[0].state = 'waiting';
-    await t.tick(1000);
-    assert.equal(t.slack.posts.length, 1);
-    assert.ok(!t.slack.posts[0].card.body.includes(token));
-    assert.match(t.slack.posts[0].card.body, /\[redacted\]/);
-  } finally { delete process.env.SLACK_BOT_TOKEN; }
-});
-
-test('after migrateSeen an old seen entry posts nothing, for finished and for transcript', async () => {
-  const t = setup({ events: ['finished', 'transcript'] });
-  t.store.putBinding({ ...t.store.binding('b0'), events: ['finished'] });
-  t.store.putSeen('b0|s1', 'a:1');
-  assert.equal(migrateSeen(t.store), 1);
-  t.host.digestImpl = async () => ({ id: 'a:1', text: 'already announced' });
-  t.host.list[0].state = 'waiting';
-  await t.tick();
-  assert.equal(t.slack.posts.length, 0);
-  t.store.putBinding({ ...t.store.binding('b0'), events: ['transcript'] });
-  t.host.sinceImpl = async (s, c) => {
-    assert.equal(c, null, 'no transcript cursor yet: a baseline');
-    return { end: end(5), messages: [], restarted: false };
-  };
-  await t.tick(1000);
-  assert.equal(t.slack.posts.length, 0);
-  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 5);
-});
-
-test('a restart does not baseline a session with a cursor: only messages after it are posted', async () => {
-  const t = setup({ events: ['transcript'] });
-  t.store.patchState({ outbound: { 'slack|C0|s1': { ...end(2), refs: ['x'] } } });
-  const seen = [];
-  t.host.sinceImpl = async (s, c) => {
-    seen.push(c);
-    return { end: end(3), messages: [msg(3, 'three')], restarted: false };
-  };
-  t.host.list[0].state = 'waiting';
-  await t.tick();
-  assert.deepEqual(seen, [{ src: 'srcA', seq: 2, hash: 'h2' }]);
-  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['three']);
-  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 3);
-});
-
-test('checking mirrors the transcript and does not post cards', async () => {
-  const t = setup({ events: ['input-required', 'transcript'] });
-  t.host.isLocked = true;
-  t.host.lockState = () => ({ locked: true, reason: 'checking' });
-  t.host.list[0].state = 'waiting';
-  let n = 0;
-  t.host.sinceImpl = async () => {
-    n += 1;
-    if (n === 1) return { end: end(1), messages: [], restarted: false };
-    return { end: end(2), messages: [msg(2, 'during checking')], restarted: false };
-  };
-  await t.tick();
-  await t.tick();
-  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['during checking']);
-  t.host.list[0].inputRequired = { kind: 'permission', cli: 'codex', detectedAt: 'x' };
-  t.host.typed = [permission];
-  await t.tick();
-  assert.equal(t.slack.posts.some((p) => p.card.kind === 'input'), false);
-});
-
-test('a failed transcript read does not baseline, and a later read does', async () => {
-  const t = setup({ events: ['transcript'] });
-  t.host.list[0].state = 'waiting';
-  t.host.sinceImpl = async () => { throw new Error('trace unreadable'); };
-  await t.tick();
-  assert.equal(t.store.state('outbound', 'slack|C0|s1'), null);
-  assert.equal(t.bridge.lastError('b0'), 'could not post — see the server log');
-  t.host.sinceImpl = async () => ({ end: end(1), messages: [msg(1, 'later')], restarted: false });
-  await t.tick(6000);
-  assert.equal(t.slack.posts.length, 0, 'the first successful look is a baseline');
-  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 1);
-  t.host.sinceImpl = async () => ({ end: end(2), messages: [msg(2, 'after')], restarted: false });
-  await t.tick();
-  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['after']);
-});

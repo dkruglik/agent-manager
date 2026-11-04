@@ -1,13 +1,15 @@
 # Messengers: Slack (and others) as a two-way channel
 
-**Status:** phase 2 implemented — Slack adapter, typed answers for shared Codex,
-Claude Code permission prompts and questions answered from chat (opt-in per
-binding), free-text prompts for every agent CLI (2026-10-29). Saved channels
-and users (2026-11-03).
+**Status:** implemented as of 2026-11-04 — Slack adapter, typed answers for
+shared Codex, Claude Code permission prompts and questions answered from chat
+(opt-in per binding), free-text prompts for every agent CLI, saved channels and
+users, the chat prompt outbox, and the opt-in `transcript` mirror of an agent's
+messages into its thread, with the credential filter.
 
 Connect a chat channel to one agent or to a whole group. The channel then gets a
-card when an agent **needs input** and when it **finishes a turn**, and you can
-answer from the chat:
+card when an agent **needs input** and when it **finishes a turn** (or, opt-in,
+a mirror of every message the agent writes: `transcript`), and you can answer
+from the chat:
 
 | In the chat | What happens in Agent Manager |
 | --- | --- |
@@ -33,6 +35,9 @@ it stay inert). There is no "Sent to …" notice: the quote
 is the confirmation. The `finished` card and question and approval cards stay
 **top-level** channel posts, as before (the optional `transcript` event posts into the thread, see below), so their notifications do not change.
 An open question is therefore answered at the top level, in the card's thread.
+
+A threaded reply that was also sent to the channel (`thread_broadcast`) routes
+like any other reply in that thread.
 
 A message is routed in this order:
 
@@ -61,8 +66,9 @@ with `not-in-channel`, whatever thread it was in. Then the usual refusals run
 (allowed users, a missing agent, the privacy lock).
 
 A root takes at most **200** bridge messages (the quote, plus each delivered
-reply in the thread). Once it is full, or when a top-level message arrives
-after the root was idle for **12 hours**, the next message opens a new root. The
+reply in the thread, and each `transcript` mirror post). Once it is full, or
+when a top-level message or a mirror post arrives after the root was idle for
+**12 hours**, the next message opens a new root. The
 agent keeps its **20** newest roots; older ones drop out and stop routing.
 
 When a channel that reached one agent starts to reach two or more, the bridge
@@ -103,7 +109,8 @@ never message text. The rules are in `server/src/delivery-outcome.js`.
 - **submitted** (never replayed): Codex answered `codex-send-uncertain` (which
   an existing `sending` receipt also produces) or `codex-request-conflict`;
   `typeAndSubmit` marked the error `typed` because the first byte already went
-  to the terminal, including `input-not-ready` after that byte,
+  to the terminal (a `pty.write` that threw is not a byte: the flag is set after
+  the write returns), including `input-not-ready` after that byte,
   `input-not-confirmed` and `input-not-submitted`; the remote's `append`
   threw.
 
@@ -111,8 +118,10 @@ A Slack prompt to a remote agent longer than the remote message limit
 (32 KB) is cut and ends with a line `[truncated: the Slack message was longer
 than 32 KB]`; the remote's other callers still cut silently.
 
-An unexpected error with no code resolves `pending` with reason `error` and is
-logged once, without the text.
+An unexpected error with no code resolves with reason `error` and is logged
+once, without the text. Its state follows the runtime like any other error:
+`submitted` for a remote (`append` may have written part of the file),
+`submitted` for a pane only when the error carries `typed`, otherwise `pending`.
 
 Known limits: Gemini, OpenClaw and fx have no `promptDetector`, so their
 prompts are typed into whatever is on screen, including an open dialog.
@@ -150,13 +159,16 @@ the id there, so a restart deletes the row instead of sending the same bytes
 again (`already-delivered`). A send that stays `pending` removes the id, so the
 next drain tries again. A `delivered` outcome then deletes the row file, quotes
 a top-level message into the agent's root and advances the watermarks, the
-delivered top-level `ts` set and the agent's last 3 texts. The id is recorded
-before the delete so a crash or a failed delete cannot send the text again.
-A row that becomes `submitted` is likewise recorded
-first in a `submittedIds` set (never evicted; losing an id could replay a prompt),
-so it stays `submitted` after a
-restart even if rewriting its file failed; the rewrite is retried on later
-ticks. A session already sending is skipped on a tick while others proceed,
+delivered top-level `ts` set and the agent's last 3 texts. The id was claimed
+before the send, so a crash or a failed delete cannot send the text again.
+A row that becomes `submitted` is recorded in a `submittedIds` set right after
+the send (never evicted; losing an id could replay a prompt), so it stays
+`submitted` after a restart even if rewriting its file failed; the rewrite is
+retried on later ticks. If the `submittedIds` write itself fails, it is
+retried on every tick (`submitted-record-failed`, logged once), and the
+delivered-id claim is kept until it lands, so neither this process nor a
+restart sends the text again. A session already sending is skipped on a tick
+while others proceed,
 and the 24-hour expiry runs even while a send is stuck. A temp file left in
 the directory by a crash is deleted at startup; a symlinked directory is
 refused (`outbox-unsafe`, messages stay unacked) and a looser than `0700` one
@@ -166,11 +178,24 @@ of an agent carries the preamble. The set is checked before a
 row is written, so a Slack retry of a delivered or still-waiting message
 writes nothing (log `duplicate`, nothing is sent twice).
 
+A row that leaves **without being delivered** (refused live or at delivery,
+dropped by a lock or because its agent went away, expired, or deleted in Slack)
+is recorded as settled before its file is removed, in the `settledIds` set of
+the channel (`adapter|channel` → request ids, 500 at most, oldest dropped). A
+message that is read again, by a Slack retry or by backfill, finds its id there
+and writes nothing. A file that cannot be deleted does not resurrect the row:
+the id is already settled, so the next start drops the file
+(`already-settled`), and the delete is retried on every tick
+(`row-delete-failed`, logged once). A message refused before any row exists
+(not allowed, no agent named, locked) is settled the same way.
+
 Before each send the sender and scope are checked again. If the sender is no
 longer allowed, or no binding in the channel reaches the agent any more, the
 row is deleted, the message's thread gets "Not delivered — <reason>." and the
 log records `refused`. A `pending` row older than 24 hours is deleted and its
-thread gets "Not delivered — still waiting after 24h."; a `submitted` row older
+thread gets "Not delivered — still waiting after 24h." (held back while the
+privacy lock is on or `checking`, and posted on unlock, once per thread); a
+`submitted` row older
 than 24 hours is deleted with one `expired` log line and nothing is posted. A
 reply under a top-level message that is still waiting routes to its agent.
 Removing a binding deletes an agent's rows only when no other binding in the
@@ -212,7 +237,8 @@ lock** is any lock whose reason is not `checking`.
   the manager unlocks, each affected thread gets one line, "Not delivered
   (locked)." The thread list is kept in memory only: a restart during a real
   lock loses the line, because the rows are already gone. `submitted` rows are
-  kept.
+  kept. The "still waiting after 24h" line of a row that expires during a lock
+  or `checking` goes out on the unlock with these.
 - **`checking`** (the first privacy verdict is still in flight). A prompt from
   an allowed sender is saved like any other and waits; the drain sends nothing
   and nothing is deleted, so a restart keeps the rows. Answers to question and
@@ -276,7 +302,13 @@ sees.
   is posted. A session that already has a stored cursor is not baselined again
   after a restart; the messages strictly after the cursor are posted.
 - It waits for the same settle delay as `finished`
-  (`MESSENGER_FINISHED_DELAY_MS`), so a streaming answer is posted once.
+  (`MESSENGER_FINISHED_DELAY_MS`), so a streaming answer is posted once. Unlike
+  `finished`, it has **no upper bound**: the session only has to be `waiting`
+  with no open dialog, for at least the settle delay. What was written during a
+  lock, a Slack outage or a back-off is therefore posted once it ends, however
+  long it took, and the next `waiting` is not needed. The trace revision check
+  is a stat, so an idle session costs no parse. (`finished` looks only for 60 s
+  after the delay, by default.)
 - At most **5 messages per tick and session**. Older ones collapse into one line,
   "N earlier messages — open in Agent Manager." (with the link when
   `AM_PUBLIC_URL` is set). The collapsed messages are not posted later.
@@ -287,19 +319,37 @@ sees.
   (the limit is counted after Slack's escaping, and a split prefers a newline).
   A message of more than 8 parts is cut with a final "… N more characters" line.
 - If the last posted message grows (same position, new text), its **last part is
-  edited in place** with `chat.update`. Earlier parts and older messages are never
-  rewritten. A restart or collapse line is not edited.
+  edited in place** with `chat.update` and the parts it did not have are posted.
+  Earlier parts and older messages are never rewritten. A restart or collapse
+  line is not edited. "Grows" is checked: the new text must continue the old
+  text (trailing whitespace aside), or, for a message that was only tool calls,
+  include its tools. Another message at the same position (a compaction inside
+  the same file) is posted as a **new** message and the old Slack message stays.
+  A version this process never saw (after a restart) counts as another message.
+  If an edited message needs fewer parts than were posted, each remaining part is
+  updated in order, the extra ones are changed to "(edited — see above)", and
+  the edit counts toward the call budget.
+- A failure halfway through a message of several parts keeps the parts already
+  posted: the cursor holds their `ts` values under a `partial:` hash, and the
+  next tick continues with the next part instead of posting the message again.
 - A turn that only called tools posts one line, "Used tools: Bash, Edit".
 - When the conversation changes (a different transcript, or the transcript is
   shorter than the cursor) it posts one line, "Conversation restarted.", stores the
   new end, and continues from there. A compaction inside the same Claude file is
   not detected as a restart unless the message count drops.
 - **Nothing is posted under a real privacy lock, and the cursor does not move.**
-  The messages are posted after unlock (under the 5-message cap). The startup
-  `checking` state is not a lock for this purpose.
-- Slack's HTTP 429 is honoured: the call waits `Retry-After` seconds (at most 60)
-  and retries, twice at most, then fails like any Slack error and the binding backs
-  off.
+  The messages are posted after unlock (under the 5-message cap), however long the
+  lock lasted. The startup `checking` state is not a lock for this purpose: the
+  mirror posts during it, while cards (`input-required`, `finished`) wait until
+  the verdict is in.
+- Slack's HTTP 429 is honoured, but a tick serves every channel and does not
+  sleep long. A `Retry-After` of up to 5 seconds is waited out and the call is
+  retried, twice at most. A longer one (capped at 60 s) fails the call at
+  once with the public error `rate-limited` carrying `retryAfter` (seconds), and
+  the binding is skipped for that long, or for its usual back-off if that is
+  longer. Other channels carry on.
+- The plain `text` of every post (notifications) is escaped like the blocks: `&`,
+  `<` and `>` in agent text, so `<!channel>` and `<@U…>` stay text.
 
 ### Credential filter
 
@@ -308,12 +358,15 @@ Every text posted by `transcript`, the body of every `finished` card, and the
 through `createCredentialFilter` (`audit-credentials.js`) with the values this
 process holds, read in `config.js` (`knownSecretValues`): `SLACK_BOT_TOKEN`,
 `SLACK_APP_TOKEN`, `HF_TOKEN` (also `HUGGING_FACE_HUB_TOKEN`, `HF_API_TOKEN`),
-`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, and every provider
+`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, every provider
 key the CLI catalog lists (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `NOUS_API_KEY`, `AI_GATEWAY_API_KEY`).
+`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `NOUS_API_KEY`, `AI_GATEWAY_API_KEY`),
+and the value of any other environment variable whose name ends in `TOKEN`,
+`API_KEY`, `SECRET` or `PASSWORD` (case-insensitive).
 They are read once when the bridge starts; values shorter than 8 characters are
 ignored. The filter replaces a value with `[redacted]`, and the text is filtered
-before it is split, so a secret cannot straddle two parts.
+before it is split or clipped (a `finished` card is clipped to 2800 characters),
+so a secret cannot straddle two parts or the clip.
 
 **This is not a general secret scanner.** Without a known value it catches only
 documented token shapes, complete private key blocks and labeled assignments
@@ -521,12 +574,17 @@ watermark per agent and thread (the last delivered reply `ts`), a watermark per
 channel (the last delivered top-level `ts`); a watermark never moves backwards, the delivered top-level `ts` set
 per channel (50 at most, oldest dropped, each pointing at its agent), the
 channel's last agent count, the delivered request ids per channel (500 at most,
-oldest dropped), and per agent the last 3 delivered texts with the
+oldest dropped), the settled request ids per channel (`settledIds`, same cap:
+messages refused, dropped, expired, deleted or announced as skipped without
+being delivered), and per agent the last 3 delivered texts with the
 `lastSrc` they were delivered under. **These texts are Slack user content kept
 in `messengers.json`**, each cut at 2 KB (2048 characters). A file from an
 older version, without these keys, loads as empty state; malformed entries are
-dropped without a warning. Removing a binding deletes an agent's thread state
-only when no other binding in the channel still reaches that agent. It also
+dropped without a warning. Removing a binding, or changing its channel or
+scope, deletes the thread state of the agents it no longer reaches, but only
+when no other binding in the channel still reaches that agent. The file is
+written to a temp file that is fsynced before the rename, and the directory is
+fsynced after it (a directory that cannot be synced is a warning). It also
 holds the saved channels and users per messenger,
 `saved: {slack: {channels: [{id, name}], users: [{id, name}]}}`; malformed saved
 entries are dropped on load without setting the file aside.
@@ -557,7 +615,11 @@ is `404 not-found` ([error contract](api-errors.md)).
 
 The same persist-then-ack applies to these message subtypes. Bot messages and
 the bot's own user are filtered for every one, other subtypes are dropped, and
-message text is never logged.
+message text is never logged. A thread reply sent with "Also send to channel"
+(`thread_broadcast`) is an ordinary threaded reply. A live message's
+`messageId` is `channel:ts`, the same as its history copy's, so a message read
+again after a reconnect is recognised; an edit or delete event keeps the Slack
+event id.
 
 - An edit (`message_changed`) replaces the text of a row still `pending`:
   the frozen text, preamble and sender prefix are rewritten in the same file,
@@ -568,10 +630,16 @@ message text is never logged.
   earlier message):" and quotes the replacement. A Codex receipt is never
   touched. An edit of a message that was never accepted is ignored with an
   `edit-ignored` log line, as is a change that alters no text (a link unfurl).
+  The edit takes effect while the row waits for the agent's `ready`: the text is
+  read when the send starts, and only a send already inside the host has its
+  bytes. A second edit of the same message replaces the edit row that is still
+  waiting instead of queueing another.
 - A delete (`message_deleted`) drops a `pending` row, which is then never
-  sent. If the message was already `submitted` or delivered the row stays and
-  its thread gets one line: "The Slack message was deleted after it was sent
-  to the agent."
+  sent, including one still waiting for `ready`. If the message was already
+  `submitted` or delivered the row stays and its thread gets one line: "The
+  Slack message was deleted after it was sent to the agent." Under a real
+  privacy lock that line is not posted, and not posted later either (it would
+  reveal the lock); during `checking` it is posted.
 - A file share, or a message with files, delivers its text plus "A file was
   attached in Slack and was not delivered." A message of only files delivers
   just that sentence. Files are never downloaded.
@@ -590,9 +658,13 @@ without a watermark is not read.
 A human message older than 1 hour is not delivered. Each user it affects gets
 one ephemeral notice per channel ("N messages you sent while Agent Manager was
 offline were not delivered."), not one per message, and only for messages
-that were not already delivered. A newer message goes through the same path as
+that were not already delivered, submitted or settled. A message a notice was
+sent for is settled, so the next reconnect does not announce it again. A
+newer message goes through the same path as
 a live event: routing, `refusal()`, the delivered-id check and the row write.
-A second pass over the same history therefore sends nothing twice, and raw
+A message that was refused while the Space was locked is settled too: after the
+unlock it is neither delivered nor answered a second time. A second pass over
+the same history therefore sends nothing twice, and raw
 history is never copied into an agent any other way. A failed history read is
 logged (`backfill-failed`) and is not treated as an empty history. Other
 channels and threads are still read; then backfill throws so the next connect
@@ -666,12 +738,18 @@ real Claude.
   defaults, baselines, settle window, redelivery, allow-list, group addressing,
   typed questions, opt-in approvals, cards closed elsewhere, the lock, restart,
   `/am status`).
-- `messengers-outbound.test.mjs`: the `transcript` mirror (cursor, caps, splitting,
-  in-place updates, credential filter, lock, `seen` migration) and Slack's 429.
-  `transcript-since.test.mjs`: the reader behind it, on a real Claude transcript.
-- `messengers-bridge.test.mjs`: failure paths (lookups, posts, transcript
-  reads, a corrupt `messengers.json`), escaping and review limits of approval
-  details, back-off and the public `lastError`.
+- `messengers-outbound.test.mjs`: the `transcript` mirror (cursor, caps,
+  splitting, in-place updates, credential filter, lock, `seen` migration).
+  `messengers-outbound-parts.test.mjs`: edits versus replacements, a failure
+  halfway through a split message, a message that shrinks.
+  `messengers-slack-limits.test.mjs`: Slack's 429, the escaped fallback text and
+  the known secret values. `transcript-since.test.mjs`: the reader behind it, on
+  a real Claude transcript. Fixtures: `messengers-outbound-fixtures.mjs`.
+- `messengers-bridge.test.mjs`: failure paths (lookups, posts, a corrupt
+  `messengers.json`), escaping and review limits of approval details, back-off
+  and the public `lastError`. `messengers-bridge-transcript.test.mjs`: the
+  mirror and the `finished` card through `bridge.tick()` (the settle window after
+  a long lock, `checking`, the clip boundary).
 - `messengers-cards.test.mjs`: which buttons a card carries, invisible
   characters shown escaped, and the unreviewable-details refusal.
 - `messengers-backfill.test.mjs`: backfill from the watermarks (what is read,
@@ -680,10 +758,23 @@ real Claude.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
 - `messengers-store.test.mjs`: binding and saved-list validation, and what is
-  kept on disk (saved lists survive a reload and a binding's removal; thread
-  state loads from an older file and drops malformed entries).
+  kept on disk (thread state loads from an older file and drops malformed
+  entries, the fsynced write). `messengers-store-saved.test.mjs`: saved lists
+  survive a reload and a binding's removal.
 - `messengers-outbox.test.mjs`: the prompt row (persist-then-ack, drain order,
   submitted and pending, edits and deletes, the ready wait).
+  `messengers-outbox-lifecycle.test.mjs` and
+  `messengers-outbox-ready-edits.test.mjs` hold the rest of that suite
+  (the row's life; edits and deletes while it waits for ready).
+  `messengers-outbox-settle.test.mjs`: failing bookkeeping and file deletes
+  (`settledIds`, `submittedIds` retries, stuck files), and a row that changes
+  while it waits.
+- `messengers-settled.test.mjs`: a refused or dropped message is not delivered
+  or announced again by backfill, also across a lock.
+- `messengers-slack-events.test.mjs`: message events and history entries as
+  one reply shape (`thread_broadcast`, `channel:ts` ids, edits, deletes).
+- `delivery-outcome-commit.test.mjs`: the commit point of a prompt for a
+  never-started session, against the real session store.
 - `messengers-outbox-load.test.mjs`: startup load of the row directory (malformed
   rows, unreadable directory).
 - `messengers-outbox-delivery.test.mjs`: outbox drain with real `deliverToSession`
@@ -694,8 +785,10 @@ real Claude.
   and drops.
 - `messengers-threads.test.mjs`: routing (card threads, bot threads, names, the
   only agent), the binding pick, root rotation and the 20-root cap, the
-  ephemeral and channel notices, the recent texts, and thread state kept or
-  deleted when a binding is removed.
+  ephemeral and channel notices. `messengers-threads-state.test.mjs`: the recent
+  texts, and thread state kept or deleted when a binding is removed or moved.
+  `messengers-replies-routing.test.mjs` holds the routing half of the replies
+  suite.
 - `messengers-slack-protocol.test.mjs`: Slack rendering and escaping, Socket
   Mode acks and replies (bot filtering, edits, deletes, file shares, slash
   commands), `history`, the connect signal, and where the tokens are read.

@@ -144,3 +144,19 @@ test('two looks that share one parse call the reader once', async () => {
   assert.equal(a.end.seq, 1);
   assert.equal(b.end.seq, 1);
 });
+
+test('an updated message says whether it grew: extended text yes, a replacement or an unseen version no', async () => {
+  const msgs = [{ text: 'first answer', tools: [] }];
+  let rev = 1;
+  const make = () => createSince({
+    revisionOf: async () => String(rev), sourceOf: () => 'src',
+    readMessages: async () => ({ revision: String(rev), messages: structuredClone(msgs) }),
+  });
+  const since = make();
+  const base = (await since({ id: 'g' }, null)).end;
+  msgs[0] = { text: 'first answer, continued', tools: [] }; rev += 1;
+  assert.equal((await since({ id: 'g' }, base)).updated.grew, true);
+  msgs[0] = { text: 'a different message after a compaction', tools: [] }; rev += 1;
+  assert.equal((await since({ id: 'g' }, base)).updated.grew, false, 'not an extension of the one the cursor saw');
+  assert.equal((await make()({ id: 'g' }, base)).updated.grew, false, 'a fresh process never saw the cursor version');
+});

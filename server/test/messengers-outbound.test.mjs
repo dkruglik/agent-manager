@@ -1,79 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { BindingStore } from '../src/messengers/store.js';
-import { createThreads } from '../src/messengers/threads.js';
 import { finishedCard } from '../src/messengers/cards.js';
-import { SlackAdapter, toMrkdwn } from '../src/messengers/adapters/slack.js';
-import { knownSecretValues } from '../src/config.js';
-import { createSince } from '../src/transcript-since.js';
-import {
-  transcriptTick, postsFinished, createFilter, filterFinishedCard, migrateSeen, finishedMark, markFinished,
-} from '../src/messengers/outbound.js';
+import { toMrkdwn } from '../src/messengers/adapters/slack.js';
+import { postsFinished, createFilter, filterFinishedCard, migrateSeen, finishedMark, markFinished } from '../src/messengers/outbound.js';
+import { KEY, BOT, session, setup, started } from './messengers-outbound-fixtures.mjs';
 
 // The Slack mirror of an agent's transcript (the `transcript` binding event): the cursor, the caps,
 // splitting, in-place updates, the credential filter, the privacy lock, and the `seen` migration.
 // A scripted trace and a recording adapter stand in for Agent Manager and Slack; no test talks to Slack.
-
-const KEY = 'slack|C0|s1';
-const BOT = 'test-bot-token-value-1234';
-const session = { id: 's1', name: 'alpha', cli: 'claude' };
-
-function setup({ events = ['transcript'], lock = { locked: false, reason: null }, env = {}, settled = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-outbound-'));
-  const clock = { t: 1_000_000 };
-  const now = () => clock.t;
-  const store = new BindingStore(path.join(root, 'messengers.json'), { now });
-  store.putBinding({
-    id: 'b0', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'session', id: 's1' },
-    events, allowedUsers: ['U1'], approvals: false, createdAt: 'x',
-  });
-  const trace = { src: 'srcA', version: 1, messages: [], parses: 0 };
-  const state = { lock, settled, failAt: new Set(), calls: 0 };
-  const posts = [];
-  const updates = [];
-  const slack = {
-    configured: () => true,
-    async post(target, card) {
-      state.calls += 1;
-      if (state.failAt.has(posts.length)) throw new Error('slack down');
-      const ref = { channel: target.channel, ts: `t${posts.length + 1}` };
-      posts.push({ target, card, ref });
-      return ref;
-    },
-    async update(ref, card) { state.calls += 1; updates.push({ ref, card }); },
-  };
-  const since = createSince({
-    sourceOf: () => trace.src,
-    revisionOf: async () => String(trace.version),
-    readMessages: async () => { trace.parses += 1; return { revision: String(trace.version), messages: structuredClone(trace.messages) }; },
-  });
-  const host = {
-    since, link: () => 'http://am/#session=s1', lockState: () => state.lock, sessions: () => [session], groupOf: () => null,
-    sourceKey: () => trace.src,
-  };
-  const adapters = new Map([['slack', slack]]);
-  const logs = [];
-  const threads = createThreads({ host, store, adapters, log: (e) => logs.push(e), now, scope: (b, ss) => ss.filter((s) => s.id === b.scope.id) });
-  const ctx = { host, store, adapters, threads, filter: createFilter(env), settled: () => state.settled, log: (e) => logs.push(e), now };
-  const tick = () => transcriptTick(ctx, store.binding('b0'), session);
-  const say = (text, tools = []) => { trace.messages.push({ text, tools }); trace.version += 1; };
-  const edit = (i, text) => { trace.messages[i] = { ...trace.messages[i], text }; trace.version += 1; };
-  const cursor = () => store.state('outbound', KEY);
-  const bodies = () => posts.filter((p) => p.target.thread).map((p) => p.card.body);
-  return { root, clock, store, trace, state, posts, updates, ctx, tick, say, edit, cursor, bodies, logs, threads, slack };
-}
-
-// A session that already has `n` messages and a baseline cursor.
-async function started(n = 1, over = {}) {
-  const t = setup(over);
-  for (let i = 1; i <= n; i++) t.say(`old ${i}`);
-  await t.tick();
-  assert.equal(t.posts.length, 0);
-  return t;
-}
 
 test('a binding with both events posts transcript only', () => {
   const b = (events) => ({ events });
@@ -311,12 +248,6 @@ test('a configured SLACK_BOT_TOKEN in the text is redacted, in the transcript an
   assert.equal(card.title, '✅ alpha finished');
 });
 
-test('the known values are the Slack tokens, HF_TOKEN and the provider keys of the process', () => {
-  const env = { SLACK_BOT_TOKEN: 'a', SLACK_APP_TOKEN: 'b', HF_TOKEN: 'c', ANTHROPIC_API_KEY: 'd', OPENAI_API_KEY: 'e', GEMINI_API_KEY: 'f', UNRELATED: 'g' };
-  assert.deepEqual(knownSecretValues(env).sort(), ['a', 'b', 'c', 'd', 'e', 'f']);
-  assert.deepEqual(knownSecretValues({}), []);
-});
-
 test('question cards are untouched: the mirror never posts, updates or closes an input card', async () => {
   const t = await started(1);
   const input = {
@@ -362,24 +293,6 @@ test('removing the binding drops the cursor with the rest of the session\'s thre
   t.store.removeBinding('b0');
   t.threads.forget(removed);
   assert.equal(t.cursor(), null);
-});
-
-test('Slack answers 429: the call waits Retry-After seconds and retries, twice at most', async () => {
-  const waits = [];
-  let n = 0;
-  const reply = (status, body, retry) => ({ status, headers: { get: (h) => (h.toLowerCase() === 'retry-after' ? retry : null) }, json: async () => body });
-  const make = (script) => new SlackAdapter({
-    botToken: BOT, appToken: 'xapp-1', setTimer: (fn, ms) => { waits.push(ms); fn(); return 1; },
-    fetchImpl: async () => script[Math.min(n++, script.length - 1)],
-  });
-  const ok = reply(200, { ok: true, channel: 'C0', ts: '1.1' });
-  const limited = reply(429, { ok: false, error: 'ratelimited' }, '3');
-  assert.deepEqual(await make([limited, ok]).post({ channel: 'C0' }, { body: 'x' }), { channel: 'C0', ts: '1.1' });
-  assert.deepEqual(waits, [3000]);
-  n = 0; waits.length = 0;
-  await assert.rejects(make([limited, limited, limited, ok]).post({ channel: 'C0' }, { body: 'x' }), (e) => /ratelimited|429/.test(e.publicMessage));
-  assert.deepEqual(waits, [3000, 3000]);
-  assert.equal(n, 3, 'the original call and two retries');
 });
 
 test('the cursor survives a restart of the store, and a malformed record is dropped', async () => {

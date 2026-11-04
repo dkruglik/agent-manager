@@ -21,6 +21,9 @@ const SILENT_AFTER_MS = 120_000;
 
 const RATE_LIMIT_RETRIES = 2;
 const RETRY_AFTER_MAX_MS = 60_000;
+// A tick serves every channel, so a call sleeps only through a short Retry-After. A longer one is an error the
+// binding backs off on (bridge noteOutcome reads `retryAfter`), and the other channels carry on.
+const RETRY_SLEEP_MAX_MS = 5000;
 const retryAfterMs = (res) => {
   const raw = res.headers?.get?.('retry-after');
   const seconds = raw == null || raw === '' ? NaN : Number(raw);
@@ -85,7 +88,10 @@ export function renderBlocks(card) {
   return blocks;
 }
 
-const fallbackText = (card) => [card.title, card.body, card.mrkdwn].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
+// The plain text of a post (notifications, clients without blocks). Title and body are agent text, so they
+// are escaped like the blocks: `<!channel>` and `<@U…>` stay text. `mrkdwn` was escaped by its builder.
+const fallbackText = (card) => [card.title && escapeMrkdwn(card.title), card.body && escapeMrkdwn(card.body), card.mrkdwn]
+  .filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
 
 // Slack's Socket Mode envelope types that carry something for us.
 function interactiveReply(p) {
@@ -117,8 +123,9 @@ export class SlackAdapter {
 
   configured() { return !!(this.botToken && this.appToken); }
 
-  // A 429 carries Retry-After in seconds. The call waits that long (at most a minute) and tries again,
-  // twice at most; then the 429 is the error, like any other Slack answer.
+  // A 429 carries Retry-After in seconds. Up to 5 s the call waits and tries again, twice at most; then the
+  // 429 is the error, like any other Slack answer. A longer wait is not slept: the call throws at once with
+  // `code: 'rate-limited'` and `retryAfter` (seconds, at most 60).
   async call(method, body, token = this.botToken) {
     for (let retry = 0; ; retry++) {
       const form = FORM_METHODS.has(method);
@@ -127,9 +134,16 @@ export class SlackAdapter {
         headers: { authorization: `Bearer ${token}`, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8' },
         body: form ? new URLSearchParams(body || {}).toString() : JSON.stringify(body || {}),
       });
-      if (res.status === 429 && retry < RATE_LIMIT_RETRIES) {
-        await new Promise((resolve) => this.setTimer(resolve, retryAfterMs(res)));
-        continue;
+      if (res.status === 429) {
+        const wait = retryAfterMs(res);
+        if (wait > RETRY_SLEEP_MAX_MS) {
+          const message = `slack ${method}: rate-limited (retry in ${Math.ceil(wait / 1000)}s)`;
+          throw Object.assign(new Error(message), { publicMessage: message, code: 'rate-limited', retryAfter: wait / 1000 });
+        }
+        if (retry < RATE_LIMIT_RETRIES) {
+          await new Promise((resolve) => this.setTimer(resolve, wait));
+          continue;
+        }
       }
       let json;
       try { json = await res.json(); } catch (e) {

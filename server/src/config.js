@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execSync, execFile } from 'node:child_process';
+import { secretValues } from './secret-values.js';
 
 export const PORT = parseInt(process.env.PORT || '7860', 10);
 export function resolveBindHost(env = process.env) {
@@ -55,15 +56,9 @@ export function resolveMessengerConfig(env = process.env) {
 }
 export const MESSENGERS = resolveMessengerConfig();
 
-// Every secret the process holds that must never reach a chat: the Slack tokens, the Hugging Face token and
-// the provider keys the CLIs read (the `secrets` of CLIS, plus the alternative names isConfigured accepts).
+// Every secret the process holds that must never reach a chat (secret-values.js), given the CLI catalog.
 // docs/messengers.md: the credential filter of the `transcript` and `finished` posts is given these values.
-const EXTRA_SECRET_NAMES = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN', 'HF_API_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'GOOGLE_API_KEY'];
-export function knownSecretValues(env = process.env) {
-  const names = new Set([...EXTRA_SECRET_NAMES, ...CLIS.flatMap((c) => c.secrets || [])]);
-  return [...names].map((n) => env[n]).filter((v) => typeof v === 'string' && v.trim() !== '');
-}
+export const knownSecretValues = (env = process.env) => secretValues(CLIS, env);
 
 // A CLI's presence on PATH doesn't change while the process runs, but
 // cliCatalog() (called on every /api/clis) probed every CLI each time — ~16

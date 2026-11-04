@@ -70,6 +70,8 @@ const bashLaunch = `exec bash --rcfile ${shq(BASHRC)} -i`;
 // through a PTY, so unquoted-path breakage is otherwise invisible until a Shell
 // pane exits 127.
 export const __bashLaunchForTest = bashLaunch;
+/** The live host of a pane, so a test can break its pty. */
+export const __hostForTest = (id) => hosts.get(id);
 
 // ---------- session hosts (what replaced tmux) ----------
 //
@@ -2835,8 +2837,8 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
       const beforeOutput = host.outputSeq;
       let beforeScreen = '';
       try { beforeScreen = host.vt.getVisibleText(); } catch {}
-      wrote.any = true;
       host.pty.write(payload);
+      wrote.any = true; // after the write: one that threw typed nothing
       const attemptDeadline = Math.min(deadline, Date.now() + 1200);
       while (Date.now() < attemptDeadline) {
         if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
@@ -2851,8 +2853,8 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
     if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
     host.inputEchoed = true;
   } else {
-    wrote.any = true;
     host.pty.write(payload);
+    wrote.any = true;
   }
   if (confirm) return submitConfirmed(host, id, confirm, text);
   await new Promise((r) => setTimeout(r, 300));

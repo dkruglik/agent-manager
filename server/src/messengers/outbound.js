@@ -1,5 +1,6 @@
 import { createCredentialFilter } from '../audit-credentials.js';
 import { knownSecretValues } from '../config.js';
+import { PARTIAL_HASH as PARTIAL } from '../transcript-since.js';
 
 // The Slack mirror of an agent's transcript (the `transcript` binding event, docs/messengers.md): new
 // assistant messages go into the session's bot-owned thread (threads.js). Plain functions; the host,
@@ -127,23 +128,47 @@ function makePoster(ctx, binding, session) {
   };
 }
 
-// Edits the cursor message in place: its last ref takes the matching part, and parts it never had are posted.
-async function updateLast(ctx, poster, cursor, updated) {
-  const parts = shown(ctx, updated);
-  const refs = [...cursor.refs];
-  const partIndex = Math.min(refs.length, parts.length) - 1;
-  await poster.replace(refs.at(-1), parts[partIndex]);
-  for (const part of parts.slice(refs.length)) refs.push(await poster.send(part));
-  return refs;
-}
-
-async function postParts(poster, parts) {
-  const refs = [];
-  for (const part of parts) refs.push(await poster.send(part));
-  return refs;
-}
-
 const idOf = (m, refs) => ({ src: m.src, seq: m.seq, hash: m.hash, refs });
+
+// The cursor holds the PARTIAL-prefixed hash of a message whose parts are only partly posted, until the
+// last part is out. The next look then sees "this message changed" and continues from the next part instead of posting all again.
+const STUB = '(edited — see above)';
+
+// Posts the parts of `id`'s message that `refs` does not have yet. `progress` follows every part.
+async function postParts(poster, parts, id, progress, refs = []) {
+  const out = [...refs];
+  for (const part of parts.slice(out.length)) {
+    out.push(await poster.send(part));
+    progress.now = idOf({ ...id, hash: out.length < parts.length ? PARTIAL + id.hash : id.hash }, [...out]);
+  }
+  return out;
+}
+
+// The message at the cursor changed. Text that grew is edited in place: its last part is rewritten and the
+// parts it did not have are posted. A shorter one rewrites every part it has left and blanks the others.
+// Any other change (a compaction put another message at this seq) is a new message. Returns false when
+// the call budget of this tick does not cover it, so the look repeats on the next tick.
+async function applyEdit(ctx, poster, cursor, updated, progress) {
+  const id = { src: cursor.src, seq: updated.seq, hash: updated.hash };
+  const parts = shown(ctx, updated);
+  const refs = cursor.refs;
+  const resumed = cursor.hash.startsWith(PARTIAL);
+  if (!refs.length || !updated.grew) {
+    if (!poster.fits(parts.length)) return false;
+    progress.now = idOf(id, await postParts(poster, parts, id, progress));
+    return true;
+  }
+  if (parts.length < refs.length) {
+    if (!poster.fits(refs.length)) return false;
+    for (let i = 0; i < refs.length; i++) await poster.replace(refs[i], i < parts.length ? parts[i] : STUB);
+    progress.now = idOf(id, refs.slice(0, parts.length));
+    return true;
+  }
+  if (!poster.fits((resumed ? 0 : 1) + parts.length - refs.length)) return false;
+  if (!resumed) await poster.replace(refs.at(-1), parts[refs.length - 1]);
+  progress.now = idOf(id, await postParts(poster, parts, id, progress, refs));
+  return true;
+}
 
 // Posts what the since() result calls for, in order. `progress` always names the last thing fully posted.
 async function mirror(ctx, poster, binding, link, result, cursor, progress) {
@@ -152,17 +177,7 @@ async function mirror(ctx, poster, binding, link, result, cursor, progress) {
     progress.now = idOf(result.end, []);
     return;
   }
-  if (result.updated) {
-    const edited = { ...cursor, hash: result.updated.hash };
-    if (cursor.refs.length) {
-      progress.now = { ...edited, refs: await updateLast(ctx, poster, cursor, result.updated) };
-    } else {
-      // A restart line stores the new end with no Slack ts. The edited text still has to be posted.
-      const parts = shown(ctx, result.updated);
-      if (!poster.fits(parts.length)) return;
-      progress.now = { ...edited, refs: await postParts(poster, parts) };
-    }
-  }
+  if (result.updated && !(await applyEdit(ctx, poster, cursor, result.updated, progress))) return;
   const fresh = result.messages;
   const skipped = Math.max(0, fresh.length - MAX_NEW);
   if (skipped) {
@@ -172,7 +187,7 @@ async function mirror(ctx, poster, binding, link, result, cursor, progress) {
   for (const m of fresh.slice(skipped)) {
     const parts = shown(ctx, m);
     if (!poster.fits(parts.length)) return;
-    progress.now = idOf(m, await postParts(poster, parts));
+    progress.now = idOf(m, await postParts(poster, parts, m, progress));
   }
 }
 
