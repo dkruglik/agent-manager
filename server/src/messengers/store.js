@@ -11,7 +11,7 @@ import { SECTIONS, loadDelivery } from './delivery-state.js';
 // Tokens never live here: adapters read them from the environment, which is
 // where Space secrets and a VPS's systemd unit both put them.
 
-// `transcript` mirrors the agent's replies into a Slack thread and stands in for `finished`. It sends
+// `transcript` mirrors the agent's assistant messages into a Slack thread and stands in for `finished`. It sends
 // agent output to the channel, so a new binding does not get it unless it asks.
 export const EVENTS = ['input-required', 'finished', 'transcript'];
 const DEFAULT_EVENTS = ['input-required', 'finished'];
@@ -257,7 +257,7 @@ export class BindingStore {
     return Object.entries(this.data.posted).find(([, p]) => p.adapter === adapter && p.ref?.channel === channel && p.ref?.ts === ts) || null;
   }
 
-  // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
+  // seen: `${bindingId}|${sessionId}` → legacy reply identity. Read at startup for migrateSeen only; nothing writes it.
   seen(k) { return this.data.seen[k] ?? null; }
   seenKeys() { return Object.keys(this.data.seen); }
   putSeen(k, v) { this.commit({ ...this.data, seen: { ...this.data.seen, [k]: v } }); }

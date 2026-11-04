@@ -1,3 +1,6 @@
+/** Escapes &, < and > for Slack mrkdwn. */
+export const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 // Slack message events and history entries, turned into the replies the bridge takes:
 // `{ channel, ts, thread, user, messageId, text }`, plus `edit: { ts, editTs }` for an edit and
 // `deleted: { ts }` for a delete. A live event and a history entry go through the same filter, so a
@@ -59,11 +62,4 @@ export function messageReply(p, botUser) {
 export function historyReply(m, channel, thread, botUser) {
   if (thread && m.ts === thread) return null;
   return plain(m, channel, botUser, null);
-}
-
-/** Orders replies by their Slack ts (`seconds.micros`), exactly: the digits do not fit a double. */
-export function byTs(a, b) {
-  const [as, af = ''] = a.ts.split('.');
-  const [bs, bf = ''] = b.ts.split('.');
-  return (as.length - bs.length) || (as < bs ? -1 : as > bs ? 1 : 0) || (af.padEnd(9, '0') < bf.padEnd(9, '0') ? -1 : af.padEnd(9, '0') > bf.padEnd(9, '0') ? 1 : 0);
 }

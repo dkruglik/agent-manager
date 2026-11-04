@@ -340,6 +340,12 @@ test('malformed thread state on disk is dropped quietly, and the caps hold', (t)
       'a|C|s2': 'x', 'a|C|s3': { texts: 'x', lastSrc: 3 },
     },
     reach: { 'a|C': 2, 'a|D': 'many', 'a|E': -1 },
+    deliveredIds: { 'a|C': ['ok-id', 4, ''], 'a|D': 'nope' },
+    submittedIds: { 'a|C': [false, 'sub-id'] },
+    outbound: {
+      'a|C|s1': { src: 'src', seq: 2, hash: 'h', refs: ['1.0', 5], finished: 'fin' },
+      'a|C|s2': { src: 1, seq: 1, hash: 'h' },
+    },
   }));
   const store = new BindingStore(file);
   assert.equal(warn.mock.callCount(), 0, 'dropped state entries are not worth a warning');
@@ -356,6 +362,10 @@ test('malformed thread state on disk is dropped quietly, and the caps hold', (t)
   assert.deepEqual(recent.texts.map((x) => x.length), [1, 2048, 1], 'last 3 strings, each cut at 2 KB');
   assert.deepEqual(store.state('recent', 'a|C|s3'), { lastSrc: '', texts: [] });
   assert.deepEqual(store.stateKeys('reach'), ['a|C']);
+  assert.deepEqual(store.state('deliveredIds', 'a|C'), ['ok-id']);
+  assert.deepEqual(store.state('submittedIds', 'a|C'), ['sub-id']);
+  assert.deepEqual(store.state('outbound', 'a|C|s1').refs, ['1.0']);
+  assert.equal(store.state('outbound', 'a|C|s2'), null);
 });
 
 test('transcript is an event a binding can opt into, and never a default', () => {
@@ -366,4 +376,5 @@ test('transcript is an event a binding can opt into, and never a default', () =>
   assert.deepEqual(opted.events, ['transcript']);
   const kept = validateBinding({ approvals: true }, { adapters: ['slack'], existing: opted });
   assert.deepEqual(kept.events, ['transcript']);
+  assert.throws(() => validateBinding({ ...input, events: ['nope'] }, { adapters: ['slack'] }), /events/);
 });

@@ -104,3 +104,43 @@ test('a session without a transcript gives null', async () => {
   const { since } = counted();
   assert.equal(await since({ id: 's9', cli: 'claude', sessionUuid: 'ffffffff-2222-4333-8444-555555555555', path: 's9' }, null), null);
 });
+
+test('a cursor past the end of the same transcript is a restart', async () => {
+  write(say('m1', 'only'));
+  const { since } = counted();
+  const r = await since(session, { src, seq: 9, hash: 'old' });
+  assert.equal(r.restarted, true);
+  assert.deepEqual(r.messages, []);
+  assert.equal(r.end.seq, 1);
+});
+
+test('an assistant turn the harness marked as an error is a failure line, not dropped', async () => {
+  write(say('m1', 'before'), JSON.stringify({
+    type: 'assistant', timestamp: ts(), isApiErrorMessage: true, error: 'authentication_failed',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Login expired' }] },
+  }), say('m3', 'after'));
+  const { messages } = await readAssistantMessages(session);
+  assert.deepEqual(messages.map((m) => m.text), ['before', 'The assistant turn failed.', 'after']);
+});
+
+test('two looks that share one parse call the reader once', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let parses = 0;
+  const since = createSince({
+    revisionOf: async () => '1',
+    sourceOf: () => 'src',
+    readMessages: async () => {
+      parses += 1;
+      await gate;
+      return { revision: '1', messages: [{ text: 'a', tools: [] }] };
+    },
+  });
+  const flight = { id: 'flight' };
+  const both = Promise.all([since(flight, null), since(flight, null)]);
+  release();
+  const [a, b] = await both;
+  assert.equal(parses, 1);
+  assert.equal(a.end.seq, 1);
+  assert.equal(b.end.seq, 1);
+});

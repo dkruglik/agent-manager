@@ -174,10 +174,16 @@ test('readyAfterRevive: a CLI without a prompt detector, or a pane that is not r
 
 test('readyAfterRevive: the wait is bounded and stops when the lock signal aborts', async () => {
   const bounded = readyIo({ readyAfter: Infinity });
+  bounded.logs = [];
+  bounded.log = (e) => bounded.logs.push(e);
   let t = 0;
   bounded.now = () => (t += 1000);
-  assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, bounded, { readyMs: 5000 }), 'sent');
+  await assert.rejects(
+    () => readyAfterRevive({ id: 's1', cli: 'claude' }, bounded, { readyMs: 5000 }),
+    (e) => e.code === 'prompt-not-ready',
+  );
   assert.ok(bounded.polls >= 1 && bounded.polls < 10);
+  assert.equal(bounded.logs[0]?.event, 'ready-timeout');
   const aborted = readyIo({ readyAfter: Infinity });
   const c = new AbortController();
   aborted.sleep = async () => c.abort();

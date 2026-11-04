@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ApiError } from '../api-errors.js';
-import { noticeCard, reviewable, TOO_LONG } from './cards.js';
+import { postNotice, reviewable, TOO_LONG } from './cards.js';
 import { allowed } from './threads.js';
 
 // Inbound side of the bridge: a button press or a chat message becomes a typed
@@ -48,10 +48,8 @@ export class ReplyRouter {
     this.answering = new Set(); // posted keys with an answer in flight; never persisted, so a crash leaves the card open
   }
 
-  async say(adapterId, channel, thread, text) {
-    try { await this.adapters.get(adapterId)?.post({ channel, thread }, noticeCard(text)); } catch (e) {
-      this.log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
-    }
+  say(adapterId, channel, thread, text) {
+    return postNotice(this.adapters, adapterId, { channel, thread }, text, this.log);
   }
 
   // One log line per refusal, never the message text.

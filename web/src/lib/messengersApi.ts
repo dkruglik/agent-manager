@@ -13,6 +13,7 @@ export type MessengerEvent = 'input-required' | 'finished' | 'transcript';
 export interface MessengerBinding {
   id: string; adapter: string; target: { channel: string };
   scope: { type: 'session' | 'group'; id: string };
+  /** Non-empty subset. The server is the authority; `transcript` suppresses `finished` when posting. */
   events: MessengerEvent[]; allowedUsers: string[]; approvals: boolean;
   createdAt: string;
   /** The adapter's public error (a Slack error code) or a generic line while the binding's posts or

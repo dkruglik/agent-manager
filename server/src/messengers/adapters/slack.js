@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
-import { fromMrkdwn, historyReply, messageReply, byTs } from './slack-events.js';
+import { fromMrkdwn, historyReply, messageReply, escapeMrkdwn } from './slack-events.js';
+import { compareSlackTs } from '../delivery-state.js';
 
 export { fromMrkdwn };
 
@@ -31,8 +32,6 @@ const FORM_METHODS = new Set(['conversations.history', 'conversations.replies'])
 const HISTORY_PAGES = 5;
 const HISTORY_PAGE_SIZE = 200;
 const REFRESH = 'refresh requested'; // Slack's hourly `disconnect` frame; any other reconnect reason is a real one
-
-const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Slack's mrkdwn is not Markdown: bold is *x*, links are <url|text>, and
 // &, < and > must be escaped. Good enough for agent replies; code survives.
@@ -132,7 +131,11 @@ export class SlackAdapter {
         await new Promise((resolve) => this.setTimer(resolve, retryAfterMs(res)));
         continue;
       }
-      const json = await res.json().catch(() => ({}));
+      let json;
+      try { json = await res.json(); } catch (e) {
+        const message = `slack ${method}: bad response (HTTP ${res.status})`;
+        throw Object.assign(new Error(message), { publicMessage: message });
+      }
       if (!json.ok) {
         // Slack's error code is safe to show in Settings (bridge lastError); a network error is not marked.
         const message = `slack ${method}: ${String(json.error || `HTTP ${res.status}`).slice(0, 80)}`;
@@ -308,7 +311,7 @@ export class SlackAdapter {
       cursor = res.response_metadata?.next_cursor || '';
       if (!cursor) break;
     }
-    return out.sort(byTs);
+    return out.sort((a, b) => compareSlackTs(a.ts, b.ts));
   }
 
   // Visible to one user only; the bot token's chat:write scope covers it.

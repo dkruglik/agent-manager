@@ -6,7 +6,7 @@ import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { BindingStore } from '../src/messengers/store.js';
 import { requestIdFor, editRequestIdFor } from '../src/messengers/replies.js';
-import { addDeliveredId, DELIVERED_IDS_MAX } from '../src/messengers/delivery-state.js';
+import { addDeliveredId, addSubmittedId, DELIVERED_IDS_MAX } from '../src/messengers/delivery-state.js';
 import { PREAMBLE_HEAD } from '../src/messengers/outbox.js';
 import { createRow } from '../src/messengers/outbox-files.js';
 
@@ -199,6 +199,12 @@ test('the delivered-id set keeps the newest 500', () => {
   assert.equal(addDeliveredId(['a', 'b'], 'a').length, 2, 'no repeats');
 });
 
+test('submittedIds are never evicted from the channel set', () => {
+  let ids = [];
+  for (let i = 0; i < DELIVERED_IDS_MAX + 5; i += 1) ids = addSubmittedId(ids, `id-${i}`);
+  assert.equal(ids.length, DELIVERED_IDS_MAX + 5);
+});
+
 test('a reply under a still-waiting top-level message routes to its session', async () => {
   const t = setup({ sessions: ['s1', 's2'] });
   t.host.outcome = () => ({ state: 'pending', reason: 'busy' });
@@ -248,6 +254,22 @@ test('submitted is never sent again and drops silently after 24 hours', async ()
   assert.equal(t.logs.filter((e) => e.event === 'expired').length, 1);
   assert.equal(t.host.deliveries.length, 1);
   assert.equal(t.store.state('deliveredIds', 'slack|C0'), null, 'a submitted row is not delivered');
+});
+
+test('after a submitted row expires, a Slack redelivery with the same ts is ignored', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'submitted', reason: 'typed' });
+  await t.send(msg('10.1', 'hello'));
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.length, 1);
+  t.store.patchState({ submittedIds: { 'slack|C0': [requestIdFor('slack', 'C0', '10.1')] } });
+  t.clock.t += DAY + 1;
+  await t.bridge.drain();
+  assert.deepEqual(t.files(), []);
+  const res = await t.send({ ...msg('10.1', 'hello'), messageId: 'redeliver-1' });
+  assert.deepEqual(res, { ignored: 'duplicate' });
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.length, 1);
 });
 
 test('a rejected deliver is pending with reason error; locked holds the row', async () => {
@@ -642,4 +664,60 @@ test('a delete after delivery or submission leaves the row and posts one line', 
   assert.equal(t.files().length, 1, 'the submitted row stays');
   assert.equal(t.posts.filter((p) => p.card.body === DELETED_LINE).length, 2);
   assert.deepEqual(await t.send(deleted('55.5')), { ignored: 'unknown-message' });
+});
+
+test('the request id is claimed before the send and released when the send stays pending', async () => {
+  const t = setup();
+  const id = requestIdFor('slack', 'C0', '10.1');
+  let during = null;
+  t.host.deliver = async (s, { text, requestId }) => {
+    during = t.store.state('deliveredIds', 'slack|C0');
+    t.host.deliveries.push({ id: s.id, text, requestId });
+    return { state: 'pending', reason: 'busy' };
+  };
+  await t.send(msg('10.1', 'hi'));
+  await t.bridge.drain();
+  assert.ok(during?.includes(id));
+  assert.equal(t.store.state('deliveredIds', 'slack|C0'), null);
+  assert.equal(t.files().length, 1);
+});
+
+test('a new pane launch waits for ready again', async () => {
+  const t = setup();
+  t.host.launch = 'run-1';
+  t.host.runId = () => t.host.launch;
+  await t.send(msg('10.1', 'a'));
+  await t.bridge.drain();
+  await t.send(msg('10.2', 'b'));
+  await t.bridge.drain();
+  assert.deepEqual(t.host.readyCalls, ['s1']);
+  t.host.launch = 'run-2';
+  await t.send(msg('10.3', 'c'));
+  await t.bridge.drain();
+  assert.deepEqual(t.host.readyCalls, ['s1', 's1']);
+});
+
+test('a prompt that is not ready yet stays pending', async () => {
+  const t = setup();
+  t.host.readyImpl = async () => { const e = new Error('prompt not ready'); e.code = 'prompt-not-ready'; throw e; };
+  await t.send(msg('10.1', 'hi'));
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.length, 0);
+  assert.equal(t.files().length, 1);
+  assert.equal(t.row('10.1').state, 'pending');
+});
+
+test('an edit that arrives while the send is in flight stays unacked', async () => {
+  const t = setup();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  t.host.outcome = () => gate.then(() => ({ state: 'delivered' }));
+  await t.send(msg('10.1', 'old'));
+  const draining = t.bridge.drain();
+  for (let i = 0; i < 20 && t.host.deliveries.length === 0; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(t.host.deliveries.length, 1);
+  await assert.rejects(() => t.send(edited('10.1', '11.0', 'new')), (e) => e.persist === true);
+  release();
+  await draining;
+  assert.equal((await t.send(edited('10.1', '11.0', 'new'))).queued, 's1');
 });

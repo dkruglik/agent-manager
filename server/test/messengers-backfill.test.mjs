@@ -107,16 +107,27 @@ test('replies under a root and under a delivered ts are sent too, in ts order, w
   assert.match(t.ephemerals[0].text, /^1 message you sent/);
 });
 
-test('a failed fetch or accept is logged without text and does not stop the rest', async () => {
+test('a failed fetch is not an empty history: the rest is read, then backfill throws', async () => {
   const t = rig();
   t.answers.fn = ({ thread }) => { if (thread === '300.0') throw new Error('slack conversations.replies: ratelimited'); return thread ? [m(NEW2)] : [m(NEW1)]; };
   let n = 0;
   t.ctx.accept = async (id, r) => { t.accepted.push(r); if (++n === 1) throw new Error('outbox write failed'); return {}; };
-  await backfill(t.ctx);
+  await assert.rejects(() => backfill(t.ctx), (e) => e.event === 'backfill-failed');
   assert.deepEqual(t.accepted.map((r) => r.ts), [NEW1, NEW2]);
   assert.ok(t.logs.some((e) => e.event === 'backfill-failed' && e.thread === '300.0'));
   assert.ok(t.logs.some((e) => e.event === 'backfill-accept-failed'));
+  assert.ok(t.logs.some((e) => e.event === 'backfill'));
   assert.ok(!JSON.stringify(t.logs).includes('text 4999'));
+});
+
+test('a failed accept is not a successful backfill: backfill throws so the next connect retries', async () => {
+  const t = rig({ marks: false });
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });
+  t.answers.fn = () => [m(NEW1), m(NEW2)];
+  t.ctx.accept = async (id, r) => { t.accepted.push(r); throw new Error('outbox write failed'); };
+  await assert.rejects(() => backfill(t.ctx), (e) => e.event === 'backfill-failed' && e.acceptFailed);
+  assert.equal(t.accepted.length, 2);
+  assert.equal(t.logs.filter((e) => e.event === 'backfill-accept-failed').length, 2);
 });
 
 // With a real bridge behind accept: the delivered-id set makes a second pass a no-op.

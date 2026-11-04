@@ -28,7 +28,9 @@ export async function readAssistantMessages(session) {
     const page = await readTrace(session, { offset, limit: PAGE });
     ({ revision, total } = page);
     for (const m of page.turns) {
-      if (m.role !== 'assistant' || m.error) continue;
+      if (m.role !== 'assistant') continue;
+      // A failed turn's text can read like an answer. Show that it failed instead of dropping it.
+      if (m.error) { messages.push({ text: 'The assistant turn failed.', tools: [] }); continue; }
       const entry = { text: textOf(m), tools: toolsOf(m) };
       if (entry.text.trim() || entry.tools.length) messages.push(entry);
     }
@@ -44,7 +46,13 @@ const endOf = (src, all) => (all.length ? { src, seq: all.at(-1).seq, hash: all.
 /**
  * @param revisionOf `(session) => revision|null`, cheap.
  * @param readMessages `(session) => { revision, messages }`: the parse, called only when the revision moved.
- * @returns `since(session, cursor)`: `{ end, messages, restarted, updated? }`, or null without a transcript.
+ * @typedef {{src: string, seq: number, hash: string}} TranscriptCursor Logical position. `seq` is 1-based
+ *   among assistant messages that said something or called a tool; `seq` 0 is an empty transcript.
+ * @typedef {{src: string, seq: number, hash: string, text: string, tools: string[]}} AssistantMirrorMessage
+ * @typedef {{end: TranscriptCursor, messages: AssistantMirrorMessage[], restarted: boolean,
+ *   updated?: {seq: number, hash: string, text: string, tools: string[]}}} SinceResult
+ *   `updated` is the cursor message when its hash changed. It has no `src`; the cursor's `src` still applies.
+ * @returns {Promise<SinceResult|null>} `{ end, messages, restarted, updated? }`, or null without a transcript.
  *   `cursor` is `{ src, seq, hash }` or null. A null cursor is a baseline (the end, no messages, not a restart).
  *   Another `src`, or a `seq` past the end, is a restart (the end, no messages, `restarted: true`). Otherwise
  *   `messages` are those after `cursor.seq`, and `updated` is the cursor message when its hash changed.

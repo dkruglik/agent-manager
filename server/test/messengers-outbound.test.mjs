@@ -7,9 +7,10 @@ import { BindingStore } from '../src/messengers/store.js';
 import { createThreads } from '../src/messengers/threads.js';
 import { finishedCard } from '../src/messengers/cards.js';
 import { SlackAdapter, toMrkdwn } from '../src/messengers/adapters/slack.js';
+import { knownSecretValues } from '../src/config.js';
 import { createSince } from '../src/transcript-since.js';
 import {
-  transcriptTick, postsFinished, createFilter, knownValues, redactCard, migrateSeen, finishedMark, markFinished,
+  transcriptTick, postsFinished, createFilter, filterFinishedCard, migrateSeen, finishedMark, markFinished,
 } from '../src/messengers/outbound.js';
 
 // The Slack mirror of an agent's transcript (the `transcript` binding event): the cursor, the caps,
@@ -248,6 +249,19 @@ test('a transcript the session did not have before posts one restart line and th
   assert.deepEqual(t.bodies(), ['Conversation restarted.', 'next']);
 });
 
+test('an edit after a restart, when nothing was posted for that message, is posted', async () => {
+  const t = await started(1);
+  t.trace.src = 'srcB';
+  t.trace.messages = [{ text: 'fresh', tools: [] }];
+  t.trace.version += 1;
+  await t.tick();
+  assert.deepEqual(t.cursor().refs, []);
+  t.edit(0, 'fresh, longer');
+  await t.tick();
+  assert.ok(t.bodies().includes('fresh, longer'));
+  assert.ok(t.cursor().refs.length >= 1);
+});
+
 test('under a real lock nothing is posted and the cursor stays put', async () => {
   const t = await started(1);
   const before = t.cursor();
@@ -291,7 +305,7 @@ test('a configured SLACK_BOT_TOKEN in the text is redacted, in the transcript an
   assert.ok(!t.bodies()[0].includes(BOT) && !t.bodies()[0].includes('plain-openai-secret'));
   assert.match(t.bodies()[0], /\[redacted\]/);
   const filter = createFilter(env);
-  const card = redactCard(filter, finishedCard({ agent: session, link: null, text: `done, ${BOT} and ${env.HF_TOKEN}` }));
+  const card = filterFinishedCard(filter, finishedCard({ agent: session, link: null, text: `done, ${BOT} and ${env.HF_TOKEN}` }));
   assert.ok(!card.body.includes(BOT) && !card.body.includes(env.HF_TOKEN));
   assert.equal(card.kind, 'finished');
   assert.equal(card.title, '✅ alpha finished');
@@ -299,8 +313,8 @@ test('a configured SLACK_BOT_TOKEN in the text is redacted, in the transcript an
 
 test('the known values are the Slack tokens, HF_TOKEN and the provider keys of the process', () => {
   const env = { SLACK_BOT_TOKEN: 'a', SLACK_APP_TOKEN: 'b', HF_TOKEN: 'c', ANTHROPIC_API_KEY: 'd', OPENAI_API_KEY: 'e', GEMINI_API_KEY: 'f', UNRELATED: 'g' };
-  assert.deepEqual(knownValues(env).sort(), ['a', 'b', 'c', 'd', 'e', 'f']);
-  assert.deepEqual(knownValues({}), []);
+  assert.deepEqual(knownSecretValues(env).sort(), ['a', 'b', 'c', 'd', 'e', 'f']);
+  assert.deepEqual(knownSecretValues({}), []);
 });
 
 test('question cards are untouched: the mirror never posts, updates or closes an input card', async () => {

@@ -22,12 +22,11 @@ export const postsFinished = (binding) => binding.events.includes('finished') &&
 
 export const cursorKey = (adapter, channel, sessionId) => `${adapter}|${channel}|${sessionId}`;
 
-/** The secrets of this process the credential filter must catch by value (config.js knownSecretValues). */
-export const knownValues = (env = process.env) => knownSecretValues(env);
-export const createFilter = (env = process.env) => createCredentialFilter(knownValues(env));
+/** The credential filter for transcript text and finished-card bodies (config.js knownSecretValues). */
+export const createFilter = (env = process.env) => createCredentialFilter(knownSecretValues(env));
 
-/** A finished card with its body run through the filter. */
-export const redactCard = (filter, card) => (typeof card.body === 'string' ? { ...card, body: filter(card.body) } : card);
+/** Runs `filter` on a finished card body. */
+export const filterFinishedCard = (filter, card) => (typeof card.body === 'string' ? { ...card, body: filter(card.body) } : card);
 
 // ---------- the record: the transcript cursor and the last finished card ----------
 
@@ -74,8 +73,9 @@ export function splitText(text, max = PART_MAX) {
     if (/[\ud800-\udbff]/.test(rest[end - 1])) end -= 1;
     const nl = rest.lastIndexOf('\n', end - 1);
     const lineEnd = nl > end / 2 ? nl : -1;
-    parts.push(rest.slice(0, lineEnd >= 0 ? lineEnd : end));
-    rest = rest.slice(lineEnd >= 0 ? lineEnd + 1 : end);
+    const cutAt = lineEnd >= 0 ? lineEnd : end;
+    parts.push(rest.slice(0, cutAt));
+    rest = rest.slice(lineEnd >= 0 ? cutAt + 1 : cutAt);
   }
   return parts;
 }
@@ -131,7 +131,8 @@ function makePoster(ctx, binding, session) {
 async function updateLast(ctx, poster, cursor, updated) {
   const parts = shown(ctx, updated);
   const refs = [...cursor.refs];
-  await poster.replace(refs.at(-1), parts[Math.min(refs.length, parts.length) - 1]);
+  const partIndex = Math.min(refs.length, parts.length) - 1;
+  await poster.replace(refs.at(-1), parts[partIndex]);
   for (const part of parts.slice(refs.length)) refs.push(await poster.send(part));
   return refs;
 }
@@ -153,7 +154,14 @@ async function mirror(ctx, poster, binding, link, result, cursor, progress) {
   }
   if (result.updated) {
     const edited = { ...cursor, hash: result.updated.hash };
-    progress.now = cursor.refs.length ? { ...edited, refs: await updateLast(ctx, poster, cursor, result.updated) } : edited;
+    if (cursor.refs.length) {
+      progress.now = { ...edited, refs: await updateLast(ctx, poster, cursor, result.updated) };
+    } else {
+      // A restart line stores the new end with no Slack ts. The edited text still has to be posted.
+      const parts = shown(ctx, result.updated);
+      if (!poster.fits(parts.length)) return;
+      progress.now = { ...edited, refs: await postParts(poster, parts) };
+    }
   }
   const fresh = result.messages;
   const skipped = Math.max(0, fresh.length - MAX_NEW);
@@ -198,15 +206,23 @@ export async function transcriptTick(ctx, binding, session) {
   const cursor = stored?.src ? stored : null;
   if (cursor && !ctx.settled(session)) return;
   const result = await ctx.host.since(session, cursor && { src: cursor.src, seq: cursor.seq, hash: cursor.hash });
-  if (!result) return;
+  if (!result) {
+    const quiet = (ctx.quiet ??= new Set());
+    if (!quiet.has(session.id)) {
+      quiet.add(session.id);
+      ctx.log({ event: 'transcript-unread', session: session.id });
+    }
+    return;
+  }
   const poster = makePoster(ctx, binding, session);
   const progress = { now: cursor || idOf(result.end, []) };
-  let failure = null;
+  let mirrorError = null;
   if (cursor) {
-    try { await mirror(ctx, poster, binding, ctx.host.link(session), result, cursor, progress); } catch (e) { failure = e; }
+    try { await mirror(ctx, poster, binding, ctx.host.link(session), result, cursor, progress); } catch (e) { mirrorError = e; }
   }
+  let commitError = null;
   try {
     if (!same(progress.now, cursor) || poster.run.sent) await commit(ctx, binding, session, stored, poster, progress.now);
-  } catch (e) { failure ||= e; }
-  if (failure) throw failure;
+  } catch (e) { commitError = e; }
+  if (commitError || mirrorError) throw commitError || mirrorError;
 }

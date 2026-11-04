@@ -53,10 +53,11 @@ sends it one message:
   | Gemini CLI | no | the only capture is the OAuth code prompt; no empty composer captured |
   | OpenClaw | no | the only capture is a `[Y/n]` doctor dialog |
   | fx | no | the only capture is the sign-in menu |
-  | Antigravity (`agy`, PR #227) | no | not merged; no captured screens |
+  | Antigravity | yes | composer empty and the shortcuts line (`? for shortcuts`) visible |
 
   To add one, capture its empty and typed composer into `input-lines.json`, set
-  the flag, and extend `revive-safety.test.mjs` (it pins the list).
+  `promptDetector` (a boolean, or `{ idle: /…/ }` when the empty composer is a
+  particular line), and extend `revive-safety.test.mjs` (it pins the list).
 
 - **Bound to the revived process.** The pane's launch id (`AM_RUN_ID`) is taken when
   revive starts it and is checked while waiting, again in `deliver()`, and once more
@@ -85,9 +86,9 @@ Revive reports one settled result per session for the boot, so a caller never
 races the continue message: `runstate.reviveResult(sessionId)` resolves to
 
 - `sent`: the continue message was delivered.
-- `gave-up`: revive meant to send it and did not: no empty prompt within 120
-  seconds, the session was over the cap of 32, a privacy lock landed, or the
-  delivery failed.
+- `gave-up`: revive tried to send a continue message and did not (no empty prompt
+  within 120 seconds, a privacy lock landed, or delivery failed), **or** the
+  session was in the revive plan but not started because of the cap of 32.
 - `skipped`: nothing will be sent: `revive.continue` is off, revive is off or
   had no previous run, the session was not in the revive plan, it is a shell or
   a CLI without a prompt detector, or the operator started or archived it

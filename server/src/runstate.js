@@ -32,10 +32,7 @@ const SNAPSHOT_MS = 30_000;
 const REVIVE_GAP_MS = 4000;
 // Reviving is meant to bring your workbench back, not to recreate a fleet.
 // Beyond this we start the most recently active ones and SAY so in the logs
-// rather than quietly pretending the rest weren't running. It was 12 while slow
-// restarts were blamed on reviving; the slowness turned out to be the bucket
-// loading, and the stagger above already spreads the CLIs out, so a working set
-// of a few dozen agents comes back whole (32 × 4 s ≈ 2 minutes).
+// rather than quietly pretending the rest weren't running (see session-revive.md).
 const MAX_REVIVE = 32;
 // A Space that has been down for a season shouldn't wake up mid-thought. The
 // recency rule bounds itself; this is the backstop for the work-in-flight one,
@@ -129,7 +126,10 @@ export function init() {
   try {
     const j = JSON.parse(fs.readFileSync(RUNSTATE_FILE, 'utf8'));
     previous = j && typeof j === 'object' && j.sessions ? j : null;
-  } catch { previous = null; }
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn(`[runstate] could not read ${RUNSTATE_FILE} (${e.message}); starting with no snapshot`);
+    previous = null;
+  }
   // Hold the first write for a full cycle from here, whatever happens next. A
   // boot that revives nothing — engine missing, Space still locked, revive
   // switched off — must not answer by wiping the record of what was running:
@@ -206,7 +206,7 @@ export function saveRunstate() {
     // Only once it's actually on disk: a FUSE write that threw must be retried
     // next cycle, not remembered as the state of the file.
     lastWritten = body;
-  } catch (e) { console.error('[runstate]', e && e.message); }
+  } catch (e) { console.error('[runstate] save failed:', e?.message); }
 }
 
 /**
@@ -350,13 +350,15 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
   }
 
   let digests = new Map();
-  try { digests = await traceDigests(); } catch { /* no transcripts is fine */ }
+  try { digests = await traceDigests(); } catch (e) {
+    console.warn(`[revive] trace digests unavailable (${e.message}); recency uses lastInputAt only`);
+  }
   // Shared work belongs to Codex. Do not recreate its terminal on AM boot.
   // Unreadable bindings stop Codex revival rather than risking a competing writer.
   let bound;
   try { bound = new Set(codexBindings.read().map((r) => r.amSessionId)); }
-  catch {
-    console.error('[revive] Codex bindings unavailable — skipping Codex revival');
+  catch (e) {
+    console.error('[revive] Codex bindings unavailable — skipping Codex revival:', e?.message);
     bound = new Set(listSessions().filter((s) => s.cli === 'codex').map((s) => s.id));
   }
   if (sharedCodexMode() && listSessions().some(s => s.cli === 'codex' && !bound.has(s.id)))
@@ -384,7 +386,9 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
     // Opened now, not at the slot: a lock that lands while this one waits its
     // turn must cancel its message too.
     const lock = carryOn && send && p.tell && scope ? scope() : null;
-    const release = () => { try { lock?.release(); } catch {} };
+    const release = () => {
+      try { lock?.release(); } catch (e) { console.error('[revive] lock release failed:', e?.message); }
+    };
     const t = setTimeout(() => {
       const s = getSession(p.id);
       // Deleted or archived between the plan and its turn; or opened by
@@ -394,7 +398,9 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
       let started = false;
       try {
         started = ensureRunning(s);
-        console.log(`[revive] ${p.name} (${p.cli}) — ${p.why}`);
+        console.log(started
+          ? `[revive] ${p.name} (${p.cli}) — ${p.why}`
+          : `[revive] ${p.name} (${p.cli}) — skipped (already running)`);
       } catch (e) { console.error(`[revive] ${p.name}:`, e && e.message); }  // nothing started: nothing to wait for
       // Off the stagger: the next revival must not wait for this one's CLI.
       if (started && carryOn && send && p.tell) {

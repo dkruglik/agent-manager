@@ -90,7 +90,8 @@ export class MessengerBridge {
   }
 
   inputCardFor(binding, s, item, extra = {}) {
-    return inputCard({ agent: this.agent(s), link: this.host.link(s), item, approvals: binding.approvals, ...extra });
+    const shown = item.details ? { ...item, details: this.filter(item.details) } : item;
+    return inputCard({ agent: this.agent(s), link: this.host.link(s), item: shown, approvals: binding.approvals, ...extra });
   }
 
   post(binding, card) {
@@ -175,7 +176,10 @@ export class MessengerBridge {
   }
 
   async tick() {
-    if (this.ticking || this.host.locked()) return;
+    if (this.ticking) return;
+    const lock = this.host.lockState();
+    // A real lock holds every post. `checking` is not one for the transcript; cards still wait.
+    if (lock.locked && lock.reason !== 'checking') return;
     this.ticking = true;
     try {
       const sessions = this.host.sessions();
@@ -185,7 +189,7 @@ export class MessengerBridge {
         let failure = null;
         await this.threads.noteReach(binding.adapter, binding.target.channel, sessions);
         for (const s of this.sessionsFor(binding, sessions)) {
-          const e = await this.checkSession(binding, s);
+          const e = await this.checkSession(binding, s, { cards: !lock.locked });
           if (e) failure = e;
         }
         this.noteOutcome(binding, failure);
@@ -194,10 +198,10 @@ export class MessengerBridge {
   }
 
   // Returns the error when the check failed, so the binding can be backed off.
-  async checkSession(binding, s) {
+  async checkSession(binding, s, { cards = true } = {}) {
     try {
-      if (binding.events.includes('input-required')) await this.checkInput(binding, s);
-      if (postsFinished(binding)) await checkFinished(this, binding, s);
+      if (cards && binding.events.includes('input-required')) await this.checkInput(binding, s);
+      if (cards && postsFinished(binding)) await checkFinished(this, binding, s);
       await transcriptTick(this.outbound, binding, s);
       return null;
     } catch (e) {
@@ -236,7 +240,7 @@ export class MessengerBridge {
   backfill(id, adapter) {
     const accept = async (adapterId, r) => (this.stopped ? { ignored: 'stopped' } : this.handleReply(adapterId, r));
     return backfill({ adapterId: id, adapter, store: this.store, now: this.now, accept, log: (e) => this.log({ adapter: id, ...e }) })
-      .catch((e) => this.log({ adapter: id, event: 'backfill-failed', error: e.message }));
+      .catch((e) => this.log({ adapter: id, event: 'backfill-failed', error: e.message, acceptFailed: !!e.acceptFailed }));
   }
 
   start() {

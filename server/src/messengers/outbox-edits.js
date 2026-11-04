@@ -1,4 +1,5 @@
-import { noticeCard } from './cards.js';
+import { postNotice } from './cards.js';
+import { persistError } from './outbox-files.js';
 import { editRequestIdFor, requestIdFor } from './replies.js';
 
 // A Slack message that was edited or deleted after it was accepted (message_changed, message_deleted).
@@ -7,8 +8,6 @@ import { editRequestIdFor, requestIdFor } from './replies.js';
 
 export const EDIT_HEAD = 'Edited in Slack (replaces the earlier message):\n';
 export const DELETED_LINE = 'The Slack message was deleted after it was sent to the agent.';
-
-const persistError = (e) => Object.assign(new Error(`outbox write failed: ${e.message}`), { persist: true });
 
 /**
  * @param ctx the outbox state (rows, store, adapters, dir, log, active)
@@ -37,6 +36,8 @@ export function createAmend(ctx, h) {
     };
     const id = requestIdFor(binding.adapter, r.channel, r.edit.ts);
     const row = rows.get(id);
+    // The send already has its bytes. Leave the event unacked so Slack retries once the send finishes.
+    if (row && ctx.active.has(row.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
     if (!known(binding.adapter, r.channel, id)) return ignore('unknown-message');
     if (editable(row)) return row.sessionId === session.id ? replace(row, session, body) : ignore('session-changed');
     const requestId = editRequestIdFor(binding.adapter, r.channel, r.edit.ts, r.edit.editTs);
@@ -57,11 +58,12 @@ export function createAmend(ctx, h) {
     for (const x of waiting) h.drop(ctx, x);
     if (waiting.length) { log({ event: 'deleted-dropped', requestId: id, rows: waiting.length }); return { dropped: waiting.length }; }
     if (!known(adapterId, r.channel, id)) return { ignored: 'unknown-message' };
-    const sessionId = row?.sessionId ?? store.state('deliveredTs', `${adapterId}|${r.channel}`)?.find((e) => e.ts === r.deleted.ts)?.sessionId;
-    const thread = where(adapterId, r.channel, r.thread || row?.thread, sessionId);
-    try { await ctx.adapters.get(adapterId)?.post({ channel: r.channel, thread }, noticeCard(DELETED_LINE)); } catch (e) {
-      log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.message });
+    let sessionId = row?.sessionId;
+    if (!sessionId) {
+      sessionId = store.state('deliveredTs', `${adapterId}|${r.channel}`)?.find((e) => e.ts === r.deleted.ts)?.sessionId;
     }
+    const thread = where(adapterId, r.channel, r.thread || row?.thread, sessionId);
+    await postNotice(ctx.adapters, adapterId, { channel: r.channel, thread }, DELETED_LINE, log);
     return { noted: id };
   }
 

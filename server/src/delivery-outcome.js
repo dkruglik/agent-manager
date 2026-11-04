@@ -1,5 +1,15 @@
+/**
+ * @typedef {'codex'|'tui'|'remote'} DeliveryRuntime
+ * @typedef {'sent'|'skipped'|'gave-up'} ReviveResult
+ * @typedef {{state: 'delivered'}
+ *   | {state: 'pending', reason: string}
+ *   | {state: 'submitted', reason: string}} DeliveryOutcome
+ *   Host send result. `reason` is an error code, never prompt text. Distinct from an outbox row's
+ *   `pending` / `submitted`, which is whether the file may be sent again.
+ */
+
 // How one attempt to hand a chat prompt to an agent ended, per runtime
-// (plans/slack_history.md, "Per-runtime delivery"). The chat outbox keeps a
+// (docs/messengers.md, "Delivery per runtime"). The chat outbox keeps a
 // row `pending` (try again), `submitted` (the text may have reached the agent;
 // never send it again) or `delivered`. Nothing here touches a pane or a socket:
 // the caller passes the send in, so the rules are testable on their own.
@@ -15,7 +25,8 @@ const isLockAbort = (error) => error?.code === 'locked' && error?.statusCode ===
 
 /**
  * 'pending' or 'submitted' for an error thrown by a send.
- * `runtime`: 'codex' (shared Codex), 'tui' (a local pane) or 'remote'.
+ * @param {DeliveryRuntime} runtime 'codex' (shared Codex), 'tui' (a local pane) or 'remote'.
+ * @returns {'pending'|'submitted'}
  */
 export function classifyDeliveryError(runtime, error) {
   if (runtime === 'codex') return CODEX_SUBMITTED.has(error?.code) ? 'submitted' : 'pending';
@@ -79,9 +90,10 @@ export async function deliverToSession(session, { text, requestId }, io) {
   if (early) return early;
   let committed = false;
   const body = runtime === 'remote' ? cutForRemote(text, io.limit) : text;
-  const send = () => (runtime === 'codex'
-    ? io.sendCodex(session, { text, attachments: [], requestId })
-    : io.sendLocal(session, body, () => { committed = true; }));
+  const send = () => {
+    if (runtime === 'codex') return io.sendCodex(session, { text, attachments: [], requestId });
+    return io.sendLocal(session, body, () => { committed = true; });
+  };
   const outcome = await attemptDelivery(runtime, send, { committed: () => committed, log: io.log });
   if (outcome.state === 'delivered') io.touch(session.id);
   return outcome;
@@ -95,8 +107,10 @@ const READY_POLL_MS = 200;
  * result for the session has settled (`io.result(id)`: 'sent', 'skipped' or 'gave-up') and returns it, so
  * the continue message is never raced. For a CLI with a prompt detector whose pane is running, and unless
  * revive gave up, it then waits (bounded, stopping when `signal` aborts) for an empty prompt. A CLI
- * without a detector (Gemini, OpenClaw, fx) never waits on the prompt.
- * `io`: `{ result, detector(cli), running(id), promptReady(id), sleep(ms), now() }`.
+ * without a detector (Gemini, OpenClaw, fx) never waits on the prompt. Antigravity does: it has a detector.
+ * If the wait ends with the pane still running and the prompt not empty, this throws `{ code: 'prompt-not-ready' }`
+ * so the outbox keeps the row and tries again. `io.log`, when set, records `ready-timeout`.
+ * `io`: `{ result, detector(cli), running(id), promptReady(id), sleep(ms), now(), log? }`.
  */
 export async function readyAfterRevive(session, io, { signal = null, readyMs = READY_MS } = {}) {
   const result = await io.result(session.id);
@@ -104,8 +118,14 @@ export async function readyAfterRevive(session, io, { signal = null, readyMs = R
   const now = io.now || Date.now;
   const sleep = io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const deadline = now() + readyMs;
-  while (!signal?.aborted && io.running(session.id) && !io.promptReady(session.id) && now() < deadline) {
+  let waiting = !signal?.aborted && io.running(session.id) && !io.promptReady(session.id);
+  while (waiting && now() < deadline) {
     await sleep(READY_POLL_MS);
+    waiting = !signal?.aborted && io.running(session.id) && !io.promptReady(session.id);
+  }
+  if (waiting) {
+    io.log?.({ event: 'ready-timeout', session: session.id, result });
+    throw Object.assign(new Error('prompt not ready'), { code: 'prompt-not-ready' });
   }
   return result;
 }

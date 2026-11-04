@@ -1,6 +1,6 @@
-import { noticeCard } from './cards.js';
-import { addDeliveredId, laterTs } from './delivery-state.js';
-import { checkDir, createRow, loadRows, removeRow, rewriteRow } from './outbox-files.js';
+import { postNotice } from './cards.js';
+import { addDeliveredId, addSubmittedId, compareSlackTs } from './delivery-state.js';
+import { checkDir, createRow, loadRows, persistError, removeRow, rewriteRow } from './outbox-files.js';
 import { createAmend } from './outbox-edits.js';
 
 // The outbox between a chat message and the agent. A message is a row file
@@ -11,15 +11,18 @@ import { createAmend } from './outbox-edits.js';
 const LIFETIME_MS = 24 * 3600_000;
 export const PREAMBLE_HEAD = 'Earlier messages from Slack (the conversation restarted since):';
 
-const cmpTs = (a, b) => (a === b ? 0 : laterTs(a, b) === b ? -1 : 1);
 const quoted = (text) => text.split('\n').map((l) => `> ${l}`).join('\n');
+const errMeta = (e) => ({ error: e.code ?? e.name, ...(e.message ? { message: String(e.message).slice(0, 200) } : {}) });
+const deliverErr = (e) => ({ error: e.code ?? e.name });
 
 // The stored texts of a session when its source changed since they were delivered, else ''.
 function preambleFor({ host, store, rows }, key, session, except) {
   // A row already waiting carries it; a second copy would repeat the same lines (an edited row is not its own other copy).
   const [adapter, channel] = key.split('|');
-  if ([...rows.values()].some((r) => r.requestId !== except && r.adapter === adapter && r.channel === channel && r.sessionId === session.id
-    && r.text.startsWith(PREAMBLE_HEAD))) return '';
+  const hasPreambleQueued = [...rows.values()].some((r) => r.requestId !== except
+    && r.adapter === adapter && r.channel === channel && r.sessionId === session.id
+    && r.text.startsWith(PREAMBLE_HEAD));
+  if (hasPreambleQueued) return '';
   const recent = store.state('recent', key);
   if (!recent?.lastSrc || !recent.texts.length) return '';
   if ((host.sourceKey?.(session) ?? '') === recent.lastSrc) return '';
@@ -42,8 +45,10 @@ const frozenText = (ctx, adapterId, channel, session, user, body, except) => pre
 function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
   const { store, rows, log, now, dir } = ctx;
   if (ctx.unsafe) throw Object.assign(new Error('outbox directory is not safe to write'), { persist: true });
+  if (ctx.loadFailed) throw Object.assign(new Error('outbox directory could not be read'), { persist: true });
   const key = `${binding.adapter}|${r.channel}`;
-  if (rows.has(requestId) || isDelivered(ctx, { adapter: binding.adapter, channel: r.channel, requestId })) {
+  const idRow = { adapter: binding.adapter, channel: r.channel, requestId };
+  if (rows.has(requestId) || isDelivered(ctx, idRow) || isSubmitted(ctx, idRow)) {
     log({ event: 'duplicate', requestId, binding: binding.id, session: session.id });
     return { ignored: 'duplicate' };
   }
@@ -53,9 +58,7 @@ function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
     sessionId: session.id, bindingId: binding.id, user: { id: r.user.id, ...(r.user.name ? { name: r.user.name } : {}) },
     text, body, via, state: 'pending', createdAt: now(), ...extra,
   };
-  try { createRow(dir, row); } catch (e) {
-    throw Object.assign(new Error(`outbox write failed: ${e.message}`), { persist: true });
-  }
+  try { createRow(dir, row); } catch (e) { throw persistError(e); }
   rows.set(requestId, row);
   return { queued: session.id };
 }
@@ -66,14 +69,18 @@ const isSubmitted = ({ store }, row) => !!store.state('submittedIds', idsKey(row
 
 function remember(ctx, section, row) {
   const key = idsKey(row);
-  ctx.store.patchState({ [section]: { [key]: addDeliveredId(ctx.store.state(section, key), row.requestId) } });
+  const ids = ctx.store.state(section, key);
+  const next = section === 'submittedIds'
+    ? addSubmittedId(ids, row.requestId)
+    : addDeliveredId(ids, row.requestId);
+  ctx.store.patchState({ [section]: { [key]: next ?? null } });
 }
 
 // A failed delete is safe: the delivered-id set (or submittedIds) already says the file must not be sent.
 function drop(ctx, row) {
   ctx.rows.delete(row.requestId);
   try { removeRow(ctx.dir, row.requestId); } catch (e) {
-    ctx.log({ event: 'row-delete-failed', requestId: row.requestId, error: e.code ?? e.name });
+    ctx.log({ event: 'row-delete-failed', requestId: row.requestId, ...errMeta(e) });
   }
 }
 
@@ -81,15 +88,11 @@ function drop(ctx, row) {
 function saveSubmitted(ctx, row) {
   try { rewriteRow(ctx.dir, row); row.stale = false; } catch (e) {
     row.stale = true;
-    ctx.log({ event: 'row-rewrite-failed', requestId: row.requestId, error: e.code ?? e.name });
+    ctx.log({ event: 'row-rewrite-failed', requestId: row.requestId, ...errMeta(e) });
   }
 }
 
-async function say(ctx, row, text) {
-  try { await ctx.adapters.get(row.adapter)?.post({ channel: row.channel, thread: row.thread || row.ts }, noticeCard(text)); } catch (e) {
-    ctx.log({ event: 'notice-failed', adapter: row.adapter, channel: row.channel, error: e.message });
-  }
-}
+const say = (ctx, row, text) => postNotice(ctx.adapters, row.adapter, { channel: row.channel, thread: row.thread || row.ts }, text, ctx.log);
 
 async function expire(ctx, row) {
   const { state } = row;
@@ -108,6 +111,14 @@ function refusalOf(ctx, row, session) {
   return null;
 }
 
+function releaseDelivered(ctx, row) {
+  const key = idsKey(row);
+  const ids = (ctx.store.state('deliveredIds', key) || []).filter((id) => id !== row.requestId);
+  ctx.store.patchState({ deliveredIds: { [key]: ids.length ? ids : null } });
+}
+
+const runOf = (ctx, session) => ctx.host.runId?.(session) ?? null;
+
 // The id is recorded before the row file goes, so a crash between the two cannot send the text again.
 async function delivered(ctx, row, session) {
   remember(ctx, 'deliveredIds', row);
@@ -122,15 +133,32 @@ async function attempt(ctx, row, session) {
   const scope = ctx.host.lockScope();
   ctx.active.add(row.requestId); // an edit meanwhile is a new message: this send already has its bytes
   try {
-    // After a restart the first send waits for the revive result (never sends the continue text itself).
-    if (!ctx.ready.has(row.sessionId)) {
-      await ctx.host.ready(session, { signal: scope.signal });
-      if (!scope.signal.aborted) ctx.ready.add(row.sessionId);
+    // Once per pane launch. A stop and a new runId waits again; a stable run does not.
+    const run = runOf(ctx, session);
+    if (ctx.ready.get(row.sessionId) !== run) {
+      try {
+        await ctx.host.ready(session, { signal: scope.signal });
+      } catch (e) {
+        const reason = e?.code === 'prompt-not-ready' ? 'prompt-not-ready' : 'error';
+        if (reason === 'error') ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
+        return { state: 'pending', reason };
+      }
+      if (!scope.signal.aborted && runOf(ctx, session) === run) ctx.ready.set(row.sessionId, run);
     }
-    return await ctx.host.deliver(session, { text: row.text, requestId: row.requestId, signal: scope.signal });
-  } catch (e) {
-    ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
-    return { state: 'pending', reason: 'error' };
+    if (scope.signal.aborted) return { state: 'pending', reason: 'locked' };
+    // Claim the id before the bytes go out. A crash during the send must not deliver them twice.
+    // A send that stays pending gives the id back, so the next drain tries again.
+    remember(ctx, 'deliveredIds', row);
+    let out;
+    try {
+      out = await ctx.host.deliver(session, { text: row.text, requestId: row.requestId, signal: scope.signal });
+    } catch (e) {
+      ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
+      out = { state: 'pending', reason: 'error' };
+    }
+    if (out?.state === 'submitted') remember(ctx, 'submittedIds', row);
+    if (out?.state !== 'delivered') releaseDelivered(ctx, row);
+    return out;
   } finally { ctx.active.delete(row.requestId); scope.release(); }
 }
 
@@ -155,7 +183,6 @@ async function send(ctx, row) {
   if (!ctx.rows.has(row.requestId)) return true;
   if (out?.state === 'submitted') {
     Object.assign(row, { state: 'submitted', reason: out.reason });
-    remember(ctx, 'submittedIds', row); // durable before the file is rewritten
     saveSubmitted(ctx, row);
     ctx.log({ event: 'submitted', requestId: row.requestId, session: row.sessionId, reason: out.reason });
     return true;
@@ -168,11 +195,11 @@ async function send(ctx, row) {
 
 // One session's pending rows in ts order. A held row stops the later ones; a submitted row does not.
 async function drainSession(ctx, list) {
-  for (const row of list.sort((a, b) => cmpTs(a.ts, b.ts))) {
+  for (const row of list.sort((a, b) => compareSlackTs(a.ts, b.ts))) {
     if (!ctx.rows.has(row.requestId) || row.state !== 'pending') continue;
     if (ctx.host.lockState().locked) return; // a real lock deletes the rows; checking holds them
     try { if (!(await send(ctx, row))) return; } catch (e) {
-      ctx.log({ event: 'drain-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
+      ctx.log({ event: 'drain-failed', requestId: row.requestId, session: row.sessionId, ...errMeta(e) });
       return;
     }
   }
@@ -187,7 +214,32 @@ async function upkeep(ctx) {
   }
 }
 
+// One read of the row directory. A failure leaves `loadFailed` set and accepts nothing until a later drain succeeds.
+function loadOrFail(ctx) {
+  try {
+    ctx.unsafe = checkDir(ctx.dir, (e) => ctx.log(e)) === 'unsafe';
+    if (ctx.unsafe) { ctx.loadFailed = false; return { rows: [], bad: [] }; }
+    const loaded = loadRows(ctx.dir);
+    ctx.loadFailed = false;
+    return loaded;
+  } catch (e) {
+    if (!ctx.loadFailed) ctx.log({ event: 'outbox-unreadable', ...errMeta(e) });
+    ctx.loadFailed = true;
+    return { rows: [], bad: [] };
+  }
+}
+
+function ingest(ctx, loaded) {
+  for (const row of loaded.rows) if (!ctx.rows.has(row.requestId)) restore(ctx, row);
+  for (const file of loaded.bad) ctx.log({ event: 'row-malformed', file });
+}
+
 async function drain(ctx) {
+  if (ctx.loadFailed) {
+    const loaded = loadOrFail(ctx);
+    if (ctx.loadFailed) return;
+    ingest(ctx, loaded);
+  }
   await upkeep(ctx);
   if (ctx.host.lockState().locked) return;
   const waiting = [...ctx.rows.values()].filter((r) => r.state === 'pending');
@@ -234,26 +286,27 @@ function dropSessions(ctx, adapterId, channel, ids) {
 
 // A row read at startup: one already delivered is removed, one already submitted stays submitted.
 function restore(ctx, row) {
+  // submittedIds wins over a delivered-id left from a crash during the send: the text may have
+  // reached the agent, so the row stays submitted and is not sent again.
+  if (row.state === 'pending' && isSubmitted(ctx, row)) Object.assign(row, { state: 'submitted', stale: true });
+  if (row.state === 'submitted') { ctx.rows.set(row.requestId, row); return; }
   if (isDelivered(ctx, row)) {
     try { removeRow(ctx.dir, row.requestId); } catch (e) { ctx.log({ event: 'row-delete-failed', requestId: row.requestId, error: e.code ?? e.name }); }
     ctx.log({ event: 'already-delivered', requestId: row.requestId });
     return;
   }
-  if (row.state === 'pending' && isSubmitted(ctx, row)) Object.assign(row, { state: 'submitted', stale: true });
   ctx.rows.set(row.requestId, row);
 }
 
-/** Loads the row directory once; every later question is answered from memory. */
+/** Loads the row directory. A failed read is retried on each drain; until then accept refuses, so Slack redelivers. */
 export function createOutbox({ host, store, adapters, threads, dir, log, now = () => Date.now() }) {
-  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), active: new Set(), ready: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
-  let loaded = { rows: [], bad: [] };
-  try {
-    ctx.unsafe = checkDir(dir) === 'unsafe';
-    if (ctx.unsafe) log({ event: 'outbox-unsafe' });
-    else loaded = loadRows(dir);
-  } catch (e) { log({ event: 'outbox-unreadable', error: e.code ?? e.name }); }
-  for (const row of loaded.rows) restore(ctx, row);
-  for (const file of loaded.bad) log({ event: 'row-malformed', file });
+  const ctx = {
+    host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), active: new Set(),
+    ready: new Map(), unsafe: false, loadFailed: false, realLock: false, noticeLater: new Map(),
+  };
+  const loaded = loadOrFail(ctx);
+  if (ctx.unsafe) log({ event: 'outbox-unsafe' });
+  ingest(ctx, loaded);
   const amend = createAmend(ctx, { accept, drop, isDelivered, isSubmitted, frozenText, rewriteRow });
   return {
     accept: (args) => accept(ctx, args),

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { finishedDigest } from '../src/messengers/finished-digest.js';
 import { BindingStore } from '../src/messengers/store.js';
-import { finishedMark, migrateSeen } from '../src/messengers/outbound.js';
+import { finishedMark, migrateSeen, createFilter } from '../src/messengers/outbound.js';
 import { inputCard, reviewable, TOO_LONG } from '../src/messengers/cards.js';
 import { renderBlocks } from '../src/messengers/adapters/slack.js';
 
@@ -68,6 +68,35 @@ const permission = {
   key: 'req1', kind: 'permission', details: '{"command":"ls"}',
   choices: [{ value: 'accept', label: 'Approve once' }, { value: 'decline', label: 'Deny' }],
 };
+
+test('input cards redact configured secrets in details before posting', async () => {
+  const secret = 'totally-a-bot-token';
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-messengers-bridge-secrets-'));
+  const store = new BindingStore(path.join(root, 'messengers.json'));
+  const host = {
+    list: [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: { kind: 'permission', cli: 'codex', detectedAt: 'x' } }],
+    sessions: () => host.list.map((s) => ({ ...s })),
+    groupOf: () => ({ id: 'g1', name: 'proj' }),
+    locked: () => false, lockState: () => ({ locked: false, reason: null }), onLock: () => () => {},
+    ready: async () => 'skipped', lockScope: () => ({ signal: new AbortController().signal, release() {} }),
+    link: () => null,
+    requests: async () => [{ key: 'req1', kind: 'permission', details: `echo ${secret}`, choices: [{ value: 'accept', label: 'Approve once' }] }],
+    digest: async () => null, since: async () => null, answer: async () => {}, prompt: async () => {},
+  };
+  const slack = fakeAdapter();
+  const bridge = new MessengerBridge({
+    host, store, adapters: new Map([['slack', slack]]), dataDir: root, filter: createFilter({ SLACK_BOT_TOKEN: secret }),
+    log: () => {}, tickMs: 1e9, settleMs: 0, digestEveryMs: 0,
+  });
+  store.putBinding({
+    id: 'b0', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'group', id: 'g1' },
+    events: ['input-required'], allowedUsers: ['U1'], approvals: true, createdAt: 'x',
+  });
+  bridge.statuses.set('slack', { connected: true, error: null });
+  await bridge.tick();
+  assert.ok(slack.posts[0].card.details.includes('[redacted]'));
+  assert.ok(!slack.posts[0].card.details.includes(secret));
+});
 
 test('a failed request lookup keeps typed cards open and posts nothing generic', async () => {
   const t = setup({ events: ['input-required'] });
@@ -405,4 +434,40 @@ test('a restart does not baseline a session with a cursor: only messages after i
   assert.deepEqual(seen, [{ src: 'srcA', seq: 2, hash: 'h2' }]);
   assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['three']);
   assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 3);
+});
+
+test('checking mirrors the transcript and does not post cards', async () => {
+  const t = setup({ events: ['input-required', 'transcript'] });
+  t.host.isLocked = true;
+  t.host.lockState = () => ({ locked: true, reason: 'checking' });
+  t.host.list[0].state = 'waiting';
+  let n = 0;
+  t.host.sinceImpl = async () => {
+    n += 1;
+    if (n === 1) return { end: end(1), messages: [], restarted: false };
+    return { end: end(2), messages: [msg(2, 'during checking')], restarted: false };
+  };
+  await t.tick();
+  await t.tick();
+  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['during checking']);
+  t.host.list[0].inputRequired = { kind: 'permission', cli: 'codex', detectedAt: 'x' };
+  t.host.typed = [permission];
+  await t.tick();
+  assert.equal(t.slack.posts.some((p) => p.card.kind === 'input'), false);
+});
+
+test('a failed transcript read does not baseline, and a later read does', async () => {
+  const t = setup({ events: ['transcript'] });
+  t.host.list[0].state = 'waiting';
+  t.host.sinceImpl = async () => { throw new Error('trace unreadable'); };
+  await t.tick();
+  assert.equal(t.store.state('outbound', 'slack|C0|s1'), null);
+  assert.equal(t.bridge.lastError('b0'), 'could not post — see the server log');
+  t.host.sinceImpl = async () => ({ end: end(1), messages: [msg(1, 'later')], restarted: false });
+  await t.tick(6000);
+  assert.equal(t.slack.posts.length, 0, 'the first successful look is a baseline');
+  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 1);
+  t.host.sinceImpl = async () => ({ end: end(2), messages: [msg(2, 'after')], restarted: false });
+  await t.tick();
+  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['after']);
 });

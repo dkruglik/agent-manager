@@ -27,8 +27,8 @@ Each agent gets one **bot-owned thread** per channel. The bot posts the root,
 `🧵 name · cli`, plus the **Open in Agent Manager** link when `AM_PUBLIC_URL` is
 set; a person's message is never the root. A top-level message that an agent
 accepted is quoted under its root (the sender's Slack id in bold, not a
-mention, so nobody is pinged; then the first lines of the text with `>`, cut at
-2 KB; `<`, `>` and `&` in the text are escaped, so mentions and `@channel` in
+mention, so nobody is pinged; then up to five lines of the text with `>`, after the
+2 KB cut; `<`, `>` and `&` in the text are escaped, so mentions and `@channel` in
 it stay inert). There is no "Sent to …" notice: the quote
 is the confirmation. The `finished` card and question and approval cards stay
 **top-level** channel posts, as before (the optional `transcript` event posts into the thread, see below), so their notifications do not change.
@@ -131,24 +131,30 @@ Answers to an open question card keep their direct path and have no row.
 
 Rows live in `DATA_DIR/messenger-outbox/<requestId>.json` (directory `0700`,
 files `0600`, opened with `O_NOFOLLOW`, written like Codex receipts). The
-directory is read once at startup into memory; a tick never lists it. A file
+directory is read at startup into memory; a tick does not list it again. If that read
+fails, nothing is accepted (the Slack event stays unacked) and each drain tries
+the read again until it succeeds (`outbox-unreadable`). A file
 that is malformed, a symlink or unreadable is skipped with one `row-malformed`
 log line and left in place. A row is `pending` or `submitted`:
 
 - `pending`: not yet delivered. The drain tries it on every tick, one send at
   a time per agent and in `ts` order; a held row holds the later rows of its
-  agent only. While Agent Manager is locked nothing is sent.
+  agent only. While a **real** privacy lock is active nothing is sent (see
+  [The privacy lock](#the-privacy-lock) below).
 - `submitted`: the host reported text may already have reached the agent. It is
   never sent again.
 
-Delivering first adds the request id to the channel's delivered-id set (500
-at most, oldest dropped), then deletes the row file, then quotes a top-level
-message into the agent's root and advances the watermarks, the delivered
-top-level `ts` set and the agent's last 3 texts. The id is recorded before the
-delete so a crash or a failed delete cannot send the text again: at startup
-and right before every send, a row whose id is in the set is deleted, not sent
-(log `already-delivered`). A row that becomes `submitted` is likewise recorded
-first in a `submittedIds` set (500 at most), so it stays `submitted` after a
+Immediately before the host send, the request id is added to the channel's
+delivered-id set (500 at most, oldest dropped). A crash during the send leaves
+the id there, so a restart deletes the row instead of sending the same bytes
+again (`already-delivered`). A send that stays `pending` removes the id, so the
+next drain tries again. A `delivered` outcome then deletes the row file, quotes
+a top-level message into the agent's root and advances the watermarks, the
+delivered top-level `ts` set and the agent's last 3 texts. The id is recorded
+before the delete so a crash or a failed delete cannot send the text again.
+A row that becomes `submitted` is likewise recorded
+first in a `submittedIds` set (never evicted; losing an id could replay a prompt),
+so it stays `submitted` after a
 restart even if rewriting its file failed; the rewrite is retried on later
 ticks. A session already sending is skipped on a tick while others proceed,
 and the 24-hour expiry runs even while a send is stuck. A temp file left in
@@ -179,10 +185,16 @@ it resolves once that boot's revive result for the session
 (`sent`, `skipped` or `gave-up`, see [session-revive.md](session-revive.md))
 has settled. For a CLI with a prompt detector whose pane is running, and
 unless revive gave up, it then waits (30 s at most, and not past a lock) for an
-empty prompt. Gemini, OpenClaw and fx never wait on the prompt. The drain never
-sends the continue text and never races it; a session revive did not include is
-`skipped`, so a pending row starts it through `deliver` as usual. The wait is
-per session: it does not hold other sessions or the 24-hour expiry. If the
+empty prompt. Gemini, OpenClaw and fx never wait on the prompt. Antigravity
+waits, like the other CLIs that have a prompt detector. If the prompt is still
+not empty when the 30 s ends, the row stays `pending` and a later drain waits
+again (`ready-timeout`). The drain never
+sends the continue text and never races it; a session revive did not include
+resolves `skipped` (including sessions over the 32-session cap, which resolve
+`gave-up` instead), so a pending row starts it through `deliver` as usual. The wait is
+once per pane launch (`runId`), not once per process: stopping the pane and
+starting it again waits again. It does not hold other sessions or the 24-hour
+expiry. If the
 Space is locked at boot, revive is skipped and every session resolves
 `skipped`. A `submitted` row is never sent again after a restart.
 
@@ -204,7 +216,9 @@ lock** is any lock whose reason is not `checking`.
 - **`checking`** (the first privacy verdict is still in flight). A prompt from
   an allowed sender is saved like any other and waits; the drain sends nothing
   and nothing is deleted, so a restart keeps the rows. Answers to question and
-  approval cards are refused during either lock, as before.
+  approval cards are refused during either lock, as before. Outbound **input-required**
+  and **finished** cards are not posted during `checking` either (only `transcript`
+  mirroring runs until unlock).
 - **Every send** holds a `lockScope()` and passes its signal to `host.deliver`.
   A lock landing aborts a send still inside the host; an abort without the
   typed flag is `pending`, and the landing then deletes the row.
@@ -289,7 +303,8 @@ sees.
 
 ### Credential filter
 
-Every text posted by `transcript`, and the body of every `finished` card, goes
+Every text posted by `transcript`, the body of every `finished` card, and the
+`details` field of every input/approval card, goes
 through `createCredentialFilter` (`audit-credentials.js`) with the values this
 process holds, read in `config.js` (`knownSecretValues`): `SLACK_BOT_TOKEN`,
 `SLACK_APP_TOKEN`, `HF_TOKEN` (also `HUGGING_FACE_HUB_TOKEN`, `HF_API_TOKEN`),
@@ -472,7 +487,8 @@ Limits:
 - **The privacy lock stops cards and deliveries.** No card is posted and no
   reply, answer or approval is delivered to an agent while the instance is
   locked; refusal notices and `/am status` still reply in the channel, and
-  `/am status` lists no agents.
+  `/am status` lists no agents. Transcript mirroring still runs during the
+  startup `checking` state.
 - **Tokens live in the environment**, never in `messengers.json`.
 - **Audit.** Binding changes go through the API and appear in the API log.
   Posted cards, answers, prompts and refusals are written to
@@ -481,8 +497,12 @@ Limits:
   `user-not-allowed`, `no-agent-named`, `no-session`, `not-in-channel`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
-  `reply-failed`, `outbox-unsafe`, `already-delivered`, `persist-failed` (a prompt row could not be written; the message stays unacked), `deliver-failed`, `duplicate`, `expired`, `held`, `row-malformed`, `thread-failed` (a root or quote that could not be posted; the prompt was still delivered), `forget-failed`, `notice-failed`, `update-failed`, `close-failed`,
-  `hook-post-failed`, `digest-failed`, `requests-failed`, plus the Slack
+  `reply-failed`, `outbox-unsafe`, `outbox-dir-stat-failed`, `already-delivered`, `persist-failed` (a prompt row could not be written; the message stays unacked), `deliver-failed`, `duplicate`, `expired`, `held`, `row-malformed`, `thread-failed` (a root or quote that could not be posted; the prompt was still delivered), `thread-queue-failed`, `forget-failed`, `notice-failed`, `update-failed`, `close-failed`,
+  `hook-post-failed`, `digest-failed`, `requests-failed`, `submitted`, `edited`, `edit-ignored`,
+  `deleted-dropped`, `lock-landed`, `row-delete-failed`, `row-rewrite-failed`,
+  `drain-failed`, `backfill`, `backfill-failed`, `backfill-accept-failed`,
+  `outbox-unreadable`, `connect-hook-failed`, `ready-timeout`, `transcript-unread`,
+  `delivery-error`, plus the Slack
   socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error`,
   `socket-silent` and `command-failed` (a `/am` command that failed is still
   answered, with a generic line).
@@ -573,7 +593,10 @@ offline were not delivered."), not one per message, and only for messages
 that were not already delivered. A newer message goes through the same path as
 a live event: routing, `refusal()`, the delivered-id check and the row write.
 A second pass over the same history therefore sends nothing twice, and raw
-history is never copied into an agent any other way. A backfill still running
+history is never copied into an agent any other way. A failed history read is
+logged (`backfill-failed`) and is not treated as an empty history. Other
+channels and threads are still read; then backfill throws so the next connect
+retries from the same watermarks. A backfill still running
 when Agent Manager stops writes no rows.
 
 ## Adding a messenger
@@ -659,6 +682,16 @@ real Claude.
 - `messengers-store.test.mjs`: binding and saved-list validation, and what is
   kept on disk (saved lists survive a reload and a binding's removal; thread
   state loads from an older file and drops malformed entries).
+- `messengers-outbox.test.mjs`: the prompt row (persist-then-ack, drain order,
+  submitted and pending, edits and deletes, the ready wait).
+- `messengers-outbox-load.test.mjs`: startup load of the row directory (malformed
+  rows, unreadable directory).
+- `messengers-outbox-delivery.test.mjs`: outbox drain with real `deliverToSession`
+  classification (pending vs submitted).
+- `messengers-lock.test.mjs`: a real privacy lock deletes waiting prompts;
+  `checking` saves them and holds the drain.
+- `messengers-finished-digest.test.mjs`: what a finished card's digest keeps
+  and drops.
 - `messengers-threads.test.mjs`: routing (card threads, bot threads, names, the
   only agent), the binding pick, root rotation and the 20-root cap, the
   ephemeral and channel notices, the recent texts, and thread state kept or

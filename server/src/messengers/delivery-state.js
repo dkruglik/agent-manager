@@ -16,7 +16,7 @@ export const TEXT_MAX = 2048; // a stored Slack text is cut here
 //   deliveredTs  `adapter|channel`         → [{ ts, sessionId }], oldest first
 //   recent       `adapter|channel|session` → { lastSrc, texts }
 //   deliveredIds `adapter|channel`         → request ids accepted in the channel, oldest first
-//   submittedIds `adapter|channel`         → request ids whose text may have reached the agent, oldest first
+//   submittedIds `adapter|channel`         → request ids whose text may have reached the agent (not evicted on add)
 //   reach        `adapter|channel`         → how many agents the channel reached last time
 //   outbound     `adapter|channel|session` → { src, seq, hash, refs, finished? }: the last transcript message
 //                posted (refs are its Slack ts values) and the last finished card's id
@@ -56,7 +56,10 @@ const KEEP = {
     return { lastSrc: typeof v.lastSrc === 'string' ? v.lastSrc : '', texts };
   },
   deliveredIds: keepIds,
-  submittedIds: keepIds,
+  submittedIds: (v) => {
+    const kept = list(v).filter(str);
+    return kept.length ? kept : undefined;
+  },
   reach: (v) => (count(v) ? v : undefined),
   outbound: (v) => {
     if (!isPlain(v) || typeof v.src !== 'string' || !count(v.seq) || typeof v.hash !== 'string') return undefined;
@@ -85,6 +88,12 @@ export function addDeliveredId(ids, id) {
   return [...list(ids).filter((x) => x !== id), id].slice(-DELIVERED_IDS_MAX);
 }
 
+/** Like addDeliveredId, but submitted ids are never dropped — losing one could replay a prompt. */
+export function addSubmittedId(ids, id) {
+  const next = [...list(ids).filter((x) => x !== id), id];
+  return next.length ? next : undefined;
+}
+
 /** A session's recent delivery with `text` (cut at 2 KB) as the newest of the last 3. */
 export function pushRecent(recent, text, lastSrc) {
   const texts = [...list(recent?.texts), cutText(text)].slice(-RECENT_TEXTS);
@@ -96,10 +105,28 @@ export function laterTs(prev, next) {
   const parse = (ts) => /^(\d+)(?:\.(\d+))?$/.exec(String(ts ?? ''));
   const a = parse(prev);
   const b = parse(next);
-  if (!a || !b) return b || !a ? next : prev;
+  if (!a) return next;
+  if (!b) return prev;
   const key = (m) => [Number(m[1]), (m[2] || '').padEnd(9, '0')];
   const [as, af] = key(a);
   const [bs, bf] = key(b);
   if (as !== bs) return as > bs ? prev : next;
   return af > bf ? prev : next;
+}
+
+/** Thread ts values to read on backfill, each with the session watermark to read from. */
+export function threadHistorySources(store, ck) {
+  const prefix = `${ck}|`;
+  const found = new Map();
+  for (const key of store.stateKeys('roots').filter((k) => k.startsWith(prefix))) {
+    for (const e of store.state('roots', key)) found.set(e.ts, key.slice(prefix.length));
+  }
+  for (const e of store.state('deliveredTs', ck) || []) found.set(e.ts, e.sessionId);
+  return [...found].map(([ts, sessionId]) => ({ ts, mark: store.state('threadMarks', `${prefix}${sessionId}`) })).filter((t) => t.mark);
+}
+
+/** Sort order for Slack ts: negative when `a` is earlier. Unparsable values sort last. */
+export function compareSlackTs(a, b) {
+  if (a === b) return 0;
+  return laterTs(a, b) === a ? 1 : -1;
 }

@@ -4027,6 +4027,7 @@ const messengers = createMessengers({
     // The assistant messages after a cursor, for a `transcript` binding (transcript-since.js).
     since: (s, cursor) => since(s, cursor),
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
+    runId: (s) => runIdOf(s.id),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];
       const { client } = await codexInput.attach(s.id);
@@ -4042,13 +4043,14 @@ const messengers = createMessengers({
     // ready prompt): the chat drain sends nothing before it, so it never races the continue message.
     ready: (s, { signal } = {}) => readyAfterRevive(s, {
       result: (id) => runstate.reviveResult(id), detector: hasPromptDetector, running: isRunning, promptReady,
+      log: (entry) => messengers.log(entry),
     }, { signal }),
     // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
     deliver: (s, { text, requestId, signal }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
       shared: (session) => sessionRuntime.shared(session),
       remote: (session) => isRemote(session.cli),
       limit: remote.MAX_TEXT,
-      log: console.error,
+      log: (msg) => messengers.log(typeof msg === 'string' ? { event: 'delivery-error', message: msg } : msg),
       touch: touchInput,
       sendCodex: (session, message) => {
         if (signal?.aborted) throw lockedError(); // the messenger's lock scope: a lock landed before the call
@@ -4259,7 +4261,7 @@ refreshEnvSkill();
 // history, and with large migrated transcripts that memory/CPU spike could
 // destabilize a fresh container. The Usage page fetches per-provider on open
 // (skeletons + stale-while-revalidate), so nothing is lost but the boot risk.
-setTimeout(() => { traceDigests().catch(() => {}); }, 4000);
+setTimeout(() => { traceDigests().catch((e) => console.warn('[boot] traceDigests prefetch failed:', e?.message)); }, 4000);
 
 // Bucket backup: ask every few minutes whether one is due, and if so launch a
 // Job to do it on the Hub (docs/bucket-backup.md). Costs nothing when off or
