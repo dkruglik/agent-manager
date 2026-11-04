@@ -97,3 +97,59 @@ test('MESSENGER_FINISHED_DELAY_MS is an integer from 0 to 600000, default 8000',
     assert.throws(() => resolveMessengerConfig({ MESSENGER_FINISHED_DELAY_MS: bad }), /MESSENGER_FINISHED_DELAY_MS must be an integer from 0 to 600000/, bad);
   }
 });
+
+// A message event is acknowledged only after onReply resolves (the row is durable); a failure leaves it unacked.
+async function protocolRig(onReply) {
+  const sockets = [];
+  const logs = [];
+  class FakeWs extends EventEmitter {
+    constructor() { super(); this.sent = []; sockets.push(this); }
+    send(s) { this.sent.push(JSON.parse(s)); }
+    close() { this.emit('close'); }
+  }
+  const fetchImpl = async (url) => ({ status: 200, json: async () => ({ 'auth.test': { ok: true, user_id: 'UBOT' }, 'apps.connections.open': { ok: true, url: 'wss://x' } }[url.split('/').pop()]) });
+  const adapter = new SlackAdapter({ botToken: 'xoxb-1', appToken: 'xapp-1', fetchImpl, WebSocketImpl: FakeWs, setTimer: () => {} });
+  adapter.start({ onReply, onCommand: async () => '', onStatus: () => {}, log: (e) => logs.push(e) });
+  await waitFor(() => sockets.length === 1, 'the socket to open');
+  return { adapter, ws: sockets[0], logs };
+}
+const eventFrame = (id) => Buffer.from(JSON.stringify({
+  type: 'events_api', envelope_id: id, payload: { event_id: `Ev${id}`, event: { type: 'message', channel: 'C1', user: 'U1', text: 'secret text', ts: '1.1' } },
+}));
+
+test('Slack Socket Mode: a message event is acked only after onReply resolves', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { adapter, ws } = await protocolRig(() => gate);
+  const done = adapter.onFrame(ws, eventFrame('e1'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(ws.sent, [], 'not acked while the write is pending');
+  release();
+  await done;
+  assert.deepEqual(ws.sent, [{ envelope_id: 'e1' }]);
+  await adapter.stop();
+});
+
+test('Slack Socket Mode: a failed persist is not acked and is logged without the text', async () => {
+  const { adapter, ws, logs } = await protocolRig(async () => { throw new Error('ENOSPC'); });
+  await adapter.onFrame(ws, eventFrame('e2'));
+  assert.deepEqual(ws.sent, [], 'unacked, so Slack redelivers');
+  const entry = logs.find((e) => e.event === 'persist-failed');
+  assert.ok(entry);
+  assert.ok(!JSON.stringify(logs).includes('secret text'));
+  await adapter.stop();
+});
+
+test('Slack Socket Mode: a button press is still acked before its handler runs', async () => {
+  let release;
+  const { adapter, ws } = await protocolRig(() => new Promise((r) => { release = r; }));
+  const done = adapter.onFrame(ws, Buffer.from(JSON.stringify({
+    type: 'interactive', envelope_id: 'e3',
+    payload: { type: 'block_actions', trigger_id: 't', user: { id: 'U1' }, channel: { id: 'C1' }, message: { ts: '1.1' }, actions: [{ action_id: 'am:d:accept', value: 'd:accept', action_ts: '1' }] },
+  })));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(ws.sent, [{ envelope_id: 'e3' }]);
+  release();
+  await done;
+  await adapter.stop();
+});

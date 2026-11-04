@@ -5,6 +5,7 @@
 
 export const ROOTS_MAX = 20;
 export const DELIVERED_MAX = 50;
+export const DELIVERED_IDS_MAX = 500;
 export const RECENT_TEXTS = 3;
 export const TEXT_MAX = 2048; // a stored Slack text is cut here
 
@@ -14,8 +15,10 @@ export const TEXT_MAX = 2048; // a stored Slack text is cut here
 //   channelMarks `adapter|channel`         → last delivered top-level ts
 //   deliveredTs  `adapter|channel`         → [{ ts, sessionId }], oldest first
 //   recent       `adapter|channel|session` → { lastSrc, texts }
+//   deliveredIds `adapter|channel`         → request ids accepted in the channel, oldest first
+//   submittedIds `adapter|channel`         → request ids whose text may have reached the agent, oldest first
 //   reach        `adapter|channel`         → how many agents the channel reached last time
-export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'reach'];
+export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'deliveredIds', 'submittedIds', 'reach'];
 
 export const cutText = (s) => String(s ?? '').slice(0, TEXT_MAX);
 
@@ -26,6 +29,11 @@ const list = (v) => (Array.isArray(v) ? v : []);
 
 const root = (e) => isPlain(e) && str(e.ts) && Number.isFinite(e.at) && count(e.count);
 const delivered = (e) => isPlain(e) && str(e.ts) && str(e.sessionId);
+
+function keepIds(v) {
+  const kept = list(v).filter(str).slice(-DELIVERED_IDS_MAX);
+  return kept.length ? kept : undefined;
+}
 
 // The kept entries of each section; a malformed entry is dropped, never an error.
 const KEEP = {
@@ -44,6 +52,8 @@ const KEEP = {
     const texts = list(v.texts).filter((t) => typeof t === 'string').slice(-RECENT_TEXTS).map(cutText);
     return { lastSrc: typeof v.lastSrc === 'string' ? v.lastSrc : '', texts };
   },
+  deliveredIds: keepIds,
+  submittedIds: keepIds,
   reach: (v) => (count(v) ? v : undefined),
 };
 
@@ -60,6 +70,11 @@ export function loadDelivery(raw) {
 export function addDelivered(entries, ts, sessionId) {
   const rest = list(entries).filter((e) => e.ts !== ts);
   return [...rest, { ts, sessionId }].slice(-DELIVERED_MAX);
+}
+
+/** The delivered request ids with `id` added; the oldest beyond 500 drop. */
+export function addDeliveredId(ids, id) {
+  return [...list(ids).filter((x) => x !== id), id].slice(-DELIVERED_IDS_MAX);
 }
 
 /** A session's recent delivery with `text` (cut at 2 KB) as the newest of the last 3. */

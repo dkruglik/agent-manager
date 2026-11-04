@@ -212,8 +212,8 @@ export class SlackAdapter {
     }
     if (!msg.envelope_id) return;
     const p = msg.payload || {};
-    // Slack redelivers anything not acknowledged within 3 s, so ack first —
-    // except slash commands, whose ack carries the reply.
+    // Slack redelivers anything not acknowledged within 3 s, so a button press is acked first. A slash
+    // command's ack carries its reply, and a message is acked after it is persisted (below).
     if (msg.type === 'slash_commands') {
       let text;
       try { text = await this.hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' }); } catch (e) {
@@ -224,10 +224,21 @@ export class SlackAdapter {
       ws.send(JSON.stringify({ envelope_id: msg.envelope_id, payload: { response_type: 'ephemeral', text: toMrkdwn(text) } }));
       return;
     }
-    ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
-    let reply = null;
-    if (msg.type === 'interactive') reply = interactiveReply(p);
-    else if (msg.type === 'events_api') reply = messageReply(p, this.botUser);
+    const ack = () => ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
+    if (msg.type === 'events_api') {
+      const reply = messageReply(p, this.botUser);
+      // A message is acked once its row is durable; a failed write leaves it unacked, so Slack redelivers.
+      if (reply) {
+        try { await this.hooks.onReply(reply); } catch (e) {
+          this.hooks.log({ event: 'persist-failed', error: e.message });
+          return;
+        }
+      }
+      ack();
+      return;
+    }
+    ack();
+    const reply = msg.type === 'interactive' ? interactiveReply(p) : null;
     if (reply) await this.hooks.onReply(reply);
   }
 

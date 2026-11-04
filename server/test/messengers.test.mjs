@@ -40,7 +40,7 @@ function fakeHost() {
     requests: async (s) => h.typed[s.id] || [],
     digest: async (s) => h.digests[s.id] || null,
     answer: async (s, key, response) => { h.answers.push({ id: s.id, key, response }); h.typed[s.id] = []; h.list.find((x) => x.id === s.id).inputRequired = null; },
-    prompt: async (s, text, opts) => { h.prompts.push({ id: s.id, text, requestId: opts.requestId }); },
+    deliver: async (s, { text, requestId }) => { h.prompts.push({ id: s.id, text, requestId }); return { state: 'delivered' }; },
   };
   return h;
 }
@@ -129,7 +129,8 @@ test('a reply in a finished card thread prompts that agent, once per delivery', 
   const f = await fixture(t);
   const card = await finishFirst(f);
   const msg = reply({ thread: card.ref.ts, messageId: 'e1', text: 'now write docs' });
-  assert.deepEqual(await f.bridge.handleReply('slack', msg), { prompted: 's1' });
+  assert.deepEqual(await f.bridge.handleReply('slack', msg), { queued: 's1' });
+  await f.bridge.drain();
   assert.equal(f.host.prompts[0].text, 'now write docs');
   assert.deepEqual(await f.bridge.handleReply('slack', msg), { ignored: 'duplicate' }, 'Slack redelivery is not a second prompt');
   assert.equal(f.host.prompts.length, 1);
@@ -146,7 +147,8 @@ test('only allowed users can prompt an agent', async (t) => {
 test('in a group channel "name: text" addresses one agent', async (t) => {
   const f = await fixture(t);
   const r = await f.bridge.handleReply('slack', reply({ ts: 'm3', messageId: 'e3', text: 'beta: rebase please' }));
-  assert.deepEqual(r, { prompted: 's2' });
+  assert.deepEqual(r, { queued: 's2' });
+  await f.bridge.drain();
   assert.equal(f.host.prompts[0].text, 'rebase please');
 });
 

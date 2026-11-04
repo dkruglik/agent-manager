@@ -32,7 +32,7 @@ function setup({ allowedUsers = ['U1'], link = null, sessions = ['s1'], bindings
     locked: () => host.isLocked, link: link ? (s) => `${link}/#session=${s.id}` : () => null,
     sourceKey: (s) => `src-${s.id}`, requests: async () => [], digest: async () => null,
     answer: async (s, key, response) => { host.answers.push({ id: s.id, key, response }); },
-    prompt: async (s, text, opts) => { host.prompts.push({ id: s.id, text, requestId: opts.requestId }); },
+    deliver: async (s, { text, requestId }) => { host.prompts.push({ id: s.id, text, requestId }); return { state: 'delivered' }; },
   };
   const posts = [];
   const ephemerals = [];
@@ -49,7 +49,7 @@ function setup({ allowedUsers = ['U1'], link = null, sessions = ['s1'], bindings
   const base = { adapter: 'slack', target: { channel: 'C0' }, events: ['input-required'], allowedUsers, approvals: false, createdAt: 'x' };
   const bind = (id, scope, extra = {}) => store.putBinding({ ...base, id, scope, ...extra });
   for (const b of bindings || [{ id: 'b0', scope: { type: 'group', id: 'g1' } }]) bind(b.id, b.scope, b.extra);
-  return { root, clock, store, host, slack, posts, ephemerals, logs, bridge, bind, mk, send: (r) => bridge.handleReply('slack', r) };
+  return { root, clock, store, host, slack, posts, ephemerals, logs, bridge, bind, mk, send: async (r) => { const out = await bridge.handleReply('slack', r); await bridge.drain(); return out; } };
 }
 
 const msg = (ts, body, extra = {}) => ({ channel: 'C0', ts, thread: null, user, messageId: `m${ts}`, text: body, ...extra });
@@ -71,7 +71,7 @@ test('a reply in an open question card\'s thread answers it', async () => {
 test('a reply in a closed question card\'s thread is a prompt to that card\'s session', async () => {
   const t = setup({ sessions: ['s1', 's2'] });
   card(t, 'q1', { status: 'closed', sessionId: 's2' });
-  assert.deepEqual(await t.send(inThread('card-q1', '10.1', 'more please')), { prompted: 's2' });
+  assert.deepEqual(await t.send(inThread('card-q1', '10.1', 'more please')), { queued: 's2' });
   assert.deepEqual(t.host.prompts.map((p) => [p.id, p.text]), [['s2', 'more please']]);
   assert.equal(t.host.answers.length, 0);
   // A button press on the closed card is still refused, not turned into a prompt.
@@ -84,7 +84,7 @@ test('a reply in a closed question card\'s thread is a prompt to that card\'s se
 test('a reply in a finished card\'s thread is a prompt to that card\'s session', async () => {
   const t = setup();
   t.store.putPosted('b0|s1|done:1', { bindingId: 'b0', sessionId: 's1', key: 'done:1', kind: 'finished', status: 'closed', adapter: 'slack', ref: { channel: 'C0', ts: 'card-done' } });
-  assert.deepEqual(await t.send(inThread('card-done', '10.1', 'next step')), { prompted: 's1' });
+  assert.deepEqual(await t.send(inThread('card-done', '10.1', 'next step')), { queued: 's1' });
   assert.deepEqual(t.host.prompts.map((p) => p.text), ['next step']);
   assert.equal(t.posts.length, 0, 'a card thread gets no quote and no root');
 });
@@ -100,7 +100,7 @@ test('a card thread whose record was pruned is not routed', async () => {
 
 test('a top-level message is quoted into a bot-owned root and recorded', async () => {
   const t = setup({ link: 'http://am' });
-  assert.deepEqual(await t.send(msg('10.1', 'run the <tests>\nthen stop')), { prompted: 's1' });
+  assert.deepEqual(await t.send(msg('10.1', 'run the <tests>\nthen stop')), { queued: 's1' });
   assert.equal(t.posts.length, 2, 'a root and one quote, no "Sent to" notice');
   const [rootPost, quote] = t.posts;
   assert.equal(rootPost.target.thread, null);
@@ -130,7 +130,7 @@ test('a second message reuses the root, and a failed quote still counts as deliv
   assert.equal(t.posts.length, 3, 'one root, two quotes');
   assert.deepEqual(roots(t), [{ ts: rootTs, at: 1_005_000, count: 2 }]);
   t.slack.post = async () => { throw new Error('slack chat.postMessage: ratelimited'); };
-  assert.deepEqual(await t.send(msg('10.3', 'three')), { prompted: 's1' });
+  assert.deepEqual(await t.send(msg('10.3', 'three')), { queued: 's1' });
   assert.ok(t.logs.some((e) => e.event === 'thread-failed'));
   assert.equal(t.store.state('channelMarks', 'slack|C0'), '10.3');
   assert.equal(t.store.state('deliveredTs', 'slack|C0').length, 3);
@@ -140,7 +140,7 @@ test('a second message reuses the root, and a failed quote still counts as deliv
 test('a reply under a delivered top-level ts routes, and does not move the root count', async () => {
   const t = setup({ sessions: ['s1', 's2'] });
   await t.send(msg('10.1', 'beta: first'));
-  assert.deepEqual(await t.send(inThread('10.1', '10.2', 'and more')), { prompted: 's2' });
+  assert.deepEqual(await t.send(inThread('10.1', '10.2', 'and more')), { queued: 's2' });
   assert.deepEqual(t.host.prompts.map((p) => [p.id, p.text]), [['s2', 'first'], ['s2', 'and more']]);
   assert.equal(roots(t, 's2')[0].count, 1, 'the delivered message is not under the root');
 });
@@ -149,7 +149,7 @@ test('a reply under the current root routes; a name prefix there does not re-add
   const t = setup({ sessions: ['s1', 's2'] });
   await t.send(msg('10.1', 'alpha: first'));
   const rootTs = roots(t)[0].ts;
-  assert.deepEqual(await t.send(inThread(rootTs, '10.2', 'beta: not for you')), { prompted: 's1' });
+  assert.deepEqual(await t.send(inThread(rootTs, '10.2', 'beta: not for you')), { queued: 's1' });
   assert.deepEqual(t.host.prompts.at(-1), { id: 's1', text: 'beta: not for you', requestId: requestIdFor('slack', 'C0', '10.2') });
   assert.equal(roots(t)[0].count, 2, 'the quote and the reply');
   assert.equal(t.store.state('threadMarks', 'slack|C0|s1'), '10.2');
@@ -172,7 +172,7 @@ test('the first binding that reaches the session and allows the sender wins', as
       { id: 'b2', scope: { type: 'session', id: 's1' }, extra: { allowedUsers: ['U1'] } },
     ],
   });
-  assert.deepEqual(await t.send(msg('10.1', 'hello')), { prompted: 's1' }, 'three bindings, one agent: it takes the message');
+  assert.deepEqual(await t.send(msg('10.1', 'hello')), { queued: 's1' }, 'three bindings, one agent: it takes the message');
   assert.equal(t.logs.find((e) => e.event === 'prompted').binding, 'b1', 'b0 does not allow U1');
 });
 
@@ -206,7 +206,7 @@ test('roots past 20 do not route, and a root rotates at 200 messages', async () 
   assert.equal(list.at(-1).count, 1);
   assert.equal(list.at(-2).count, 200, 'the full root is not touched');
   assert.deepEqual(await t.send(inThread('r0', '10.2', 'old')), { ignored: 'no-target' }, 'the dropped root no longer routes');
-  assert.deepEqual(await t.send(inThread('r1', '10.3', 'old but kept')), { prompted: 's1' });
+  assert.deepEqual(await t.send(inThread('r1', '10.3', 'old but kept')), { queued: 's1' });
 });
 
 test('a root rotates for a top-level message after 12 hours idle, and not before', async () => {
@@ -251,15 +251,15 @@ test('a notice that cannot be sent is logged and does not break the refusal', as
 
 test('a group binding of one takes an unaddressed message; a session binding does too', async () => {
   const t = setup();
-  assert.deepEqual(await t.send(msg('10.1', 'plain words')), { prompted: 's1' });
+  assert.deepEqual(await t.send(msg('10.1', 'plain words')), { queued: 's1' });
   assert.equal(t.ephemerals.length, 0);
   const u = setup({ bindings: [{ id: 'b0', scope: { type: 'session', id: 's1' } }, { id: 'b1', scope: { type: 'session', id: 's1' } }] });
-  assert.deepEqual(await u.send(msg('10.1', 'plain words')), { prompted: 's1' }, 'two bindings, one agent');
+  assert.deepEqual(await u.send(msg('10.1', 'plain words')), { queued: 's1' }, 'two bindings, one agent');
 });
 
 test('a name inside a top-level message still addresses one agent of several', async () => {
   const t = setup({ sessions: ['s1', 's2'] });
-  assert.deepEqual(await t.send(msg('10.1', '@Beta: do it')), { prompted: 's2' });
+  assert.deepEqual(await t.send(msg('10.1', '@Beta: do it')), { queued: 's2' });
   assert.deepEqual(t.host.prompts.map((p) => p.text), ['do it']);
 });
 
@@ -402,7 +402,7 @@ test('two top-level messages at once open one root and are both quoted under it'
   const t = setup();
   slowPost(t, () => new Promise((r) => setImmediate(r)));
   const out = await Promise.all([t.send(msg('10.1', 'one')), t.send(msg('10.2', 'two'))]);
-  assert.deepEqual(out, [{ prompted: 's1' }, { prompted: 's1' }]);
+  assert.deepEqual(out, [{ queued: 's1' }, { queued: 's1' }]);
   assert.equal(roots(t).length, 1, 'one root');
   assert.equal(roots(t)[0].count, 2);
   assert.equal(t.posts.filter((p) => p.card.kind === 'root').length, 1);
@@ -474,7 +474,7 @@ test('the delivered set keeps the newest 50 and a repeated ts appears once', asy
 test('a root that cannot be posted still delivers the message, with no root recorded', async () => {
   const t = setup();
   t.slack.post = async () => { throw new Error('slack chat.postMessage: channel_not_found'); };
-  assert.deepEqual(await t.send(msg('10.1', 'hello')), { prompted: 's1' });
+  assert.deepEqual(await t.send(msg('10.1', 'hello')), { queued: 's1' });
   assert.equal(t.host.prompts.length, 1);
   assert.equal(t.logs.filter((e) => e.event === 'thread-failed').length, 1);
   assert.deepEqual(roots(t), []);

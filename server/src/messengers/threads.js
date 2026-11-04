@@ -174,7 +174,7 @@ async function record(ctx, adapterId, session, r, text, via) {
   store.patchState({ ...patch, roots: { [sk]: roots.length ? roots : null }, recent: { [sk]: recent } });
 }
 
-/** After host.prompt accepted a message: quote it, advance the watermarks, keep the text. Never throws. */
+/** After host.deliver delivered a message: quote it, advance the watermarks, keep the text. Never throws. */
 function recordDelivery(ctx, adapterId, session, r, text, via) {
   const sk = `${adapterId}|${r.channel}|${session.id}`;
   const run = (ctx.queues.get(sk) || Promise.resolve()).then(() => record(ctx, adapterId, session, r, text, via)).catch((e) => {
@@ -191,19 +191,20 @@ function sessionKeys(store, prefix) {
 
 /** A removed binding: drop the thread state of every session no remaining binding in its channel reaches. */
 function forget(ctx, removed) {
-  const { store } = ctx;
+  const { store, rows } = ctx;
   const { adapter, target: { channel } } = removed;
   const left = store.bindings().filter((b) => b.adapter === adapter && b.target.channel === channel);
   const ck = `${adapter}|${channel}`;
   const prefix = `${ck}|`;
   const delivered = store.state('deliveredTs', ck) || [];
   const keys = sessionKeys(store, prefix);
-  const ids = new Set([...delivered.map((e) => e.sessionId), ...keys.map(([, k]) => k.slice(prefix.length))]);
+  const ids = new Set([...delivered.map((e) => e.sessionId), ...keys.map(([, k]) => k.slice(prefix.length)), ...rows.sessionsIn(adapter, channel)]);
   const gone = new Set([...ids].filter((id) => !left.some((b) => reaches(ctx, b, id))));
+  rows.dropSessions(adapter, channel, gone);
   const patch = {};
   for (const [section, k] of keys) if (gone.has(k.slice(prefix.length))) (patch[section] ||= {})[k] = null;
   const kept = delivered.filter((e) => !gone.has(e.sessionId));
-  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, reach: { [ck]: null } });
+  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, deliveredIds: { [ck]: null }, submittedIds: { [ck]: null }, reach: { [ck]: null } });
   if (kept.length !== delivered.length || !left.length) patch.deliveredTs = { [ck]: left.length && kept.length ? kept : null };
   if (Object.keys(patch).length) store.patchState(patch);
 }
@@ -211,11 +212,16 @@ function forget(ctx, removed) {
 /**
  * @param scope `(binding, sessions) => sessions` the binding reaches.
  * @param outbox `(adapterId, channel, ts) => sessionId|null`: a top-level message still waiting to be
- *   delivered. Nothing holds one yet, so the default finds none.
+ *   delivered (the outbox index). The default finds none.
+ * @param rows `{ sessionsIn(adapterId, channel), dropSessions(adapterId, channel, ids) }`: the outbox rows
+ *   of a channel, so removing a binding can delete those of sessions nothing reaches.
  */
-export function createThreads({ host, store, adapters, scope, log, now = () => Date.now(), outbox = () => null }) {
+export function createThreads({
+  host, store, adapters, scope, log, now = () => Date.now(), outbox = () => null,
+  rows = { sessionsIn: () => [], dropSessions: () => {} },
+}) {
   const ctx = {
-    host, store, adapters, scope, log, now, outbox,
+    host, store, adapters, scope, log, now, outbox, rows,
     told: new Map(),   // `adapter|channel|user` → when the last "not delivered" notice went out
     queues: new Map(), // `adapter|channel|session` → tail of the deliveries in flight for it
   };

@@ -27,6 +27,7 @@ import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
+import { deliverToSession } from './delivery-outcome.js';
 import * as store from './sessions.js';
 import * as groups from './groups.js';
 import * as order from './order.js';
@@ -830,7 +831,7 @@ const operatorName = () => process.env.SPACE_AUTHOR_NAME || process.env.AM_USER 
  * agent-to-agent API) go through here, which is what makes remote agents
  * reachable from everywhere the local ones are without duplicating either path.
  */
-async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null, runId = null } = {}) {
+async function deliver(session, { text, attachments = [] }, from, { signal = null, agentSourceId = null, requestId = null, runId = null, onCommitted = null } = {}) {
   // The privacy lock cancels admitted-but-uncommitted work: every effect below
   // is preceded by this check, so a prompt that was still waiting for its agent
   // to become ready is dropped when the lock lands — not typed a moment later
@@ -840,7 +841,7 @@ async function deliver(session, { text, attachments = [] }, from, { signal = nul
   const scope = lockScope();
   const cancelled = () => { if (scope.signal.aborted || signal?.aborted) throw lockedError(); };
   try {
-    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId, runId });
+    return await deliverInner(session, { text, attachments }, from, { cancelled, signal: scope.signal, agentSourceId, requestId, runId, onCommitted });
   } finally {
     scope.release();
   }
@@ -848,7 +849,7 @@ async function deliver(session, { text, attachments = [] }, from, { signal = nul
 
 // `runId` pins the delivery to one launch of the pane (boot revival's
 // message): it never starts the pane, and a replacement does not receive it.
-async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId, runId }) {
+async function deliverInner(session, { text, attachments }, from, { cancelled, signal, agentSourceId, requestId, runId, onCommitted }) {
   cancelled();
   assertCodexLaunchAllowed(session);
   if (sessionRuntime.shared(session)) {
@@ -879,6 +880,7 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
         ? attachments.filter((attachment) => attachment.kind === 'image').map((image) => image.path)
         : undefined,
     });
+    onCommitted?.();
     return ensureRunning(store.get(session.id) || session);
   }
   if (runId && runIdOf(session.id) !== runId) throw new ApiError(409, 'input-not-ready', 'session was stopped or restarted before this could be delivered');
@@ -4029,11 +4031,16 @@ const messengers = createMessengers({
       return finishedDigest(out, digest, readMarks.get(s.id));
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
-    async prompt(s, text, { requestId }) {
-      if (sessionRuntime.shared(s)) await sessionRuntime.send(s, { text, attachments: [], requestId });
-      else await deliver(s, { text }, undefined);
-      touchInput(s.id);
-    },
+    // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
+    deliver: (s, { text, requestId }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
+      shared: (session) => sessionRuntime.shared(session),
+      remote: (session) => isRemote(session.cli),
+      limit: remote.MAX_TEXT,
+      log: console.error,
+      touch: touchInput,
+      sendCodex: (session, message) => sessionRuntime.send(session, message),
+      sendLocal: (session, text, onCommitted) => deliver(session, { text }, undefined, { onCommitted }),
+    }),
   },
 });
 api.get('/api/messengers', (_req, res) => res.json(messengers.list()));

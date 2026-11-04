@@ -29,16 +29,18 @@ export class ReplyRouter {
    * @param answerer `(session, item, response, by, {binding, text})` delivers a typed answer: to a waiting
    *   hook, or to the session.
    */
-  constructor({ host, store, adapters, cards, threads, scope, log, answerer }) {
+  constructor({ host, store, adapters, cards, threads, outbox, scope, log, answerer }) {
     this.host = host;
     this.store = store;
     this.adapters = adapters;
     this.cards = cards;
     this.threads = threads;
+    this.outbox = outbox;
     this.scope = scope;
     this.answerer = answerer;
     this.log = log;
     this.handled = [];
+    this.inflight = new Map(); // messageId → the handle() in progress for it
     this.answering = new Set(); // posted keys with an answer in flight; never persisted, so a crash leaves the card open
   }
 
@@ -89,7 +91,22 @@ export class ReplyRouter {
    * One inbound event: `{ channel, ts, thread, user:{id,name}, messageId, optionId?, text? }`.
    * `ts` is the message a button lives on; `thread` is the card a reply belongs to.
    */
-  async handle(adapterId, r) {
+  // A redelivery that arrives while the first is still being persisted waits for it: if the first fails, so does
+  // this one (unacked), and if it succeeds this one is a duplicate.
+  handle(adapterId, r) {
+    const id = r.messageId;
+    const running = id && this.inflight.get(id);
+    if (running) return running.then(() => ({ ignored: 'duplicate' }));
+    const p = this.run(adapterId, r);
+    if (id) {
+      this.inflight.set(id, p);
+      const clear = () => this.inflight.delete(id);
+      p.then(clear, clear);
+    }
+    return p;
+  }
+
+  async run(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
     const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
@@ -108,8 +125,13 @@ export class ReplyRouter {
     try {
       // A closed input card no longer takes answers: a reply in its thread is an ordinary prompt.
       if (answering) return await this.answer(found, binding, session, r, text, reply);
-      return await this.prompt(adapterId, binding, session, r, text, reply, target.via);
+      return await this.prompt(adapterId, binding, session, r, text, target.via);
     } catch (e) {
+      if (e.persist) {
+        // Not accepted: the adapter leaves the event unacked, and its redelivery must not look like a duplicate.
+        this.handled = this.handled.filter((id) => id !== r.messageId);
+        throw e;
+      }
       this.log({
         event: 'reply-failed', binding: binding.id, session: session.id,
         ...(e.requestId ? { requestId: e.requestId } : {}), error: e.message,
@@ -143,7 +165,7 @@ export class ReplyRouter {
     return null;
   }
 
-  async prompt(adapterId, binding, session, r, text, reply, via) {
+  async prompt(adapterId, binding, session, r, text, via) {
     const body = text.trim();
     if (!body) return { ignored: 'empty' };
     // The id follows the Slack message; without a ts there is nothing stable to derive it from.
@@ -152,13 +174,8 @@ export class ReplyRouter {
       return { ignored: 'no-ts' };
     }
     const requestId = requestIdFor(adapterId, r.channel, r.ts);
-    try { await this.host.prompt(session, body, { requestId, user: r.user }); } catch (e) {
-      e.requestId = requestId; // handle() logs it with reply-failed
-      throw e;
-    }
-    this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id, requestId });
-    await this.threads.recordDelivery(adapterId, session, r, body, via);
-    return { prompted: session.id };
+    // Returns once the row is on disk; the drain delivers it (outbox.js).
+    return this.outbox.accept({ requestId, binding, session, r, body, via });
   }
 
   async answer([k, snapshot], binding, session, r, text, reply) {

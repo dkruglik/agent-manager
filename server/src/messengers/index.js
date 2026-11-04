@@ -12,7 +12,8 @@ import { SlackAdapter } from './adapters/slack.js';
  * @typedef {object} Adapter The messenger contract (docs/messengers.md, "Adding a messenger").
  * @property {() => boolean} configured  True when its tokens are set.
  * @property {(hooks: {
- *   onReply: (r: {channel: string, ts: string, thread: string|null, user: {id: string, name?: string},
+ *   onReply: (resolves once the event is durable, so the adapter acks it only then; a rejection leaves it
+ *     unacked and the service redelivers) (r: {channel: string, ts: string, thread: string|null, user: {id: string, name?: string},
  *     messageId: string, optionId?: string, text?: string}) => Promise<unknown>,
  *   onCommand: (c: {channel: string, user: {id: string, name?: string}, text: string}) => Promise<string>,
  *   onStatus: (s: {connected: boolean, error: string|null}) => void,
@@ -46,7 +47,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(ADAPTERS).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = new MessengerBridge({ host, store, adapters, log, settleMs: config.finishedDelayMs });
+  const bridge = new MessengerBridge({ host, store, adapters, log, dataDir, settleMs: config.finishedDelayMs });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);

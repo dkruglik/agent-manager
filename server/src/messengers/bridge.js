@@ -1,7 +1,9 @@
+import path from 'node:path';
 import { inputCard, finishedCard, noticeCard } from './cards.js';
 import { ReplyRouter } from './replies.js';
 import { HookDecisions } from './hook-decisions.js';
 import { createThreads } from './threads.js';
+import { createOutbox } from './outbox.js';
 
 // The bridge between Agent Manager sessions and chat messengers.
 //
@@ -42,7 +44,7 @@ const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
 
 export class MessengerBridge {
   constructor({
-    host, store, adapters, now = () => Date.now(), log = () => {},
+    host, store, adapters, now = () => Date.now(), log = () => {}, dataDir = path.dirname(store.file),
     settleMs = 8000, digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
     decisionTimeoutMs = 120_000, setTimer = setTimeout, clearTimer = clearTimeout,
   }) {
@@ -55,9 +57,14 @@ export class MessengerBridge {
     this.timer = null;
     this.ticking = false;
     const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
-    this.threads = createThreads({ host, store, adapters, log, now, scope });
+    this.threads = createThreads({
+      host, store, adapters, log, now, scope,
+      outbox: (a, c, ts) => this.outbox.waiting(a, c, ts),
+      rows: { sessionsIn: (a, c) => this.outbox.sessionsIn(a, c), dropSessions: (a, c, ids) => this.outbox.dropSessions(a, c, ids) },
+    });
+    this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
-      host, store, adapters, log, scope, threads: this.threads,
+      host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
       answerer: (...args) => this.hooks.answer(...args),
       cards: {
         refresh: (p, session, partial) => this.refreshCard(p, session, partial),
@@ -236,6 +243,9 @@ export class MessengerBridge {
   /** What Settings shows for a binding whose posts or lookups are failing, else null. */
   lastError(bindingId) { return this.failing.get(bindingId)?.error ?? null; }
 
+  /** Delivers the waiting chat prompts (outbox.js); tests call it directly. */
+  drain() { return this.outbox.drain(); }
+
   handleReply(adapterId, r) { return this.replies.handle(adapterId, r); }
   handleCommand(adapterId, c) { return this.replies.command(adapterId, c); }
 
@@ -259,7 +269,10 @@ export class MessengerBridge {
         log: (e) => this.log({ adapter: id, ...e }),
       });
     }
-    this.timer = setInterval(() => { this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.message })); }, this.tickMs);
+    this.timer = setInterval(() => {
+      this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.message }));
+      this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.message }));
+    }, this.tickMs);
     this.timer.unref?.();
   }
 
