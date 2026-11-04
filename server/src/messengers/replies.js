@@ -79,6 +79,15 @@ export class ReplyRouter {
 
   byName(bindings, text) { return this.threads.byName(bindings, text); }
 
+  // A refused message is settled: backfill reads the same message from history after a reconnect and
+  // must neither deliver it later nor answer it a second time. A failed write is a log line, not a failed refusal.
+  settle(adapterId, r) {
+    if (!r.ts || r.edit || r.deleted || r.optionId) return;
+    try { this.outbox.settle(adapterId, r.channel, requestIdFor(adapterId, r.channel, r.ts)); } catch (e) {
+      this.log({ event: 'settle-failed', adapter: adapterId, channel: r.channel, error: String(e.message).slice(0, 200) });
+    }
+  }
+
   // An unaddressed message in a channel with several agents goes to none of them. An allowed sender is told
   // once with an ephemeral notice; the log records the skip (never the text).
   async skipUnnamed(adapterId, r, bindings) {
@@ -114,7 +123,11 @@ export class ReplyRouter {
     const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
     const target = this.threads.route(adapterId, bindings, r);
-    if (target.unnamed) return r.edit ? { ignored: 'unnamed' } : this.skipUnnamed(adapterId, r, bindings);
+    if (target.unnamed) {
+      if (r.edit) return { ignored: 'unnamed' };
+      this.settle(adapterId, r);
+      return this.skipUnnamed(adapterId, r, bindings);
+    }
     if (target.ignored) return { ignored: target.ignored };
     const { found, text } = target;
     const posted = found?.[1];
@@ -124,7 +137,10 @@ export class ReplyRouter {
     const where = posted ? posted.ref.ts : (r.thread || r.ts);
     const reply = (t) => this.say(adapterId, r.channel, where, t);
     const refused = await this.refusal(binding, session, r, reply, reached, !answering);
-    if (refused) return refused;
+    if (refused) {
+      this.settle(adapterId, r);
+      return refused;
+    }
     try {
       // A closed input card no longer takes answers: a reply in its thread is an ordinary prompt.
       if (answering) return await this.answer(found, binding, session, r, text, reply);

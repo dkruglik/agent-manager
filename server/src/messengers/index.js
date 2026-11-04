@@ -60,6 +60,11 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     return b;
   };
 
+  // Thread state stays while another binding in the channel still reaches the session.
+  const forget = (binding) => {
+    try { bridge.threads.forget(binding); } catch (e) { log({ event: 'forget-failed', binding: binding.id, error: e.message }); }
+  };
+
   // The operations behind /api/messengers; index.js registers the routes so
   // they pass the same admission and validation as every other route.
   return {
@@ -79,7 +84,16 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
       };
     },
     create: (body) => store.putBinding(validateBinding(body, { adapters: ids, scopeExists })),
-    update: (id, body) => store.putBinding(validateBinding(body, { adapters: ids, existing: existing(id), scopeExists })),
+    update(id, body) {
+      const before = existing(id);
+      const saved = store.putBinding(validateBinding(body, { adapters: ids, existing: before, scopeExists }));
+      // A binding moved to another channel or scope no longer reaches what it did: its old thread state goes
+      // the way a removed binding's does (the new binding is already in the store, so a session it still reaches stays).
+      const sameTarget = before.target.channel === saved.target.channel
+        && before.scope.type === saved.scope.type && before.scope.id === saved.scope.id;
+      if (!sameTarget) forget(before);
+      return saved;
+    },
     // Saved channels and users are independent of bindings: neither creating nor removing one touches them.
     saveTargets(body) {
       store.putSaved(validateSaved(body, { adapters: ids }));
@@ -88,8 +102,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     remove(id) {
       const removed = store.binding(id);
       if (!store.removeBinding(id)) throw notFound();
-      // Thread state stays while another binding in the channel still reaches the session.
-      try { bridge.threads.forget(removed); } catch (e) { log({ event: 'forget-failed', binding: id, error: e.message }); }
+      forget(removed);
       return { ok: true };
     },
     // A Claude hook asks for a chat decision; { output: null } means none.

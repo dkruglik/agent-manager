@@ -118,6 +118,26 @@ function keepCopy(file, aside) {
   }
 }
 
+// The data is on disk before the rename, so a power loss leaves the old file or the whole new one, never an empty one.
+function writeSynced(file, data) {
+  const fd = fs.openSync(file, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+}
+
+// Makes the rename durable. The new file is already in place, so a directory that cannot be synced is a warning.
+function syncDir(dir) {
+  let fd;
+  try {
+    fd = fs.openSync(dir, fs.constants.O_RDONLY);
+    fs.fsyncSync(fd);
+  } catch (e) {
+    console.warn(`[messengers] could not sync ${dir}: ${e.message}`);
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 // Persists to one JSON file, written whole and renamed into place, so a crash
 // mid-write leaves the previous version rather than half a file.
 export class BindingStore {
@@ -181,9 +201,10 @@ export class BindingStore {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp`;
       // Open cards hold tool inputs: owner-only, including a tmp file left by an earlier crash.
-      fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+      writeSynced(tmp, JSON.stringify(next, null, 2));
       fs.chmodSync(tmp, 0o600);
       fs.renameSync(tmp, this.file);
+      syncDir(path.dirname(this.file));
     } catch (e) {
       console.error(`[messengers] could not save ${this.file}: ${e.message}`);
       throw new ApiError(500, 'internal-error', 'Could not save the messenger bindings.');

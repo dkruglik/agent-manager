@@ -66,7 +66,7 @@ function setup({ lock = OPEN, root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-m
   const dir = path.join(root, 'messenger-outbox');
   const files = () => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : []);
   const bridge = make();
-  return { host, posts, logs, make, bridge, files, dir, send: (r, b = bridge) => b.handleReply('slack', r) };
+  return { host, posts, logs, make, bridge, files, dir, clock, send: (r, b = bridge) => b.handleReply('slack', r) };
 }
 
 const msg = (ts, body, extra = {}) => ({ channel: 'C0', ts, thread: null, user: alice, messageId: `m${ts}`, text: body, ...extra });
@@ -199,6 +199,55 @@ test('a restart during a real lock loses the notice: the rows are already gone',
   const again = t.make();
   again.start();
   t.host.setLock(OPEN);
+  assert.deepEqual(t.files(), [], 'the rows are gone, not only the notice');
   assert.equal(lockedLines(t).length, 0);
   await again.stop();
+});
+
+test('a send in flight that ends submitted when the lock lands does not post "Not delivered (locked)"', async () => {
+  const t = setup();
+  t.bridge.start();
+  t.host.outcome = (s, signal) => new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve({ state: 'submitted', reason: 'typed' }));
+  });
+  await t.send(msg('10.1', 'one'));
+  await t.send(msg('10.2', 'two'));
+  const draining = t.bridge.drain();
+  await new Promise((r) => setImmediate(r));
+  t.host.setLock(REAL);
+  await draining;
+  t.host.setLock(OPEN);
+  await t.bridge.drain();
+  assert.deepEqual(t.files(), []);
+  assert.equal(t.host.deliveries.length, 1);
+  assert.deepEqual(lockedLines(t).map((p) => p.target.thread), ['10.2'], 'only the row that never went out is announced');
+  await t.bridge.stop();
+});
+
+test('the 24 hour expiry line waits for the unlock, during checking as during a real lock', async () => {
+  for (const lock of [CHECKING, REAL]) {
+    const t = setup({ lock: CHECKING });
+    await t.send(msg('10.1', 'one'));
+    t.host.lock = lock; // set directly: the outbox was not told, so the row is still there
+    t.clock.t += 25 * 3600_000;
+    await t.bridge.drain();
+    assert.deepEqual(t.files(), [], `${lock.reason}: the row expired`);
+    assert.equal(t.posts.length, 0, `${lock.reason}: nothing is posted during the lock`);
+    t.host.lock = OPEN;
+    await t.bridge.outbox.noteLock(OPEN);
+    assert.deepEqual(t.posts.map((p) => p.card.body), ['Not delivered — still waiting after 24h.']);
+  }
+});
+
+test('the "deleted after it was sent" line is not posted during a real lock', async () => {
+  const t = setup();
+  t.bridge.start();
+  await t.send(msg('10.1', 'one'));
+  await t.bridge.drain();
+  t.host.setLock(REAL);
+  const gone = { channel: 'C0', ts: '10.1', thread: null, user: alice, messageId: 'ev-del', deleted: { ts: '10.1' } };
+  const before = t.posts.length;
+  await t.send(gone);
+  assert.equal(t.posts.length, before, 'nothing is said in the channel');
+  await t.bridge.stop();
 });

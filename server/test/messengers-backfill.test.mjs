@@ -84,6 +84,32 @@ test('messages older than an hour are not delivered; each user gets one ephemera
   assert.equal(out.skipped, 3);
 });
 
+test('a skipped message is announced once, not again on the next reconnect', async () => {
+  const t = rig();
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD), m(OLD2), m(NEW1)]);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1, 'no second notice for the same messages');
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD), m(OLD2), m('4990003.1')]);
+  await backfill(t.ctx);
+  assert.deepEqual(t.ephemerals.map((e) => e.text), [
+    '2 messages you sent while Agent Manager was offline were not delivered.',
+    '1 message you sent while Agent Manager was offline was not delivered.',
+  ]);
+});
+
+test('a notice that could not be posted is tried again on the next reconnect', async () => {
+  const t = rig();
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD)]);
+  const post = t.ctx.adapter.postEphemeral;
+  t.ctx.adapter.postEphemeral = async () => { throw new Error('rate limited'); };
+  await backfill(t.ctx);
+  t.ctx.adapter.postEphemeral = post;
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+});
+
 test('a user no binding allows gets no notice, and a message already delivered is not counted as missed', async () => {
   const t = rig();
   const delivered = requestIdFor('slack', 'C0', OLD);

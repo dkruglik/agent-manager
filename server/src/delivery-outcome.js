@@ -69,6 +69,19 @@ export function earlyOutcome(session, runtime) {
 }
 
 /**
+ * The commit point of a chat prompt for a session that never started: the text becomes the session's
+ * `pendingPrompt` (the CLI's launch argument), and only after that is written does `onCommitted()` run, which is
+ * what makes a later launch failure still count as delivered (`attemptDelivery`). `sessions` is the session store
+ * (`update(id, patch)`); an update that stored nothing throws before anything is reported committed.
+ */
+export function commitPendingPrompt(sessions, session, { prompt, imagePaths, onCommitted }) {
+  if (!sessions.update(session.id, { pendingPrompt: prompt, pendingImagePaths: imagePaths })) {
+    throw new Error('the session no longer exists');
+  }
+  onCommitted?.();
+}
+
+/**
  * Text for a remote agent's message file. `remote.append` cuts silently at its
  * limit; a Slack prompt over it is cut here instead, so the agent sees a line
  * saying so. The result stays within `max`, so append does not cut the line.

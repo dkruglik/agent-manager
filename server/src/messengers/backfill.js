@@ -1,5 +1,5 @@
 import { requestIdFor } from './replies.js';
-import { threadHistorySources } from './delivery-state.js';
+import { addDeliveredId, threadHistorySources } from './delivery-state.js';
 
 // What Slack held while the server was away, read once per socket connect (not on Slack's hourly refresh).
 // History is only ever read from a watermark; every message that is sent on goes through `accept`, the path
@@ -18,19 +18,37 @@ function threadsOf(store, ck) {
   return threadHistorySources(store, ck);
 }
 
+// Whether the message already got in or was dealt with: delivered, submitted, or settled (refused, dropped,
+// or announced as skipped). A live event and a history copy have different message ids, but the same request id.
+const handled = (store, ck, id) => ['deliveredIds', 'submittedIds', 'settledIds'].some((s) => store.state(s, ck)?.includes(id));
+
 // A skipped message counts as missed only for someone a binding allows and only when it never got in.
-function missed(store, bindings, ck, adapterId, r) {
-  const id = requestIdFor(adapterId, r.channel, r.ts);
-  if (store.state('deliveredIds', ck)?.includes(id) || store.state('submittedIds', ck)?.includes(id)) return false;
-  return bindings.some((b) => b.allowedUsers.includes(r.user?.id));
+function missed(store, bindings, ck, id, r) {
+  return !handled(store, ck, id) && bindings.some((b) => b.allowedUsers.includes(r.user?.id));
 }
 
+// Remembers the messages a notice was sent for, so the next reconnect does not announce them again.
+function settleSkipped(ctx, ck, ids) {
+  try {
+    const kept = ids.reduce((all, id) => addDeliveredId(all, id), ctx.store.state('settledIds', ck));
+    ctx.store.patchState({ settledIds: { [ck]: kept } });
+  } catch (e) {
+    ctx.log({ event: 'settle-failed', channel: ck, error: String(e.message).slice(0, 200) });
+  }
+}
+
+// `skipped`: user → ids of their messages that were not delivered. Returns the ids a notice went out for.
 async function notify({ adapter, log }, channel, skipped) {
-  for (const [user, n] of skipped) {
-    try { await adapter.postEphemeral({ channel, user, text: noticeText(n) }); } catch (e) {
+  const told = [];
+  for (const [user, ids] of skipped) {
+    try {
+      await adapter.postEphemeral({ channel, user, text: noticeText(ids.length) });
+      told.push(...ids);
+    } catch (e) {
       log({ event: 'notice-failed', channel, error: e.message });
     }
   }
+  return told;
 }
 
 async function fetchMessages({ adapter, log }, args) {
@@ -56,18 +74,21 @@ async function backfillChannel(ctx, channel, bindings) {
     if (!messages) { failed = true; continue; }
     for (const r of messages) {
       counts.fetched += 1;
+      const id = requestIdFor(adapterId, r.channel, r.ts);
       if (ageMs(now(), r.ts) > MAX_AGE_MS) {
         counts.skipped += 1;
-        if (missed(store, bindings, ck, adapterId, r)) skipped.set(r.user.id, (skipped.get(r.user.id) || 0) + 1);
+        if (missed(store, bindings, ck, id, r)) skipped.set(r.user.id, [...(skipped.get(r.user.id) || []), id]);
         continue;
       }
+      if (handled(store, ck, id)) continue; // refused, dropped or delivered before: not answered or sent a second time
       try { await accept(adapterId, r); counts.accepted += 1; } catch (e) {
         acceptFailed += 1;
         log({ event: 'backfill-accept-failed', channel, error: e.message });
       }
     }
   }
-  await notify(ctx, channel, skipped);
+  const told = await notify(ctx, channel, skipped);
+  if (told.length) settleSkipped(ctx, ck, told);
   if (acceptFailed) failed = true;
   return { counts, failed, acceptFailed };
 }

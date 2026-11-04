@@ -235,7 +235,7 @@ function forget(ctx, removed) {
   const patch = {};
   for (const [section, k] of keys) if (gone.has(k.slice(prefix.length))) (patch[section] ||= {})[k] = null;
   const kept = delivered.filter((e) => !gone.has(e.sessionId));
-  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, deliveredIds: { [ck]: null }, submittedIds: { [ck]: null }, reach: { [ck]: null } });
+  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, deliveredIds: { [ck]: null }, submittedIds: { [ck]: null }, settledIds: { [ck]: null }, reach: { [ck]: null } });
   if (kept.length !== delivered.length || !left.length) patch.deliveredTs = { [ck]: left.length && kept.length ? kept : null };
   if (Object.keys(patch).length) store.patchState(patch);
 }

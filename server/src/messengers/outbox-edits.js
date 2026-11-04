@@ -40,6 +40,10 @@ export function createAmend(ctx, h) {
     if (row && ctx.active.has(row.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
     if (!known(binding.adapter, r.channel, id)) return ignore('unknown-message');
     if (editable(row)) return row.sessionId === session.id ? replace(row, session, body) : ignore('session-changed');
+    // A second edit of the same message replaces the edit that is still waiting instead of queueing another.
+    const waiting = [...rows.values()].find((x) => x.adapter === binding.adapter && x.channel === r.channel && x.editOf === r.edit.ts);
+    if (waiting && ctx.active.has(waiting.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
+    if (waiting && editable(waiting) && waiting.sessionId === session.id) return replace(waiting, session, EDIT_HEAD + body);
     const requestId = editRequestIdFor(binding.adapter, r.channel, r.edit.ts, r.edit.editTs);
     return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts } });
   }
@@ -62,6 +66,9 @@ export function createAmend(ctx, h) {
     if (!sessionId) {
       sessionId = store.state('deliveredTs', `${adapterId}|${r.channel}`)?.find((e) => e.ts === r.deleted.ts)?.sessionId;
     }
+    // Under a real lock nothing is said in the channel (the line would reveal the lock); 'checking' is not one.
+    const lock = ctx.host.lockState();
+    if (lock.locked && lock.reason !== 'checking') return { ignored: 'locked' };
     const thread = where(adapterId, r.channel, r.thread || row?.thread, sessionId);
     await postNotice(ctx.adapters, adapterId, { channel: r.channel, thread }, DELETED_LINE, log);
     return { noted: id };

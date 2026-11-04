@@ -1,7 +1,7 @@
-import { postNotice } from './cards.js';
 import { addDeliveredId, addSubmittedId, compareSlackTs } from './delivery-state.js';
 import { checkDir, createRow, loadRows, persistError, removeRow, rewriteRow } from './outbox-files.js';
 import { createAmend } from './outbox-edits.js';
+import { deferNotice, noteLock, say } from './outbox-lock.js';
 
 // The outbox between a chat message and the agent. A message is a row file
 // before the adapter acknowledges it (accept); the drain delivers it later,
@@ -9,6 +9,7 @@ import { createAmend } from './outbox-edits.js';
 // it is written, so a retry sends the same bytes (docs/messengers.md, "Outbox").
 
 const LIFETIME_MS = 24 * 3600_000;
+const EXPIRED_TEXT = 'Not delivered — still waiting after 24h.';
 export const PREAMBLE_HEAD = 'Earlier messages from Slack (the conversation restarted since):';
 
 const quoted = (text) => text.split('\n').map((l) => `> ${l}`).join('\n');
@@ -48,7 +49,7 @@ function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
   if (ctx.loadFailed) throw Object.assign(new Error('outbox directory could not be read'), { persist: true });
   const key = `${binding.adapter}|${r.channel}`;
   const idRow = { adapter: binding.adapter, channel: r.channel, requestId };
-  if (rows.has(requestId) || isDelivered(ctx, idRow) || isSubmitted(ctx, idRow)) {
+  if (rows.has(requestId) || isDelivered(ctx, idRow) || isSubmitted(ctx, idRow) || isSettled(ctx, idRow)) {
     log({ event: 'duplicate', requestId, binding: binding.id, session: session.id });
     return { ignored: 'duplicate' };
   }
@@ -66,6 +67,8 @@ function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
 const idsKey = (row) => `${row.adapter}|${row.channel}`;
 const isDelivered = ({ store }, row) => !!store.state('deliveredIds', idsKey(row))?.includes(row.requestId);
 const isSubmitted = ({ store }, row) => !!store.state('submittedIds', idsKey(row))?.includes(row.requestId);
+// Settled: refused, dropped or skipped without being delivered. Backfill must not bring it back (delivery-state.js).
+const isSettled = ({ store }, row) => !!store.state('settledIds', idsKey(row))?.includes(row.requestId);
 
 function remember(ctx, section, row) {
   const key = idsKey(row);
@@ -76,11 +79,36 @@ function remember(ctx, section, row) {
   ctx.store.patchState({ [section]: { [key]: next ?? null } });
 }
 
-// A failed delete is safe: the delivered-id set (or submittedIds) already says the file must not be sent.
-function drop(ctx, row) {
+// The file goes through here; a failure is remembered and upkeep tries again.
+function unlink(ctx, id) {
+  try { removeRow(ctx.dir, id); ctx.stuck.delete(id); } catch (e) {
+    if (!ctx.stuck.has(id)) ctx.log({ event: 'row-delete-failed', requestId: id, ...errMeta(e) });
+    ctx.stuck.add(id);
+  }
+}
+
+// A row that leaves without being delivered is recorded as settled before its file goes, so a file that
+// cannot be deleted is dropped (not sent) at the next start. A delivered row has its id in deliveredIds.
+function drop(ctx, row, { settled = true } = {}) {
   ctx.rows.delete(row.requestId);
-  try { removeRow(ctx.dir, row.requestId); } catch (e) {
-    ctx.log({ event: 'row-delete-failed', requestId: row.requestId, ...errMeta(e) });
+  if (settled) {
+    try { remember(ctx, 'settledIds', row); } catch (e) {
+      ctx.log({ event: 'settle-failed', requestId: row.requestId, ...errMeta(e) });
+    }
+  }
+  unlink(ctx, row.requestId);
+}
+
+// submittedIds is written after the send, and only then is the claim given back. A failure is retried by
+// upkeep; meanwhile the claim stays, so neither a restart nor this process sends the text again.
+function owe(ctx, row) {
+  try {
+    remember(ctx, 'submittedIds', row);
+    releaseDelivered(ctx, row);
+    ctx.owing.delete(row.requestId);
+  } catch (e) {
+    if (!ctx.owing.has(row.requestId)) ctx.log({ event: 'submitted-record-failed', requestId: row.requestId, ...errMeta(e) });
+    ctx.owing.set(row.requestId, row);
   }
 }
 
@@ -92,13 +120,13 @@ function saveSubmitted(ctx, row) {
   }
 }
 
-const say = (ctx, row, text) => postNotice(ctx.adapters, row.adapter, { channel: row.channel, thread: row.thread || row.ts }, text, ctx.log);
-
-async function expire(ctx, row) {
+async function expire(ctx, row, locked) {
   const { state } = row;
   drop(ctx, row);
   ctx.log({ event: 'expired', requestId: row.requestId, state });
-  if (state === 'pending') await say(ctx, row, 'Not delivered — still waiting after 24h.');
+  if (state !== 'pending') return;
+  // Under a lock the line would reveal the lock's timing: it waits for the unlock, like the lock notices.
+  if (locked) deferNotice(ctx, row, EXPIRED_TEXT); else await say(ctx, row, EXPIRED_TEXT);
 }
 
 // `[code, short reason]` why a row may no longer be delivered, or null: the same checks as when it was accepted.
@@ -119,36 +147,43 @@ function releaseDelivered(ctx, row) {
 
 const runOf = (ctx, session) => ctx.host.runId?.(session) ?? null;
 
-// The id is recorded before the row file goes, so a crash between the two cannot send the text again.
+// The id was claimed before the send (attempt), so the file can go at once and nothing here can send it again.
 async function delivered(ctx, row, session) {
-  remember(ctx, 'deliveredIds', row);
-  drop(ctx, row);
+  drop(ctx, row, { settled: false });
   ctx.log({ event: 'prompted', binding: row.bindingId, session: row.sessionId, user: row.user.id, requestId: row.requestId });
   const r = { channel: row.channel, ts: row.ts, thread: row.thread, user: row.user };
   await ctx.threads.recordDelivery(row.adapter, session, r, row.body, row.via);
 }
 
+// Once per pane launch: a stop and a new runId waits again; a stable run does not. A pending outcome, or null.
+async function awaitReady(ctx, row, session, scope) {
+  const run = runOf(ctx, session);
+  if (ctx.ready.get(row.sessionId) === run) return null;
+  try {
+    await ctx.host.ready(session, { signal: scope.signal });
+  } catch (e) {
+    const reason = e?.code === 'prompt-not-ready' ? 'prompt-not-ready' : 'error';
+    if (reason === 'error') ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
+    return { state: 'pending', reason };
+  }
+  if (!scope.signal.aborted && runOf(ctx, session) === run) ctx.ready.set(row.sessionId, run);
+  return null;
+}
+
 // One send under a lock scope: a real lock aborts it. A rejection is pending with reason 'error'.
+// The row counts as being sent only around host.deliver: while it waits for ready, an edit still replaces
+// its text and a delete still drops it, and the text is read when the send starts.
 async function attempt(ctx, row, session) {
   const scope = ctx.host.lockScope();
-  ctx.active.add(row.requestId); // an edit meanwhile is a new message: this send already has its bytes
   try {
-    // Once per pane launch. A stop and a new runId waits again; a stable run does not.
-    const run = runOf(ctx, session);
-    if (ctx.ready.get(row.sessionId) !== run) {
-      try {
-        await ctx.host.ready(session, { signal: scope.signal });
-      } catch (e) {
-        const reason = e?.code === 'prompt-not-ready' ? 'prompt-not-ready' : 'error';
-        if (reason === 'error') ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
-        return { state: 'pending', reason };
-      }
-      if (!scope.signal.aborted && runOf(ctx, session) === run) ctx.ready.set(row.sessionId, run);
-    }
+    const early = await awaitReady(ctx, row, session, scope);
+    if (early) return early;
     if (scope.signal.aborted) return { state: 'pending', reason: 'locked' };
+    if (!ctx.rows.has(row.requestId)) return { state: 'pending', reason: 'dropped' };
     // Claim the id before the bytes go out. A crash during the send must not deliver them twice.
     // A send that stays pending gives the id back, so the next drain tries again.
     remember(ctx, 'deliveredIds', row);
+    ctx.active.add(row.requestId); // an edit meanwhile is a new message: this send already has its bytes
     let out;
     try {
       out = await ctx.host.deliver(session, { text: row.text, requestId: row.requestId, signal: scope.signal });
@@ -156,8 +191,8 @@ async function attempt(ctx, row, session) {
       ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
       out = { state: 'pending', reason: 'error' };
     }
-    if (out?.state === 'submitted') remember(ctx, 'submittedIds', row);
-    if (out?.state !== 'delivered') releaseDelivered(ctx, row);
+    if (out?.state === 'submitted') owe(ctx, row);
+    else if (out?.state !== 'delivered') releaseDelivered(ctx, row);
     return out;
   } finally { ctx.active.delete(row.requestId); scope.release(); }
 }
@@ -178,6 +213,8 @@ async function send(ctx, row) {
     return true;
   }
   const out = await attempt(ctx, row, session);
+  // The text reached the agent: a lock that landed during the send must not say it was not delivered.
+  if (out?.state === 'delivered' || out?.state === 'submitted') ctx.noticeLater.delete(row.requestId);
   if (out?.state === 'delivered') { await delivered(ctx, row, session); return true; }
   // A real lock landed during the send and already deleted the row: nothing is left to record.
   if (!ctx.rows.has(row.requestId)) return true;
@@ -207,9 +244,12 @@ async function drainSession(ctx, list) {
 
 // Expiry and file upkeep never wait for a send, so a stuck session cannot keep a row past its day.
 async function upkeep(ctx) {
+  const { locked } = ctx.host.lockState();
+  for (const id of [...ctx.stuck]) unlink(ctx, id);
+  for (const row of [...ctx.owing.values()]) owe(ctx, row);
   for (const row of [...ctx.rows.values()]) {
     if (!ctx.rows.has(row.requestId)) continue;
-    if (ctx.now() - row.createdAt > LIFETIME_MS) await expire(ctx, row);
+    if (ctx.now() - row.createdAt > LIFETIME_MS) await expire(ctx, row, locked);
     else if (row.stale) saveSubmitted(ctx, row);
   }
 }
@@ -250,26 +290,6 @@ async function drain(ctx) {
   }));
 }
 
-// Tracks real locks. A real lock is `locked` with a reason other than 'checking'. When one lands (from unlocked,
-// from checking, or already in place when the bridge starts) every pending row is deleted and its thread
-// remembered in memory; once the manager unlocks, each such thread gets one line. Submitted rows stay.
-function noteLock(ctx, state) {
-  const real = !!state.locked && state.reason !== 'checking';
-  const landed = real && !ctx.realLock;
-  ctx.realLock = real;
-  if (landed) {
-    for (const row of [...ctx.rows.values()].filter((r) => r.state === 'pending')) {
-      ctx.noticeLater.set(`${row.adapter}|${row.channel}|${row.thread || row.ts}`, row);
-      drop(ctx, row);
-    }
-    ctx.log({ event: 'lock-landed', reason: state.reason });
-  }
-  if (state.locked || !ctx.noticeLater.size) return Promise.resolve();
-  const rows = [...ctx.noticeLater.values()];
-  ctx.noticeLater.clear();
-  return Promise.all(rows.map((row) => say(ctx, row, 'Not delivered (locked).')));
-}
-
 /** The session id behind a top-level message that is still waiting (pending or submitted), else null. */
 const waiting = ({ rows }, adapterId, channel, ts) => [...rows.values()]
   .find((r) => r.topLevel && r.adapter === adapterId && r.channel === channel && r.ts === ts)?.sessionId ?? null;
@@ -290,9 +310,10 @@ function restore(ctx, row) {
   // reached the agent, so the row stays submitted and is not sent again.
   if (row.state === 'pending' && isSubmitted(ctx, row)) Object.assign(row, { state: 'submitted', stale: true });
   if (row.state === 'submitted') { ctx.rows.set(row.requestId, row); return; }
-  if (isDelivered(ctx, row)) {
-    try { removeRow(ctx.dir, row.requestId); } catch (e) { ctx.log({ event: 'row-delete-failed', requestId: row.requestId, error: e.code ?? e.name }); }
-    ctx.log({ event: 'already-delivered', requestId: row.requestId });
+  const gone = isDelivered(ctx, row) ? 'already-delivered' : isSettled(ctx, row) && 'already-settled';
+  if (gone) {
+    unlink(ctx, row.requestId);
+    ctx.log({ event: gone, requestId: row.requestId });
     return;
   }
   ctx.rows.set(row.requestId, row);
@@ -303,6 +324,7 @@ export function createOutbox({ host, store, adapters, threads, dir, log, now = (
   const ctx = {
     host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), active: new Set(),
     ready: new Map(), unsafe: false, loadFailed: false, realLock: false, noticeLater: new Map(),
+    stuck: new Set(), owing: new Map(),
   };
   const loaded = loadOrFail(ctx);
   if (ctx.unsafe) log({ event: 'outbox-unsafe' });
@@ -312,7 +334,8 @@ export function createOutbox({ host, store, adapters, threads, dir, log, now = (
     accept: (args) => accept(ctx, args),
     edit: amend.edit,
     deleted: amend.deleted,
-    noteLock: (state) => noteLock(ctx, state),
+    noteLock: (state) => noteLock(ctx, state, drop),
+    settle: (adapterId, channel, requestId) => remember(ctx, 'settledIds', { adapter: adapterId, channel, requestId }),
     drain: () => drain(ctx),
     waiting: (adapterId, channel, ts) => waiting(ctx, adapterId, channel, ts),
     sessionsIn: (adapterId, channel) => sessionsIn(ctx, adapterId, channel),

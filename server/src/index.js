@@ -27,7 +27,7 @@ import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
-import { deliverToSession, readyAfterRevive, bootRevive } from './delivery-outcome.js';
+import { deliverToSession, readyAfterRevive, bootRevive, commitPendingPrompt } from './delivery-outcome.js';
 import * as store from './sessions.js';
 import * as groups from './groups.js';
 import * as order from './order.js';
@@ -875,13 +875,13 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
   // needs a session id first, but typing into a half-booted TUI loses turns.
   const cli = cliById(session.cli);
   if (!session.everStarted && cli?.withPrompt && prelude.length === 0) {
-    store.update(session.id, {
-      pendingPrompt: prompt,
-      pendingImagePaths: session.cli === 'codex'
+    commitPendingPrompt(store, session, {
+      prompt,
+      imagePaths: session.cli === 'codex'
         ? attachments.filter((attachment) => attachment.kind === 'image').map((image) => image.path)
         : undefined,
+      onCommitted,
     });
-    onCommitted?.();
     return ensureRunning(store.get(session.id) || session);
   }
   if (runId && runIdOf(session.id) !== runId) throw new ApiError(409, 'input-not-ready', 'session was stopped or restarted before this could be delivered');

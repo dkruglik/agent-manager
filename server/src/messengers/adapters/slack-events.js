@@ -26,9 +26,11 @@ function bodyOf(m) {
   return text ? `${text}\n\n${FILE_NOTE}` : FILE_NOTE;
 }
 
-// A plain message, or a file share; every other subtype is dropped.
+// A plain message, a file share, or a thread reply also sent to the channel; every other subtype is dropped.
+const PLAIN_SUBTYPES = new Set(['file_share', 'thread_broadcast']);
+
 function plain(m, channel, botUser, messageId) {
-  if ((m.subtype && m.subtype !== 'file_share') || fromBot(m, botUser)) return null;
+  if ((m.subtype && !PLAIN_SUBTYPES.has(m.subtype)) || fromBot(m, botUser)) return null;
   const thread = m.thread_ts && m.thread_ts !== m.ts ? m.thread_ts : null;
   return { channel, ts: m.ts, thread, user: { id: m.user }, messageId: messageId || `${channel}:${m.ts}`, text: bodyOf(m) };
 }
@@ -55,7 +57,9 @@ export function messageReply(p, botUser) {
   if (e.type !== 'message') return null;
   if (e.subtype === 'message_changed') return changed(e, botUser, p.event_id);
   if (e.subtype === 'message_deleted') return deleted(e, botUser, p.event_id);
-  return plain(e, e.channel, botUser, p.event_id);
+  // No event id: the live message and its history copy must have one id (`channel:ts`), or a message
+  // read again after a reconnect would not be recognised as handled.
+  return plain(e, e.channel, botUser, null);
 }
 
 /** A message from conversations.history or .replies; `thread` is the thread asked for, whose root is skipped. */
