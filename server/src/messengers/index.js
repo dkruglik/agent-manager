@@ -22,6 +22,8 @@ import { SlackAdapter } from './adapters/slack.js';
  * @property {(target: {channel: string, thread: string|null}, card: object) => Promise<{channel: string, ts: string}>} post
  *   Throws on failure; an error's `publicMessage`, if set, may be shown in Settings.
  * @property {(ref: {channel: string, ts: string}, card: object) => Promise<void>} update
+ * @property {(e: {channel: string, user: string, text: string}) => Promise<void>} postEphemeral
+ *   Shows `text` in the channel to one user only.
  */
 
 /** @type {Record<string, (config: object) => Adapter>} */
@@ -78,7 +80,10 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
       return store.saved();
     },
     remove(id) {
+      const removed = store.binding(id);
       if (!store.removeBinding(id)) throw notFound();
+      // Thread state stays while another binding in the channel still reaches the session.
+      try { bridge.threads.forget(removed); } catch (e) { log({ event: 'forget-failed', binding: id, error: e.message }); }
       return { ok: true };
     },
     // A Claude hook asks for a chat decision; { output: null } means none.

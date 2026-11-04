@@ -58,6 +58,8 @@ export function renderBlocks(card) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${toMrkdwn(card.title)}*${where}` } });
   }
   if (card.body) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: toMrkdwn(card.body).slice(0, 2990) } });
+  // Ready mrkdwn from the bridge (a quote with a mention); it has already escaped what it quotes.
+  if (card.mrkdwn) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: card.mrkdwn.slice(0, 2990) } });
   if (card.details) blocks.push(...detailBlocks(card.details));
   if (card.resolved) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `☑️ ${toMrkdwn(card.resolved.text)}` }] });
@@ -76,7 +78,7 @@ export function renderBlocks(card) {
   return blocks;
 }
 
-const fallbackText = (card) => [card.title, card.body].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
+const fallbackText = (card) => [card.title, card.body, card.mrkdwn].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
 
 // Slack's Socket Mode envelope types that carry something for us.
 function interactiveReply(p) {
@@ -255,5 +257,10 @@ export class SlackAdapter {
 
   async update(ref, card) {
     await this.call('chat.update', { channel: ref.channel, ts: ref.ts, text: fallbackText(card), blocks: renderBlocks(card) });
+  }
+
+  // Visible to one user only; the bot token's chat:write scope covers it.
+  async postEphemeral({ channel, user, text }) {
+    await this.call('chat.postEphemeral', { channel, user, text });
   }
 }

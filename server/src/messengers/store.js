@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { ApiError, invalid } from '../api-errors.js';
+import { SECTIONS, loadDelivery } from './delivery-state.js';
 
 // Bindings connect one messenger target (a Slack channel, a Telegram chat) to a
 // session or a group. Delivery state lives beside them so a restart neither
@@ -120,7 +121,7 @@ export class BindingStore {
   constructor(file, { now = () => Date.now() } = {}) {
     this.file = file;
     this.now = now;
-    this.data = { bindings: [], posted: {}, seen: {}, saved: {} };
+    this.data = { bindings: [], posted: {}, seen: {}, saved: {}, ...loadDelivery(null) };
     this.readOnly = false;
     this.load();
   }
@@ -139,7 +140,9 @@ export class BindingStore {
       const bindings = raw.bindings.filter(wellFormed);
       if (bindings.length !== raw.bindings.length) this.keepDropped(raw.bindings.length - bindings.length);
       const posted = Object.entries(plain(raw.posted)).filter(([, p]) => isPlain(p));
-      this.data = { bindings, posted: Object.fromEntries(posted), seen: plain(raw.seen), saved: loadSaved(raw.saved) };
+      this.data = {
+        bindings, posted: Object.fromEntries(posted), seen: plain(raw.seen), saved: loadSaved(raw.saved), ...loadDelivery(raw),
+      };
     } catch (e) { this.setAside(e); }
   }
 
@@ -254,4 +257,25 @@ export class BindingStore {
   // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
   seen(k) { return this.data.seen[k] ?? null; }
   putSeen(k, v) { this.commit({ ...this.data, seen: { ...this.data.seen, [k]: v } }); }
+
+  // Thread and delivery records (delivery-state.js): copies, so a caller cannot change the store without patchState().
+  state(section, key) {
+    const v = this.data[section]?.[key];
+    return v === undefined ? null : structuredClone(v);
+  }
+  stateKeys(section) { return Object.keys(this.data[section] || {}); }
+
+  /** Sets or, with null, deletes records: `{ roots: { [key]: [...], [other]: null } }`. One write for all of them. */
+  patchState(patch) {
+    const next = { ...this.data };
+    for (const [section, entries] of Object.entries(patch)) {
+      if (!SECTIONS.includes(section)) throw new Error(`unknown state section ${section}`);
+      const merged = { ...next[section] };
+      for (const [k, v] of Object.entries(entries)) {
+        if (v === null) delete merged[k]; else merged[k] = structuredClone(v);
+      }
+      next[section] = merged;
+    }
+    this.commit(next);
+  }
 }

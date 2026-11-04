@@ -4016,6 +4016,7 @@ const messengers = createMessengers({
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
     groupOf: (id) => groups.groupOf(id),
     locked: () => isLocked(),
+    sourceKey,
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];

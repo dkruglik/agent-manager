@@ -1,6 +1,7 @@
 import { inputCard, finishedCard, noticeCard } from './cards.js';
 import { ReplyRouter } from './replies.js';
 import { HookDecisions } from './hook-decisions.js';
+import { createThreads } from './threads.js';
 
 // The bridge between Agent Manager sessions and chat messengers.
 //
@@ -53,10 +54,11 @@ export class MessengerBridge {
     this.failing = new Map();      // bindingId → {count, error, retryAt} while its posts keep failing
     this.timer = null;
     this.ticking = false;
+    const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
+    this.threads = createThreads({ host, store, adapters, log, now, scope });
     this.replies = new ReplyRouter({
-      host, store, adapters, log,
+      host, store, adapters, log, scope, threads: this.threads,
       answerer: (...args) => this.hooks.answer(...args),
-      scope: (binding, sessions) => this.sessionsFor(binding, sessions),
       cards: {
         refresh: (p, session, partial) => this.refreshCard(p, session, partial),
         close: (k, p, session, text) => this.closeCard(k, p, session, text),
@@ -200,6 +202,7 @@ export class MessengerBridge {
         if (!this.statuses.get(binding.adapter)?.connected) continue;
         if (this.now() < (this.failing.get(binding.id)?.retryAt || 0)) continue;
         let failure = null;
+        await this.threads.noteReach(binding.adapter, binding.target.channel, sessions);
         for (const s of this.sessionsFor(binding, sessions)) {
           const e = await this.checkSession(binding, s);
           if (e) failure = e;

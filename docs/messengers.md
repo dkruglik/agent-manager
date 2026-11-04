@@ -12,12 +12,62 @@ answer from the chat:
 | In the chat | What happens in Agent Manager |
 | --- | --- |
 | Click an option on a question card | The question is answered through the CLI's typed API |
-| Reply in a question card's thread | Your text answers the first open question |
+| Reply in a question card's thread | While the question is open, your text answers the first open question. Once the card is closed, a reply is a normal prompt to that card's agent |
 | Click **Approve once / Deny** (only with *allow approvals*) | The permission request is decided |
 | Reply in a finished card's thread | Sent to that agent as a normal prompt |
-| `agent-name: text` or `@agent-name text` in a group channel | Sent to that agent as a normal prompt; a bare first word is not an address. In a channel with several agents only the named agent gets the message; an unaddressed one (or one naming an agent not in the channel) is sent to none of them, silently: nothing is posted in the channel, and the log records `refused` with reason `no-agent-named` (or `user-not-allowed` when the sender is on none of the channel's bindings) |
-| A plain message in a single-agent channel | Sent to that agent as a normal prompt |
+| `agent-name: text`, `@agent-name text` or `@agent-name: text` at the top level of the channel | Sent to that agent as a normal prompt; the name is a whole word, case-insensitive, and a bare first word is not an address |
+| A top-level message without a name, in a channel that reaches one agent | Sent to that agent as a normal prompt. A group of one counts, and so do two bindings that reach the same agent |
+| A top-level message without a name, in a channel that reaches several agents | Not delivered. An allowed sender gets one ephemeral line, "Not delivered. Address an agent with `name:`.", at most once an hour per user and channel; nobody else sees it. A sender who is on none of the channel's allowed-users lists gets nothing in the channel. The log records `refused` with reason `no-agent-named` (or `user-not-allowed`) |
+| Reply in the agent's own thread, or under a message that was delivered | Sent to that agent as a normal prompt. A name prefix inside a thread does not re-address it |
 | `/am status` | Lists agents in scope and their state |
+
+## Threads and routing
+
+Each agent gets one **bot-owned thread** per channel. The bot posts the root,
+`🧵 name · cli`, plus the **Open in Agent Manager** link when `AM_PUBLIC_URL` is
+set; a person's message is never the root. A top-level message that an agent
+accepted is quoted under its root (the sender's Slack id in bold, not a
+mention, so nobody is pinged; then the first lines of the text with `>`, cut at
+2 KB; `<`, `>` and `&` in the text are escaped, so mentions and `@channel` in
+it stay inert). There is no "Sent to …" notice: the quote
+is the confirmation. The `finished` card and question and approval cards stay
+**top-level** channel posts, as before, so their notifications do not change.
+An open question is therefore answered at the top level, in the card's thread.
+
+A message is routed in this order:
+
+1. **A card's thread.** An open question card takes the reply as its answer. A
+   closed question card or a finished card takes it as a normal prompt to that
+   card's agent. A card record is pruned after 7 days; until then its thread
+   routes, and afterwards a reply there goes nowhere.
+2. **A bot thread.** A reply under a root still among the agent's last 20 roots,
+   or under a top-level message the bridge delivered (the newest 50 per channel
+   are kept), goes to that agent. A name prefix in such a reply is part of the
+   text. A root that fell out of the list no longer routes.
+3. **A name** at the top level: `name: text`, `@name text` or `@name: text`.
+4. **The channel's only agent.** "One agent" means one distinct session that the
+   channel's bindings reach now.
+5. Otherwise the message is not delivered, with the ephemeral notice above.
+
+The binding that applies is the first binding in the channel that reaches the
+agent and lists the sender in its allowed users; approvals and events come from
+that binding. A card is the exception: a reply or button press that answers an
+open question or approval is judged by the binding that posted the card, as
+long as that binding still exists and reaches the agent. A user who is allowed
+only by another binding on the same agent cannot answer it; if the card's
+binding is gone, the first-binding rule applies. If no binding in the channel reaches the agent any more (it was
+removed from the group, or its binding was deleted), the message is refused
+with `not-in-channel`, whatever thread it was in. Then the usual refusals run
+(allowed users, a missing agent, the privacy lock).
+
+A root takes at most **200** bridge messages (the quote, plus each delivered
+reply in the thread). Once it is full, or when a top-level message arrives
+after the root was idle for **12 hours**, the next message opens a new root. The
+agent keeps its **20** newest roots; older ones drop out and stop routing.
+
+When a channel that reached one agent starts to reach two or more, the bridge
+posts one top-level notice that plain messages now need a name. The last count
+is stored, so a restart does not repeat it.
 
 A prompt from chat carries a request id: a version 8 UUID derived from the
 adapter, the channel, and the message `ts`. The same message keeps the same id
@@ -182,10 +232,10 @@ Limits:
   Posted cards, answers, prompts and refusals are written to
   `DATA_DIR/messengers.log.jsonl` (message text is never logged): `posted`,
   `skipped-read`, `answered`, `prompted`, `refused` (every refusal, with a `reason` such as
-  `user-not-allowed`, `no-agent-named`, `no-session`, `locked`, `closed`, `untyped`,
+  `user-not-allowed`, `no-agent-named`, `no-session`, `not-in-channel`, `locked`, `closed`, `untyped`,
   `approvals-off`, `too-long`, `unknown-option`, `nothing-open`),
   `hook-rejected`, `hook-response-lost`, `stopping` (on shutdown), and the failures `tick-failed`,
-  `reply-failed`, `notice-failed`, `update-failed`, `close-failed`,
+  `reply-failed`, `thread-failed` (a root or quote that could not be posted; the prompt was still delivered), `forget-failed`, `notice-failed`, `update-failed`, `close-failed`,
   `hook-post-failed`, `digest-failed`, `requests-failed`, plus the Slack
   socket's `bad-frame`, `frame-failed`, `ping-failed`, `socket-error`,
   `socket-silent` and `command-failed` (a `/am` command that failed is still
@@ -200,6 +250,16 @@ Limits:
 are in which channel (so a restart neither re-posts nor loses the ability to
 answer) and the newest reply already accounted for per agent (so connecting a
 channel does not replay old answers). Card records expire after 7 days. It also
+holds the thread state: each agent's roots (`{ts, at, count}`, 20 at most), a
+watermark per agent and thread (the last delivered reply `ts`), a watermark per
+channel (the last delivered top-level `ts`); a watermark never moves backwards, the delivered top-level `ts` set
+per channel (50 at most, oldest dropped, each pointing at its agent), the
+channel's last agent count, and per agent the last 3 delivered texts with the
+`lastSrc` they were delivered under. **These texts are Slack user content kept
+in `messengers.json`**, each cut at 2 KB (2048 characters). A file from an
+older version, without these keys, loads as empty state; malformed entries are
+dropped without a warning. Removing a binding deletes an agent's thread state
+only when no other binding in the channel still reaches that agent. It also
 holds the saved channels and users per messenger,
 `saved: {slack: {channels: [{id, name}], users: [{id, name}]}}`; malformed saved
 entries are dropped on load without setting the file aside.
@@ -241,6 +301,7 @@ export class XAdapter {
   async stop() {}
   async post({ channel, thread }, card) { return { channel, ts }; } // ts: the message id
   async update(ref, card) {}                         // re-render a posted card
+  async postEphemeral({ channel, user, text }) {}    // a line only `user` sees (Slack: chat.postEphemeral, covered by chat:write)
 }
 ```
 
@@ -250,7 +311,9 @@ answers and prompts, and `cards.js` builds the neutral cards both use.
 
 A **card** is `{kind, title, agent:{id,name,cli,group}, body, details, options:[{id,label,style}], hint, link, resolved}`.
 Render `options` as buttons whose callback carries `option.id`; when `resolved`
-is set, drop the buttons and show `resolved.text`.
+is set, drop the buttons and show `resolved.text`. A card with `mrkdwn` (the
+quote under a root) carries text the bridge has already escaped for Slack;
+render it as it is.
 
 Inbound events go to `onReply({channel, ts, thread, user:{id,name}, messageId, optionId?, text?})`:
 `ts` is the message a button lives on, `thread` the card a threaded reply belongs
@@ -283,7 +346,12 @@ real Claude.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
 - `messengers-store.test.mjs`: binding and saved-list validation, and what is
-  kept on disk (saved lists survive a reload and a binding's removal).
+  kept on disk (saved lists survive a reload and a binding's removal; thread
+  state loads from an older file and drops malformed entries).
+- `messengers-threads.test.mjs`: routing (card threads, bot threads, names, the
+  only agent), the binding pick, root rotation and the 20-root cap, the
+  ephemeral and channel notices, the recent texts, and thread state kept or
+  deleted when a binding is removed.
 - `messengers-slack-protocol.test.mjs`: Slack rendering and escaping, Socket
   Mode acks and replies (bot filtering, slash commands), and where the tokens
   are read.

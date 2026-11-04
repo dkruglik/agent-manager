@@ -25,6 +25,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
     answer: async (...a) => { host.answers.push(a); }, prompt: async () => {},
   };
   const posts = [];
+  const ephemerals = [];
   const slack = {
     configured: () => true, start() {}, failPosts: false,
     async post(target, card) {
@@ -34,6 +35,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
       return ref;
     },
     async update() {},
+    async postEphemeral(e) { ephemerals.push(e); },
   };
   const logs = [];
   const bridge = new MessengerBridge({ host, store, adapters: new Map([['slack', slack]]), log: (e) => logs.push(e), tickMs: 1e9 });
@@ -45,7 +47,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
     bindingId: 'b0', sessionId: 's1', key: 'req1', kind: 'input', status: 'open', adapter: 'slack',
     ref: { channel: 'C0', ts: 'card1' }, item: typed, partial: {},
   });
-  return { bridge, host, slack, store, posts, logs, root };
+  return { bridge, host, slack, store, posts, ephemerals, logs, root };
 }
 
 const press = (n, optionId = 'd:accept', who = user) => ({ channel: 'C0', ts: 'card1', thread: null, user: who, messageId: `m${n}`, optionId });
@@ -156,7 +158,7 @@ test('an agent is addressed only with "name:" or "@name", not by a bare first wo
   assert.equal(byName('alpha'), null);
 });
 
-test('a top-level channel message prompts the one session-scoped binding, and is ignored when two compete', async () => {
+test('a top-level channel message prompts the one session-scoped binding, also when a second binding reaches the same agent', async () => {
   const t = setup();
   const prompts = [];
   t.host.prompt = async (s, body) => { prompts.push({ id: s.id, body }); };
@@ -167,8 +169,9 @@ test('a top-level channel message prompts the one session-scoped binding, and is
     id: 'b1', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'session', id: 's1' },
     events: ['input-required'], allowedUsers: ['U1'], approvals: false, createdAt: 'x',
   });
-  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { ignored: 'no-target' });
-  assert.equal(prompts.length, 1, 'nothing was sent to either session');
+  // Two bindings, one agent: the channel still reaches exactly one session, so it takes the message.
+  assert.deepEqual(await t.bridge.handleReply('slack', text(2, 'and again')), { prompted: 's1' });
+  assert.equal(prompts.length, 2);
 });
 
 test('an answer in flight is claimed in memory only, and a failed answer leaves the card answerable', async () => {
@@ -224,6 +227,7 @@ test('an unaddressed message in a channel with several agents is skipped silentl
   assert.deepEqual(out, { refused: 'no-agent-named' });
   assert.equal(t.prompts.length, 0, 'sent to no agent');
   assert.equal(t.posts.length, 0, 'nothing is said in the channel');
+  assert.equal(t.ephemerals.length, 1, 'the sender alone is told, once');
   const log = t.logs.find((e) => e.reason === 'no-agent-named');
   assert.ok(log && !JSON.stringify(log).includes('run the tests'), 'logged without the text');
 });

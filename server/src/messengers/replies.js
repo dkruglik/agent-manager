@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 import { ApiError } from '../api-errors.js';
 import { noticeCard, reviewable, TOO_LONG } from './cards.js';
+import { allowed } from './threads.js';
 
 // Inbound side of the bridge: a button press or a chat message becomes a typed
 // answer to an open dialog, or an ordinary prompt. Every path checks the
 // binding's allowed users and the privacy lock before anything reaches a session.
+// Which session a message is for is decided in threads.js.
 
 const SEEN_MESSAGES = 500;
 const LOW_NIBBLE = 0x0f;
@@ -27,11 +29,12 @@ export class ReplyRouter {
    * @param answerer `(session, item, response, by, {binding, text})` delivers a typed answer: to a waiting
    *   hook, or to the session.
    */
-  constructor({ host, store, adapters, cards, scope, log, answerer }) {
+  constructor({ host, store, adapters, cards, threads, scope, log, answerer }) {
     this.host = host;
     this.store = store;
     this.adapters = adapters;
     this.cards = cards;
+    this.threads = threads;
     this.scope = scope;
     this.answerer = answerer;
     this.log = log;
@@ -51,9 +54,7 @@ export class ReplyRouter {
     return { refused: reason };
   }
 
-  allowed(binding, user) {
-    return !!user?.id && binding.allowedUsers.includes(user.id);
-  }
+  allowed(binding, user) { return allowed(binding, user); }
 
   channelBindings(adapterId, channel) {
     return this.store.bindings().filter((b) => b.adapter === adapterId && b.target.channel === channel);
@@ -72,53 +73,16 @@ export class ReplyRouter {
     return false;
   }
 
-  // "name: text" or "@name text" addresses one agent in a group channel.
-  byName(bindings, text) {
-    const m = /^(?:@([^\s:]{1,80})[:\s]|([^\s:@]{1,80}):)\s*([\s\S]+)$/.exec(text.trim());
-    if (!m) return null;
-    const wanted = (m[1] || m[2]).toLowerCase();
-    const sessions = this.host.sessions();
-    for (const binding of bindings) {
-      const session = this.scope(binding, sessions).find((x) => x.name.toLowerCase() === wanted);
-      if (session) return { binding, session, text: m[3].trim() };
-    }
-    return null;
-  }
+  byName(bindings, text) { return this.threads.byName(bindings, text); }
 
-  // How many distinct agents the channel's bindings reach.
-  agentCount(bindings) {
-    const sessions = this.host.sessions();
-    return new Set(bindings.flatMap((b) => this.scope(b, sessions).map((s) => s.id))).size;
-  }
-
-  // An unaddressed message in a channel with several agents goes to none of them, and nothing is
-  // said in the channel; only the log records the skip (never the text).
-  skipUnnamed(r, bindings) {
-    const allowed = bindings.some((b) => this.allowed(b, r.user));
-    const reason = allowed ? 'no-agent-named' : 'user-not-allowed';
+  // An unaddressed message in a channel with several agents goes to none of them. An allowed sender is told
+  // once with an ephemeral notice; the log records the skip (never the text).
+  async skipUnnamed(adapterId, r, bindings) {
+    const ok = bindings.some((b) => this.allowed(b, r.user));
+    const reason = ok ? 'no-agent-named' : 'user-not-allowed';
     this.log({ event: 'refused', reason, binding: bindings[0].id, user: r.user?.id });
+    if (ok) await this.threads.notifyUnnamed(adapterId, r);
     return { refused: reason };
-  }
-
-  /** The binding, session and posted card a reply is about, if any. */
-  resolve(adapterId, r) {
-    const bindings = this.channelBindings(adapterId, r.channel);
-    if (!bindings.length) return { ignored: 'unbound-channel' };
-    const anchor = r.optionId ? r.ts : r.thread;
-    const found = anchor ? this.store.findPostedByRef(adapterId, r.channel, anchor) : null;
-    const text = r.text || '';
-    if (found) {
-      const posted = found[1];
-      return { binding: this.store.binding(posted.bindingId), session: this.sessionById(posted.sessionId), found, text };
-    }
-    if (r.optionId || r.thread) return { ignored: 'no-target' };
-    const named = this.byName(bindings, text);
-    if (named) return named;
-    // Several agents reachable from this channel: only a named message goes anywhere.
-    if (this.agentCount(bindings) > 1) return { unnamed: bindings };
-    const direct = bindings.filter((b) => b.scope.type === 'session');
-    if (direct.length !== 1) return { ignored: 'no-target' };
-    return { binding: direct[0], session: this.sessionById(direct[0].scope.id), text };
   }
 
   /**
@@ -127,18 +91,24 @@ export class ReplyRouter {
    */
   async handle(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
-    const target = this.resolve(adapterId, r);
-    if (target.unnamed) return this.skipUnnamed(r, target.unnamed);
-    if (!target.binding) return { ignored: target.ignored || 'no-target' };
-    const { binding, session, found, text } = target;
+    const bindings = this.channelBindings(adapterId, r.channel);
+    if (!bindings.length) return { ignored: 'unbound-channel' };
+    const target = this.threads.route(adapterId, bindings, r);
+    if (target.unnamed) return this.skipUnnamed(adapterId, r, bindings);
+    if (target.ignored) return { ignored: target.ignored };
+    const { found, text } = target;
     const posted = found?.[1];
+    const answering = posted?.kind === 'input' && (posted.status === 'open' || !!r.optionId);
+    const { binding, reached } = this.threads.pick(bindings, target.sessionId, r.user, answering ? posted.bindingId : null);
+    const session = this.sessionById(target.sessionId);
     const where = posted ? posted.ref.ts : (r.thread || r.ts);
     const reply = (t) => this.say(adapterId, r.channel, where, t);
-    const refused = await this.refusal(binding, session, r, reply);
+    const refused = await this.refusal(binding, session, r, reply, reached);
     if (refused) return refused;
     try {
-      if (posted?.kind === 'input') return await this.answer(found, binding, session, r, text, reply);
-      return await this.prompt(adapterId, binding, session, r, text, reply);
+      // A closed input card no longer takes answers: a reply in its thread is an ordinary prompt.
+      if (answering) return await this.answer(found, binding, session, r, text, reply);
+      return await this.prompt(adapterId, binding, session, r, text, reply, target.via);
     } catch (e) {
       this.log({
         event: 'reply-failed', binding: binding.id, session: session.id,
@@ -152,7 +122,7 @@ export class ReplyRouter {
     }
   }
 
-  async refusal(binding, session, r, reply) {
+  async refusal(binding, session, r, reply, reached = true) {
     if (!this.allowed(binding, r.user)) {
       this.log({ event: 'refused', reason: 'user-not-allowed', binding: binding.id, user: r.user?.id });
       if (r.optionId) await reply(`<@${r.user?.id}> is not allowed to answer for this agent.`);
@@ -162,6 +132,10 @@ export class ReplyRouter {
       await reply('That agent no longer exists.');
       return this.refused('no-session', binding);
     }
+    if (!reached) {
+      await reply('That agent is no longer connected to this channel.');
+      return this.refused('not-in-channel', binding, session);
+    }
     if (this.host.locked()) {
       await reply('Agent Manager is locked; nothing was sent.');
       return this.refused('locked', binding, session);
@@ -169,7 +143,7 @@ export class ReplyRouter {
     return null;
   }
 
-  async prompt(adapterId, binding, session, r, text, reply) {
+  async prompt(adapterId, binding, session, r, text, reply, via) {
     const body = text.trim();
     if (!body) return { ignored: 'empty' };
     // The id follows the Slack message; without a ts there is nothing stable to derive it from.
@@ -183,7 +157,7 @@ export class ReplyRouter {
       throw e;
     }
     this.log({ event: 'prompted', binding: binding.id, session: session.id, user: r.user.id, requestId });
-    await reply(`➡️ Sent to *${session.name}*.`);
+    await this.threads.recordDelivery(adapterId, session, r, body, via);
     return { prompted: session.id };
   }
 
