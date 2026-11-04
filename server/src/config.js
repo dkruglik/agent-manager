@@ -55,6 +55,16 @@ export function resolveMessengerConfig(env = process.env) {
 }
 export const MESSENGERS = resolveMessengerConfig();
 
+// Every secret the process holds that must never reach a chat: the Slack tokens, the Hugging Face token and
+// the provider keys the CLIs read (the `secrets` of CLIS, plus the alternative names isConfigured accepts).
+// docs/messengers.md: the credential filter of the `transcript` and `finished` posts is given these values.
+const EXTRA_SECRET_NAMES = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN', 'HF_API_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'GOOGLE_API_KEY'];
+export function knownSecretValues(env = process.env) {
+  const names = new Set([...EXTRA_SECRET_NAMES, ...CLIS.flatMap((c) => c.secrets || [])]);
+  return [...names].map((n) => env[n]).filter((v) => typeof v === 'string' && v.trim() !== '');
+}
+
 // A CLI's presence on PATH doesn't change while the process runs, but
 // cliCatalog() (called on every /api/clis) probed every CLI each time — ~16
 // synchronous `command -v` subprocess spawns per request, blocking the event

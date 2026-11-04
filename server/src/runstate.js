@@ -66,6 +66,64 @@ let lastWritten = '';
 // erasing the record does the most damage.
 let settleAt = 0;
 
+// The per-session settled result of THIS boot's revive: 'sent', 'skipped' or
+// 'gave-up' (see reviveResult). One round per init(). `decided` flips once the
+// revive plan is known (or revive turned out not to run); `pending` is the set
+// of sessions revive is still working on.
+let settled = new Map();
+let waiters = new Map();
+let pending = new Set();
+let decided = false;
+
+function resetResults() { settled = new Map(); waiters = new Map(); pending = new Set(); decided = false; }
+function settle(id, result) {
+  if (settled.has(id)) return;
+  settled.set(id, result);
+  pending.delete(id);
+  for (const r of waiters.get(id) || []) r(result);
+  waiters.delete(id);
+}
+// The plan is known: `start` are being worked on, `gaveUp` are over the cap.
+// Everyone else is answered 'skipped' now, including waiters that registered early.
+function decide(start = [], gaveUp = []) {
+  if (decided) return;
+  decided = true;
+  for (const id of start) pending.add(id);
+  for (const id of gaveUp) settle(id, 'gave-up');
+  for (const id of [...waiters.keys()]) if (!pending.has(id)) settle(id, 'skipped');
+}
+
+/**
+ * The settled revive outcome of one session, for callers that must not race
+ * CONTINUE_TEXT (the messenger drain). Resolves to:
+ *   'sent'     the continue message was delivered;
+ *   'gave-up'  revive meant to tell it and could not: no empty prompt within
+ *              the ready limit (120 s), over the cap of 32, a privacy lock,
+ *              or the delivery failed;
+ *   'skipped'  nothing will be sent: `continue: false`, not in the plan (also
+ *              revive disabled, no previous run, no terminal engine, a stale
+ *              snapshot), a CLI without a prompt detector, a shell, or a
+ *              session the operator started or archived first.
+ * Before reviveOnBoot has decided its plan the promise waits; every path out
+ * of reviveOnBoot decides, and index.js calls reviveSkipAll() where it does
+ * not call reviveOnBoot at all (a locked Space), so no waiter hangs. Never
+ * rejects. init() starts a new round.
+ */
+export function reviveResult(id) {
+  if (settled.has(id)) return Promise.resolve(settled.get(id));
+  if (decided && !pending.has(id)) return Promise.resolve('skipped');
+  return new Promise((resolve) => {
+    if (!waiters.has(id)) waiters.set(id, []);
+    waiters.get(id).push(resolve);
+  });
+}
+
+/**
+ * Revive will not run this boot (index.js: the Space is locked at boot):
+ * every session is 'skipped', now.
+ */
+export function reviveSkipAll() { decide(); }
+
 /** Load the previous boot's snapshot. Call once, before startRunstateWatch(). */
 export function init() {
   try {
@@ -77,6 +135,7 @@ export function init() {
   // switched off — must not answer by wiping the record of what was running:
   // that record is the only reason the next boot can do better.
   settleAt = Date.now() + SNAPSHOT_MS;
+  resetResults();
   return previous;
 }
 
@@ -217,13 +276,20 @@ export function selectRevivable({ snapshot: snap, sessions, digests, alive, days
  * Resolves true when delivered, false when it was not (and says why if that is
  * not simply the operator having stopped the pane).
  */
-export async function tellRevived(id, send, { runId = runIdOf(id), signal = null, readyMs = CONTINUE_READY_MS, pollMs = 200 } = {}) {
+export async function tellRevived(id, send, opts) {
+  return (await tellOutcome(id, send, opts)) === 'sent';
+}
+
+// tellRevived with the reason it did not: 'sent', 'gave-up' (no empty prompt in
+// time, a privacy lock, or the delivery failed) or 'skipped' (no prompt
+// detector, or the process was stopped / archived: nothing is coming).
+async function tellOutcome(id, send, { runId = runIdOf(id), signal = null, readyMs = CONTINUE_READY_MS, pollMs = 200 } = {}) {
   // A CLI whose empty composer cannot be recognised would only ever time out;
   // say so now, by name, rather than after two silent minutes.
   const cli = getSession(id)?.cli;
   if (!hasPromptDetector(cli)) {
     console.log(`[revive] ${getSession(id)?.name || id}: no prompt detector for ${cli}, not sent`);
-    return false;
+    return 'skipped';
   }
   const deadline = Date.now() + readyMs;
   const ended = () => {
@@ -237,17 +303,20 @@ export async function tellRevived(id, send, { runId = runIdOf(id), signal = null
     const why = ended();
     if (why) {
       if (why === 'locked') console.warn(`[revive] ${getSession(id)?.name || id}: the manager locked itself — not telling it to continue`);
-      return false;
+      return why === 'locked' ? 'gave-up' : 'skipped';
     }
     if (promptReady(id)) break;
     if (Date.now() >= deadline) {
       console.warn(`[revive] ${getSession(id)?.name || id}: no empty prompt within ${Math.round(readyMs / 1000)}s (still loading, or showing a dialog) — not telling it to continue`);
-      return false;
+      return 'gave-up';
     }
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  await send(getSession(id), CONTINUE_TEXT, { runId, signal });
-  return true;
+  try { await send(getSession(id), CONTINUE_TEXT, { runId, signal }); } catch (e) {
+    console.error(`[revive] ${getSession(id)?.name || id}: continue message not delivered:`, e && e.message);
+    return 'gave-up';
+  }
+  return 'sent';
 }
 
 /**
@@ -258,7 +327,14 @@ export async function tellRevived(id, send, { runId = runIdOf(id), signal = null
  * release }); each message holds one from the moment it is scheduled until it
  * is delivered or dropped.
  */
-export async function reviveOnBoot({ enabled = true, days = 3, continue: carryOn = true, send = null, scope = null } = {}) {
+export async function reviveOnBoot(opts = {}) {
+  try { return await reviveSessions(opts); }
+  finally { decide(); }  // every way out: waiters on sessions never planned get 'skipped'
+}
+
+// `gapMs`, `readyMs` and `max` are for tests (injected clocks); index.js leaves them.
+async function reviveSessions({ enabled = true, days = 3, continue: carryOn = true, send = null, scope = null,
+  gapMs = REVIVE_GAP_MS, readyMs = CONTINUE_READY_MS, max = MAX_REVIVE } = {}) {
   if (!enabled) return [];
   if (!previous || !previous.sessions) return [];
   // No terminal engine means ensureRunning throws for every session; say it once
@@ -295,14 +371,15 @@ export async function reviveOnBoot({ enabled = true, days = 3, continue: carryOn
   });
   if (!plan.length) return [];
 
-  const start = plan.slice(0, MAX_REVIVE);
-  const skipped = plan.slice(MAX_REVIVE);
+  const start = plan.slice(0, max);
+  const skipped = plan.slice(max);
+  decide(start.map((p) => p.id), skipped.map((p) => p.id));
   console.log(`[revive] ${start.length} session(s) were running at shutdown — starting them again`);
   if (skipped.length) {
-    console.log(`[revive] NOT starting ${skipped.length} more (cap ${MAX_REVIVE}): ${skipped.map((p) => p.name).join(', ')}`);
+    console.log(`[revive] NOT starting ${skipped.length} more (cap ${max}): ${skipped.map((p) => p.name).join(', ')}`);
   }
 
-  settleAt = Date.now() + start.length * REVIVE_GAP_MS + 5000;
+  settleAt = Date.now() + start.length * gapMs + 5000;
   start.forEach((p, i) => {
     // Opened now, not at the slot: a lock that lands while this one waits its
     // turn must cancel its message too.
@@ -313,20 +390,20 @@ export async function reviveOnBoot({ enabled = true, days = 3, continue: carryOn
       // Deleted or archived between the plan and its turn; or opened by
       // someone since boot — still running, or stopped again on purpose.
       // Either way it is theirs now, and the slot must not start it.
-      if (!s || s.archivedAt || launchedThisBoot(p.id)) { release(); return; }
+      if (!s || s.archivedAt || launchedThisBoot(p.id)) { release(); settle(p.id, 'skipped'); return; }
       let started = false;
       try {
         started = ensureRunning(s);
         console.log(`[revive] ${p.name} (${p.cli}) — ${p.why}`);
-      } catch (e) { console.error(`[revive] ${p.name}:`, e && e.message); }
+      } catch (e) { console.error(`[revive] ${p.name}:`, e && e.message); }  // nothing started: nothing to wait for
       // Off the stagger: the next revival must not wait for this one's CLI.
       if (started && carryOn && send && p.tell) {
-        tellRevived(p.id, send, { runId: runIdOf(p.id), signal: lock?.signal || null })
-          .then((told) => { if (told) console.log(`[revive] ${p.name}: told to continue`); })
-          .catch((e) => console.error(`[revive] ${p.name}: continue message not delivered:`, e && e.message))
-          .finally(release);
-      } else release();
-    }, i * REVIVE_GAP_MS);
+        tellOutcome(p.id, send, { runId: runIdOf(p.id), signal: lock?.signal || null, readyMs })
+          .then((result) => { if (result === 'sent') console.log(`[revive] ${p.name}: told to continue`); return result; })
+          .catch((e) => { console.error(`[revive] ${p.name}: continue message not delivered:`, e && e.message); return 'gave-up'; })
+          .then((result) => { release(); settle(p.id, result); });
+      } else { release(); settle(p.id, 'skipped'); }
+    }, i * gapMs);
     if (t.unref) t.unref();
   });
   return start;

@@ -2835,7 +2835,24 @@ export async function sendInput(id, text, opts = {}) {
   }
 }
 
-async function typeAndSubmit(host, id, text, { confirmEcho = false } = {}) {
+/**
+ * Type the prompt and submit it. An error thrown once the first byte of the
+ * prompt has gone to the terminal carries `typed: true`: the text may be on the
+ * agent's input line, so a caller that retries can send it twice. An error
+ * from the checks before that first write carries no flag. The chat outbox
+ * reads the flag (server/src/delivery-outcome.js).
+ */
+async function typeAndSubmit(host, id, text, opts = {}) {
+  const wrote = { any: false };
+  try {
+    return await typeAndSubmitSteps(host, id, text, opts, wrote);
+  } catch (error) {
+    if (wrote.any && error && typeof error === 'object') error.typed = true;
+    throw error;
+  }
+}
+
+async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, wrote) {
   // Typing a prompt onto a line that already holds something submits both as
   // one message. Clearing the line first would destroy what the operator
   // typed, so the send stops here instead and says what is in the way.
@@ -2885,6 +2902,7 @@ async function typeAndSubmit(host, id, text, { confirmEcho = false } = {}) {
       const beforeOutput = host.outputSeq;
       let beforeScreen = '';
       try { beforeScreen = host.vt.getVisibleText(); } catch {}
+      wrote.any = true;
       host.pty.write(payload);
       const attemptDeadline = Math.min(deadline, Date.now() + 1200);
       while (Date.now() < attemptDeadline) {
@@ -2900,6 +2918,7 @@ async function typeAndSubmit(host, id, text, { confirmEcho = false } = {}) {
     if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
     host.inputEchoed = true;
   } else {
+    wrote.any = true;
     host.pty.write(payload);
   }
   if (confirm) return submitConfirmed(host, id, confirm, text);

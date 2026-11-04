@@ -3433,6 +3433,18 @@ export async function readTrace(session, opts = {}) {
 }
 
 /**
+ * The revision of a session's trace as readTrace reports it, without parsing: a stat, and a
+ * 128-byte read when the file changed. `null` when no trace is found. Equal revisions mean
+ * the cached parse of readTrace is still the right one.
+ */
+export async function traceRevisionOf(session) {
+  const hit = await findTrace(session, store.list());
+  const st = hit && await statRetry(hit.src);
+  if (!st) return null;
+  return (await traceRevision(hit.src, st, !WINDOWABLE.has(session.cli))).revision;
+}
+
+/**
  * Codex keeps a sub-agent's transcript as an ordinary rollout, in the same tree
  * as every other session, and says whose child it is in its own header:
  *
