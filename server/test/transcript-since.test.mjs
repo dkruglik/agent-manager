@@ -1,0 +1,106 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// host.since(session, cursor): the assistant messages of a real Claude transcript after a cursor,
+// parsed only when the trace revision changed. No server, no Slack.
+
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'am-since-'));
+process.env.DATA_DIR = path.join(TMP, 'data');
+process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
+fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
+const UUID = '11111111-2222-4333-8444-555555555555';
+const file = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'p', `${UUID}.jsonl`);
+fs.mkdirSync(path.dirname(file), { recursive: true });
+
+const { createSince, readAssistantMessages, traceRevisionOf } = await import('../src/transcript-since.js');
+const { sourceKey } = await import('../src/output-id.js');
+
+const session = { id: 's1', cli: 'claude', sessionUuid: UUID, path: 's1' };
+let n = 0;
+const ts = () => new Date(Date.UTC(2026, 0, 1, 0, 0, n++)).toISOString();
+const line = (type, content, extra = {}) => JSON.stringify({
+  type, cwd: TMP, timestamp: ts(), message: { role: type, content, ...extra },
+});
+const say = (id, text) => line('assistant', [{ type: 'text', text }], { id });
+const tool = (id, name) => line('assistant', [{ type: 'tool_use', id: `tu-${id}`, name, input: { command: 'ls' } }], { id });
+const user = (text) => line('user', [{ type: 'text', text }]);
+const write = (...lines) => fs.writeFileSync(file, `${lines.join('\n')}\n`);
+const append = (...lines) => fs.appendFileSync(file, `${lines.join('\n')}\n`);
+
+function counted() {
+  const calls = { parse: 0 };
+  const since = createSince({
+    revisionOf: traceRevisionOf,
+    readMessages: async (s) => { calls.parse += 1; return readAssistantMessages(s); },
+  });
+  return { calls, since };
+}
+const src = sourceKey(session);
+
+test('a first look is a baseline: the end, no messages, not a restart', async () => {
+  write(user('HELLO-USER'), say('m1', 'first'), tool('m2', 'Bash'), say('m3', 'third'));
+  const { since } = counted();
+  const r = await since(session, null);
+  assert.deepEqual(r.messages, []);
+  assert.equal(r.restarted, false);
+  assert.equal(r.end.src, src);
+  assert.equal(r.end.seq, 3);
+  assert.ok(r.end.hash);
+});
+
+test('messages after a cursor are the assistant ones only, strictly after it', async () => {
+  write(user('HELLO-USER'), say('m1', 'first'), user('Continue'), tool('m2', 'Bash'), say('m3', 'third'));
+  const { since } = counted();
+  const { end } = await since(session, null);
+  const first = await since(session, { src, seq: 1, hash: (await since(session, { src, seq: 0, hash: '' })).messages[0].hash });
+  assert.deepEqual(first.messages.map((m) => [m.seq, m.text, m.tools]), [[2, '', ['Bash']], [3, 'third', []]]);
+  assert.ok(first.messages.every((m) => m.src === src && m.hash));
+  assert.equal(first.restarted, false);
+  assert.deepEqual(first.end, end);
+  assert.equal(first.updated, undefined);
+  assert.ok(!JSON.stringify(first).includes('Continue') && !JSON.stringify(first).includes('HELLO-USER'));
+});
+
+test('a cursor from another src re-baselines: the end, no messages, restarted', async () => {
+  write(say('m1', 'first'));
+  const { since } = counted();
+  const r = await since(session, { src: 'other', seq: 9, hash: 'x' });
+  assert.equal(r.restarted, true);
+  assert.deepEqual(r.messages, []);
+  assert.equal(r.end.src, src);
+  assert.equal(r.end.seq, 1);
+});
+
+test('the same seq with a new hash is an update of the cursor message', async () => {
+  write(say('m1', 'first'));
+  const { since } = counted();
+  const cursor = (await since(session, null)).end;
+  append(line('assistant', [{ type: 'text', text: 'and more' }], { id: 'm1' }));
+  const r = await since(session, cursor);
+  assert.deepEqual(r.messages, []);
+  assert.equal(r.updated.seq, 1);
+  assert.notEqual(r.updated.hash, cursor.hash);
+  assert.equal(r.updated.text, 'first\n\nand more');
+  assert.equal(r.end.seq, 1);
+});
+
+test('an unchanged revision is not parsed again; a changed one is', async () => {
+  write(say('m1', 'first'));
+  const { since, calls } = counted();
+  const { end } = await since(session, null);
+  await since(session, end);
+  await since(session, end);
+  assert.equal(calls.parse, 1);
+  append(say('m2', 'second'));
+  const r = await since(session, end);
+  assert.equal(calls.parse, 2);
+  assert.deepEqual(r.messages.map((m) => m.text), ['second']);
+});
+
+test('a session without a transcript gives null', async () => {
+  const { since } = counted();
+  assert.equal(await since({ id: 's9', cli: 'claude', sessionUuid: 'ffffffff-2222-4333-8444-555555555555', path: 's9' }, null), null);
+});

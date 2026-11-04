@@ -31,7 +31,7 @@ mention, so nobody is pinged; then the first lines of the text with `>`, cut at
 2 KB; `<`, `>` and `&` in the text are escaped, so mentions and `@channel` in
 it stay inert). There is no "Sent to …" notice: the quote
 is the confirmation. The `finished` card and question and approval cards stay
-**top-level** channel posts, as before, so their notifications do not change.
+**top-level** channel posts, as before (the optional `transcript` event posts into the thread, see below), so their notifications do not change.
 An open question is therefore answered at the top level, in the card's thread.
 
 A message is routed in this order:
@@ -234,6 +234,101 @@ before the message:
   not call `users.info` (the manifest has no `users:read`). The form cannot be
   mistaken for the `[Agent Manager:]` restart notice.
 
+## Agent output to Slack: `finished` and `transcript`
+
+A binding has up to three events. `input-required` and `finished` are on by
+default; `transcript` is **off by default** and a binding opts in (Settings:
+"full transcript"; or `events` on the API).
+
+- **`finished`** is the clipped card described above: the latest assistant text,
+  posted as a **top-level** channel post once the session has settled, skipped
+  when the web read mark covers it.
+- **`transcript`** mirrors every assistant message into the agent's own thread
+  (the bot-owned root). **It suppresses `finished` for that binding**: a binding
+  with both events posts the transcript only. Question and approval cards stay
+  top-level and are not touched by it, so an open question is answered at the top
+  level, in the card's thread, while the agent's replies go to the session thread.
+
+**Warning: `transcript` sends agent output to Slack.** That includes file
+contents and command output that the finished card used to clip away. Anyone in
+the channel can read it. Turn it on only for channels that may see what the agent
+sees.
+
+### What the mirror posts
+
+- Only assistant messages. User messages, including the `CONTINUE_TEXT` that
+  revive sends, are never echoed.
+- A first look at a session is a baseline: the current end is stored and nothing
+  is posted. A session that already has a stored cursor is not baselined again
+  after a restart; the messages strictly after the cursor are posted.
+- It waits for the same settle delay as `finished`
+  (`MESSENGER_FINISHED_DELAY_MS`), so a streaming answer is posted once.
+- At most **5 messages per tick and session**. Older ones collapse into one line,
+  "N earlier messages — open in Agent Manager." (with the link when
+  `AM_PUBLIC_URL` is set). The collapsed messages are not posted later.
+- At most 12 Slack calls per session and tick, so one backlog cannot stall other
+  channels. A message that does not fit the rest of the budget waits for the next
+  tick.
+- Text past Slack's block limit is **split** into successive thread messages
+  (the limit is counted after Slack's escaping, and a split prefers a newline).
+  A message of more than 8 parts is cut with a final "… N more characters" line.
+- If the last posted message grows (same position, new text), its **last part is
+  edited in place** with `chat.update`. Earlier parts and older messages are never
+  rewritten. A restart or collapse line is not edited.
+- A turn that only called tools posts one line, "Used tools: Bash, Edit".
+- When the conversation changes (a different transcript, or the transcript is
+  shorter than the cursor) it posts one line, "Conversation restarted.", stores the
+  new end, and continues from there. A compaction inside the same Claude file is
+  not detected as a restart unless the message count drops.
+- **Nothing is posted under a real privacy lock, and the cursor does not move.**
+  The messages are posted after unlock (under the 5-message cap). The startup
+  `checking` state is not a lock for this purpose.
+- Slack's HTTP 429 is honoured: the call waits `Retry-After` seconds (at most 60)
+  and retries, twice at most, then fails like any Slack error and the binding backs
+  off.
+
+### Credential filter
+
+Every text posted by `transcript`, and the body of every `finished` card, goes
+through `createCredentialFilter` (`audit-credentials.js`) with the values this
+process holds, read in `config.js` (`knownSecretValues`): `SLACK_BOT_TOKEN`,
+`SLACK_APP_TOKEN`, `HF_TOKEN` (also `HUGGING_FACE_HUB_TOKEN`, `HF_API_TOKEN`),
+`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, and every provider
+key the CLI catalog lists (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `NOUS_API_KEY`, `AI_GATEWAY_API_KEY`).
+They are read once when the bridge starts; values shorter than 8 characters are
+ignored. The filter replaces a value with `[redacted]`, and the text is filtered
+before it is split, so a secret cannot straddle two parts.
+
+**This is not a general secret scanner.** Without a known value it catches only
+documented token shapes, complete private key blocks and labeled assignments
+(`password=…`). A secret printed by a command, or a key this process does not
+hold, passes through.
+
+### The transcript reader and the cursor
+
+The mirror reads the whole transcript with the trace reader (every harness,
+including OpenCode's SQLite) and **only when the trace revision changed**: an idle
+session costs a stat. A message is identified by its place among the assistant
+messages (`seq`) and a hash of its text and tool names, both checked against the
+current transcript (`src`).
+
+The cursor is one record per adapter, channel and session in `messengers.json`
+(`outbound`): `{ src, seq, hash, refs }`, for the last posted message only, where
+`refs` are the Slack `ts` values of its parts. It is written once per tick, after
+the posts returned. A crash between a post and that write **can repost the last
+message once**; that is accepted. The same record holds the id of the last
+`finished` card announced (`finished`), which replaced the old `seen` map.
+
+### The `seen` migration
+
+Older versions kept the last announced reply per binding and session in `seen`.
+On start, a session with a `seen` entry and no `outbound` record gets one that
+carries the old id as its `finished` mark and no cursor. The next `finished`
+check therefore announces nothing old, and the first `transcript` look is a
+baseline that posts nothing. `seen` is no longer written. Two bindings in one
+channel that reach the same session share one mark.
+
 ## What can be answered from chat
 
 The bridge never types keystrokes into a TUI dialog, for the reasons in
@@ -399,7 +494,7 @@ Limits:
 
 `DATA_DIR/messengers.json` holds the bindings plus delivery state: which cards
 are in which channel (so a restart neither re-posts nor loses the ability to
-answer) and the newest reply already accounted for per agent (so connecting a
+answer) and, per channel and agent, the outbound record: the last finished card announced and the transcript cursor (so connecting a
 channel does not replay old answers). Card records expire after 7 days. It also
 holds the thread state: each agent's roots (`{ts, at, count}`, 20 at most), a
 watermark per agent and thread (the last delivered reply `ts`), a watermark per
@@ -438,6 +533,49 @@ under the same rule.
 Invalid input is `400 invalid-input` with `details[].field`; an unknown binding
 is `404 not-found` ([error contract](api-errors.md)).
 
+#### Edits, deletes and files
+
+The same persist-then-ack applies to these message subtypes. Bot messages and
+the bot's own user are filtered for every one, other subtypes are dropped, and
+message text is never logged.
+
+- An edit (`message_changed`) replaces the text of a row still `pending`:
+  the frozen text, preamble and sender prefix are rewritten in the same file,
+  under the same request id. Once the row is `submitted`, or delivered, an
+  edit is a new row under its own request id (adapter, channel, `ts` and the
+  edit's time), so the delivered-id set does not refuse it and a submitted row
+  file is never rewritten. Its text begins "Edited in Slack (replaces the
+  earlier message):" and quotes the replacement. A Codex receipt is never
+  touched. An edit of a message that was never accepted is ignored with an
+  `edit-ignored` log line, as is a change that alters no text (a link unfurl).
+- A delete (`message_deleted`) drops a `pending` row, which is then never
+  sent. If the message was already `submitted` or delivered the row stays and
+  its thread gets one line: "The Slack message was deleted after it was sent
+  to the agent."
+- A file share, or a message with files, delivers its text plus "A file was
+  attached in Slack and was not delivered." A message of only files delivers
+  just that sentence. Files are never downloaded.
+
+#### Backfill
+
+On each socket connect, the bridge reads what Slack held while the socket was
+down. The first connect and a reconnect after a dropped socket count; Slack's
+hourly `disconnect` refresh does not. It reads from the watermarks, with the
+adapter's `history`: the channel from its watermark for top-level messages,
+and, from the agent's thread watermark, each root still in the roots list and
+each delivered top-level `ts`. `oldest` is exclusive, so the watermark message
+is not fetched again; a read is at most 5 pages of 200. A channel or thread
+without a watermark is not read.
+
+A human message older than 1 hour is not delivered. Each user it affects gets
+one ephemeral notice per channel ("N messages you sent while Agent Manager was
+offline were not delivered."), not one per message, and only for messages
+that were not already delivered. A newer message goes through the same path as
+a live event: routing, `refusal()`, the delivered-id check and the row write.
+A second pass over the same history therefore sends nothing twice, and raw
+history is never copied into an agent any other way. A backfill still running
+when Agent Manager stops writes no rows.
+
 ## Adding a messenger
 
 An adapter is any object implementing the interface below (Slack's is a class), kept in `server/src/messengers/adapters/` and registered in
@@ -449,11 +587,12 @@ operator-facing setting. It knows nothing about agents:
 export class XAdapter {
   constructor({ token = '' } = {}) { this.token = token; }
   configured() { return !!this.token; }
-  start({ onReply, onCommand, onStatus, log }) {}   // connect; call onStatus({connected, error})
+  start({ onReply, onCommand, onStatus, onConnect, log }) {}   // connect; call onStatus({connected, error})
   async stop() {}
   async post({ channel, thread }, card) { return { channel, ts }; } // ts: the message id
   async update(ref, card) {}                         // re-render a posted card
   async postEphemeral({ channel, user, text }) {}    // a line only `user` sees (Slack: chat.postEphemeral, covered by chat:write)
+  async history({ channel, thread, oldest }) {}      // messages after `oldest`, oldest first, shaped like onReply events
 }
 ```
 
@@ -475,6 +614,17 @@ service redelivers it. An adapter acks a message only after `onReply`
 resolves, and logs `persist-failed` (never the text) when it rejects. Commands go
 to `onCommand({channel, user, text})`, which resolves to reply text.
 
+`history({channel, thread, oldest})` returns the messages after `oldest`
+(exclusive) in the channel, or in `thread` when it is set, oldest first, each
+shaped like an `onReply` event and filtered like a live one (no bot messages,
+not the bot's own). Slack reads `conversations.history` or
+`conversations.replies`, at most 5 pages of 200; the `channels:history` and
+`groups:history` scopes already cover it. An adapter calls `onConnect()` once
+per new connection, after it is ready, and not for a refresh the service asked
+for (Slack's `disconnect` frame). The bridge answers with a backfill (see
+"Backfill" above). An edit or delete arrives as the same event with `edit:
+{ts, editTs}` or `deleted: {ts}` set.
+
 An error thrown by `post` or `update` may carry `publicMessage`: text safe to
 show in Settings as the binding's `lastError` (Slack sets it to the API's error
 code). Any other error is shown only as a generic line and logged in full.
@@ -493,11 +643,17 @@ real Claude.
   defaults, baselines, settle window, redelivery, allow-list, group addressing,
   typed questions, opt-in approvals, cards closed elsewhere, the lock, restart,
   `/am status`).
+- `messengers-outbound.test.mjs`: the `transcript` mirror (cursor, caps, splitting,
+  in-place updates, credential filter, lock, `seen` migration) and Slack's 429.
+  `transcript-since.test.mjs`: the reader behind it, on a real Claude transcript.
 - `messengers-bridge.test.mjs`: failure paths (lookups, posts, transcript
   reads, a corrupt `messengers.json`), escaping and review limits of approval
   details, back-off and the public `lastError`.
 - `messengers-cards.test.mjs`: which buttons a card carries, invisible
   characters shown escaped, and the unreviewable-details refusal.
+- `messengers-backfill.test.mjs`: backfill from the watermarks (what is read,
+  the 1-hour limit and its one notice per user, idempotence with the delivered
+  ids) and its wiring to a connect on the bridge, including after `stop()`.
 - `messengers-replies.test.mjs`: what is said back in chat, what is logged,
   answering a card once, and how an agent is addressed by name.
 - `messengers-store.test.mjs`: binding and saved-list validation, and what is
@@ -508,8 +664,8 @@ real Claude.
   ephemeral and channel notices, the recent texts, and thread state kept or
   deleted when a binding is removed.
 - `messengers-slack-protocol.test.mjs`: Slack rendering and escaping, Socket
-  Mode acks and replies (bot filtering, slash commands), and where the tokens
-  are read.
+  Mode acks and replies (bot filtering, edits, deletes, file shares, slash
+  commands), `history`, the connect signal, and where the tokens are read.
 - `messengers-slack.test.mjs`: the Slack socket (malformed frames, start/stop,
   silent connections, reconnect back-off, replaced sockets, a failing slash
   command, public API errors).

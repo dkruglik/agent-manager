@@ -6,6 +6,7 @@ import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { finishedDigest } from '../src/messengers/finished-digest.js';
 import { BindingStore } from '../src/messengers/store.js';
+import { finishedMark, migrateSeen } from '../src/messengers/outbound.js';
 import { inputCard, reviewable, TOO_LONG } from '../src/messengers/cards.js';
 import { renderBlocks } from '../src/messengers/adapters/slack.js';
 
@@ -46,6 +47,7 @@ function setup({ events = ['input-required', 'finished'] } = {}) {
       return host.typed;
     },
     digest: (s) => host.digestImpl(s),
+    sinceImpl: async () => null, since: (s, c) => host.sinceImpl(s, c),
     answer: async () => {}, prompt: async () => {},
   };
   const slack = fakeAdapter();
@@ -170,11 +172,11 @@ test('a failed transcript read does not become the baseline', async () => {
   await t.tick();
   const failed = t.logs.find((e) => e.event === 'digest-failed');
   assert.deepEqual([failed.session, failed.error], ['s1', 'transcript unreadable']);
-  assert.equal(t.store.seen('b0|s1'), null, 'still no baseline');
+  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), null, 'still no baseline');
   t.host.digestImpl = async () => ({ id: 'a', text: 'old' });
   await t.tick(1000);
   assert.equal(t.slack.posts.length, 0, 'the old answer becomes the baseline');
-  assert.equal(t.store.seen('b0|s1'), 'a');
+  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), 'a');
 });
 
 test('/am status lists nothing while locked', async () => {
@@ -258,7 +260,7 @@ test('a reply the operator already read in the web UI posts no finished card', a
   t.host.list[0].state = 'waiting';
   await t.tick(1000);
   assert.equal(t.slack.posts.length, 0, 'nothing posted');
-  assert.equal(t.store.seen('b0|s1'), 'a:2', 'recorded as seen');
+  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), 'a:2', 'recorded as seen');
   assert.deepEqual(t.logs.filter((e) => e.event === 'skipped-read'), [
     { event: 'skipped-read', binding: 'b0', session: 's1', kind: 'finished' },
   ]);
@@ -311,7 +313,7 @@ test('a reply read during the finished delay is skipped once, and not retried', 
   t.host.digestImpl = async () => ({ id: 'a:2', text: 'new', read: true });
   await t.tick(5000);
   assert.equal(t.slack.posts.length, 0, 'read before the delay ended');
-  assert.equal(t.store.seen('b0|s1'), 'a:2');
+  assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), 'a:2');
   assert.equal(t.logs.filter((e) => e.event === 'skipped-read').length, 1);
   await t.tick(1000);
   assert.equal(t.slack.posts.length, 0);
@@ -334,4 +336,73 @@ test('a host digest built with finishedDelay mapping: a matching mark posts noth
   await t.tick(1000);
   assert.equal(t.slack.posts.length, 1, 'new reply, old mark');
   assert.equal(t.slack.posts[0].card.body, 'the answer');
+});
+
+// ---------- transcript and finished (outbound.js) ----------
+
+const end = (seq) => ({ src: 'srcA', seq, hash: `h${seq}` });
+const msg = (seq, text) => ({ ...end(seq), text, tools: [] });
+
+test('a binding with both events posts transcript only', async () => {
+  const t = setup({ events: ['finished', 'transcript'] });
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+  t.host.sinceImpl = async (s, c) => ({ end: end(1), messages: [], restarted: false });
+  await t.tick();
+  t.host.digestImpl = async () => ({ id: 'a:2', text: 'FINISHED TEXT' });
+  t.host.sinceImpl = async () => ({ end: end(2), messages: [msg(2, 'MIRRORED TEXT')], restarted: false });
+  t.host.list[0].state = 'waiting';
+  await t.tick(1000);
+  const bodies = t.slack.posts.map((p) => p.card.body).filter(Boolean);
+  assert.deepEqual(bodies, ['MIRRORED TEXT']);
+  assert.ok(t.slack.posts.every((p) => p.card.kind !== 'finished'));
+});
+
+test('a finished card body with a configured SLACK_BOT_TOKEN value is redacted', async () => {
+  const token = 'test-bot-token-value-9999';
+  process.env.SLACK_BOT_TOKEN = token;
+  try {
+    const t = setup({ events: ['finished'] });
+    t.host.digestImpl = async () => ({ id: 'a:1', text: 'old' });
+    await t.tick();
+    t.host.digestImpl = async () => ({ id: 'a:2', text: `the token is ${token}, keep it` });
+    t.host.list[0].state = 'waiting';
+    await t.tick(1000);
+    assert.equal(t.slack.posts.length, 1);
+    assert.ok(!t.slack.posts[0].card.body.includes(token));
+    assert.match(t.slack.posts[0].card.body, /\[redacted\]/);
+  } finally { delete process.env.SLACK_BOT_TOKEN; }
+});
+
+test('after migrateSeen an old seen entry posts nothing, for finished and for transcript', async () => {
+  const t = setup({ events: ['finished', 'transcript'] });
+  t.store.putBinding({ ...t.store.binding('b0'), events: ['finished'] });
+  t.store.putSeen('b0|s1', 'a:1');
+  assert.equal(migrateSeen(t.store), 1);
+  t.host.digestImpl = async () => ({ id: 'a:1', text: 'already announced' });
+  t.host.list[0].state = 'waiting';
+  await t.tick();
+  assert.equal(t.slack.posts.length, 0);
+  t.store.putBinding({ ...t.store.binding('b0'), events: ['transcript'] });
+  t.host.sinceImpl = async (s, c) => {
+    assert.equal(c, null, 'no transcript cursor yet: a baseline');
+    return { end: end(5), messages: [], restarted: false };
+  };
+  await t.tick(1000);
+  assert.equal(t.slack.posts.length, 0);
+  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 5);
+});
+
+test('a restart does not baseline a session with a cursor: only messages after it are posted', async () => {
+  const t = setup({ events: ['transcript'] });
+  t.store.patchState({ outbound: { 'slack|C0|s1': { ...end(2), refs: ['x'] } } });
+  const seen = [];
+  t.host.sinceImpl = async (s, c) => {
+    seen.push(c);
+    return { end: end(3), messages: [msg(3, 'three')], restarted: false };
+  };
+  t.host.list[0].state = 'waiting';
+  await t.tick();
+  assert.deepEqual(seen, [{ src: 'srcA', seq: 2, hash: 'h2' }]);
+  assert.deepEqual(t.slack.posts.map((p) => p.card.body).filter(Boolean), ['three']);
+  assert.equal(t.store.state('outbound', 'slack|C0|s1').seq, 3);
 });

@@ -357,3 +357,13 @@ test('malformed thread state on disk is dropped quietly, and the caps hold', (t)
   assert.deepEqual(store.state('recent', 'a|C|s3'), { lastSrc: '', texts: [] });
   assert.deepEqual(store.stateKeys('reach'), ['a|C']);
 });
+
+test('transcript is an event a binding can opt into, and never a default', () => {
+  const input = { adapter: 'slack', target: { channel: 'C1' }, scope: { type: 'group', id: 'g1' }, allowedUsers: ['U1'] };
+  const fresh = validateBinding(input, { adapters: ['slack'] });
+  assert.deepEqual(fresh.events, ['input-required', 'finished']);
+  const opted = validateBinding({ ...input, events: ['transcript'] }, { adapters: ['slack'] });
+  assert.deepEqual(opted.events, ['transcript']);
+  const kept = validateBinding({ approvals: true }, { adapters: ['slack'], existing: opted });
+  assert.deepEqual(kept.events, ['transcript']);
+});

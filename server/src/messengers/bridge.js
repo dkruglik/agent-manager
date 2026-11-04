@@ -1,9 +1,12 @@
 import path from 'node:path';
-import { inputCard, finishedCard, noticeCard } from './cards.js';
+import { inputCard, noticeCard } from './cards.js';
 import { ReplyRouter } from './replies.js';
 import { HookDecisions } from './hook-decisions.js';
 import { createThreads } from './threads.js';
 import { createOutbox } from './outbox.js';
+import { backfill } from './backfill.js';
+import { checkFinished } from './finished.js';
+import { createFilter, migrateSeen, postsFinished, transcriptTick } from './outbound.js';
 
 // The bridge between Agent Manager sessions and chat messengers.
 //
@@ -45,16 +48,17 @@ const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
 export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {}, dataDir = path.dirname(store.file),
-    settleMs = 8000, digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
+    settleMs = 8000, filter = createFilter(), digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
     decisionTimeoutMs = 120_000, setTimer = setTimeout, clearTimer = clearTimeout,
   }) {
-    Object.assign(this, { host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
+    Object.assign(this, { filter, host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
     this.hooks = new HookDecisions(this);
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
     this.failing = new Map();      // bindingId → {count, error, retryAt} while its posts keep failing
     this.timer = null;
+    this.stopped = false; // set by stop(): a backfill still running then writes no row
     this.ticking = false;
     const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
     this.threads = createThreads({
@@ -62,6 +66,9 @@ export class MessengerBridge {
       outbox: (a, c, ts) => this.outbox.waiting(a, c, ts),
       rows: { sessionsIn: (a, c) => this.outbox.sessionsIn(a, c), dropSessions: (a, c, ids) => this.outbox.dropSessions(a, c, ids) },
     });
+    // The old `seen` marks become outbound records before the first tick (outbound.js migrateSeen).
+    migrateSeen(store);
+    this.outbound = { host, store, adapters, threads: this.threads, filter, settled: (s) => this.settled(s), log, now: () => this.now() };
     this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
       host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
@@ -167,39 +174,6 @@ export class MessengerBridge {
     return settledFor >= this.settleMs && settledFor <= this.settleMs + this.lookForMs;
   }
 
-  async checkFinished(binding, s) {
-    const k = `${binding.id}|${s.id}`;
-    const baseline = this.store.seen(k) === null;
-    if (!baseline && !this.settled(s)) return;
-    if (this.now() - (this.digestAt.get(k) || 0) < this.digestEveryMs) return;
-    this.digestAt.set(k, this.now());
-    let d;
-    try { d = await this.host.digest(s); } catch (e) {
-      // Not a baseline: recording an empty one would replay an old answer later.
-      this.log({ event: 'digest-failed', session: s.id, error: e.message });
-      return;
-    }
-    const id = d?.id || '';
-    // The first look at a session only records where its conversation stands:
-    // binding a channel must not replay an answer the operator already read.
-    if (baseline) { this.store.putSeen(k, id); return; }
-    if (!id || id === this.store.seen(k) || !d.text) return;
-    if (!binding.events.includes('finished')) { this.store.putSeen(k, id); return; }
-    // Already shown to the operator in the web UI: nothing to announce.
-    if (d.read) {
-      this.store.putSeen(k, id);
-      this.log({ event: 'skipped-read', binding: binding.id, session: s.id, kind: 'finished' });
-      return;
-    }
-    // Seen only once posted: a failed post is retried on the next look.
-    const ref = await this.post(binding, finishedCard({ agent: this.agent(s), link: this.host.link(s), text: d.text }));
-    this.store.putSeen(k, id);
-    this.store.putPosted(`${k}|done:${id}`, {
-      bindingId: binding.id, sessionId: s.id, key: `done:${id}`, kind: 'finished', status: 'closed', adapter: binding.adapter, ref,
-    });
-    this.log({ event: 'posted', binding: binding.id, session: s.id, kind: 'finished' });
-  }
-
   async tick() {
     if (this.ticking || this.host.locked()) return;
     this.ticking = true;
@@ -223,7 +197,8 @@ export class MessengerBridge {
   async checkSession(binding, s) {
     try {
       if (binding.events.includes('input-required')) await this.checkInput(binding, s);
-      await this.checkFinished(binding, s);
+      if (postsFinished(binding)) await checkFinished(this, binding, s);
+      await transcriptTick(this.outbound, binding, s);
       return null;
     } catch (e) {
       this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.message });
@@ -257,8 +232,16 @@ export class MessengerBridge {
     return this.post(binding, noticeCard(`This channel now receives ${binding.events.join(' and ')} events from Agent Manager.`, '👋 Connected'));
   }
 
+  // History after a socket connect (not Slack's hourly refresh), sent through the path of a live event.
+  backfill(id, adapter) {
+    const accept = async (adapterId, r) => (this.stopped ? { ignored: 'stopped' } : this.handleReply(adapterId, r));
+    return backfill({ adapterId: id, adapter, store: this.store, now: this.now, accept, log: (e) => this.log({ adapter: id, ...e }) })
+      .catch((e) => this.log({ adapter: id, event: 'backfill-failed', error: e.message }));
+  }
+
   start() {
     if (this.timer) return;
+    this.stopped = false;
     // messengers.json and the outbox index were loaded when the bridge was built, before any socket connects.
     // The lock reaches the outbox only through the host. The callback gives just the new state, which the
     // outbox compares with its own record of the last one; a real lock already in place counts as landing.
@@ -271,6 +254,7 @@ export class MessengerBridge {
         onReply: (r) => this.handleReply(id, r),
         onCommand: (c) => this.handleCommand(id, c),
         onStatus: (st) => this.statuses.set(id, st),
+        onConnect: () => this.backfill(id, a),
         log: (e) => this.log({ adapter: id, ...e }),
       });
     }
@@ -282,6 +266,7 @@ export class MessengerBridge {
   }
 
   async stop() {
+    this.stopped = true;
     clearInterval(this.timer);
     this.unwatchLock?.();
     this.timer = null;

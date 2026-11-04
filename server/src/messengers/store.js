@@ -11,7 +11,10 @@ import { SECTIONS, loadDelivery } from './delivery-state.js';
 // Tokens never live here: adapters read them from the environment, which is
 // where Space secrets and a VPS's systemd unit both put them.
 
-export const EVENTS = ['input-required', 'finished'];
+// `transcript` mirrors the agent's replies into a Slack thread and stands in for `finished`. It sends
+// agent output to the channel, so a new binding does not get it unless it asks.
+export const EVENTS = ['input-required', 'finished', 'transcript'];
+const DEFAULT_EVENTS = ['input-required', 'finished'];
 const SCOPES = new Set(['session', 'group']);
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const SAVED_MAX = 100;
@@ -41,7 +44,7 @@ export function validateBinding(input, { adapters, existing = null, scopeExists 
   // An unchanged scope may point at something deleted since: the binding must stay editable.
   const unchanged = existing && scope.type === existing.scope.type && scope.id === existing.scope.id;
   if (!unchanged && !scopeExists(scope)) throw invalid('scope', `${scope.type} "${scope.id}" does not exist`);
-  const events = b.events ?? existing?.events ?? EVENTS;
+  const events = b.events ?? existing?.events ?? DEFAULT_EVENTS;
   if (!Array.isArray(events) || !events.length || events.some((e) => !EVENTS.includes(e))) {
     throw invalid('events', `must be a non-empty subset of ${EVENTS.join(', ')}`);
   }
@@ -256,6 +259,7 @@ export class BindingStore {
 
   // seen: `${bindingId}|${sessionId}` → newest reply identity already accounted for
   seen(k) { return this.data.seen[k] ?? null; }
+  seenKeys() { return Object.keys(this.data.seen); }
   putSeen(k, v) { this.commit({ ...this.data, seen: { ...this.data.seen, [k]: v } }); }
 
   // Thread and delivery records (delivery-state.js): copies, so a caller cannot change the store without patchState().

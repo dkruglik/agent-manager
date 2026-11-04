@@ -1,6 +1,7 @@
 import { noticeCard } from './cards.js';
 import { addDeliveredId, laterTs } from './delivery-state.js';
 import { checkDir, createRow, loadRows, removeRow, rewriteRow } from './outbox-files.js';
+import { createAmend } from './outbox-edits.js';
 
 // The outbox between a chat message and the agent. A message is a row file
 // before the adapter acknowledges it (accept); the drain delivers it later,
@@ -14,10 +15,10 @@ const cmpTs = (a, b) => (a === b ? 0 : laterTs(a, b) === b ? -1 : 1);
 const quoted = (text) => text.split('\n').map((l) => `> ${l}`).join('\n');
 
 // The stored texts of a session when its source changed since they were delivered, else ''.
-function preambleFor({ host, store, rows }, key, session) {
-  // A row already waiting carries it; a second copy would repeat the same lines.
+function preambleFor({ host, store, rows }, key, session, except) {
+  // A row already waiting carries it; a second copy would repeat the same lines (an edited row is not its own other copy).
   const [adapter, channel] = key.split('|');
-  if ([...rows.values()].some((r) => r.adapter === adapter && r.channel === channel && r.sessionId === session.id
+  if ([...rows.values()].some((r) => r.requestId !== except && r.adapter === adapter && r.channel === channel && r.sessionId === session.id
     && r.text.startsWith(PREAMBLE_HEAD))) return '';
   const recent = store.state('recent', key);
   if (!recent?.lastSrc || !recent.texts.length) return '';
@@ -33,8 +34,12 @@ function senderPrefix(ctx, adapterId, channel, session, user) {
   return writers.size > 1 ? `Slack user ${user.id}: ` : '';
 }
 
+// The bytes a row sends: preamble, sender prefix, body. `except` is the row being rewritten.
+const frozenText = (ctx, adapterId, channel, session, user, body, except) => preambleFor(ctx, `${adapterId}|${channel}|${session.id}`, session, except)
+  + senderPrefix(ctx, adapterId, channel, session, user) + body;
+
 /** Persists a row and returns once it is on disk. `{ queued }` or `{ ignored: 'duplicate' }`; a failed write throws. */
-function accept(ctx, { requestId, binding, session, r, body, via }) {
+function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
   const { store, rows, log, now, dir } = ctx;
   if (ctx.unsafe) throw Object.assign(new Error('outbox directory is not safe to write'), { persist: true });
   const key = `${binding.adapter}|${r.channel}`;
@@ -42,11 +47,11 @@ function accept(ctx, { requestId, binding, session, r, body, via }) {
     log({ event: 'duplicate', requestId, binding: binding.id, session: session.id });
     return { ignored: 'duplicate' };
   }
-  const text = preambleFor(ctx, `${key}|${session.id}`, session) + senderPrefix(ctx, binding.adapter, r.channel, session, r.user) + body;
+  const text = frozenText(ctx, binding.adapter, r.channel, session, r.user, body);
   const row = {
     requestId, adapter: binding.adapter, channel: r.channel, ts: r.ts, thread: r.thread || null, topLevel: !r.thread,
     sessionId: session.id, bindingId: binding.id, user: { id: r.user.id, ...(r.user.name ? { name: r.user.name } : {}) },
-    text, body, via, state: 'pending', createdAt: now(),
+    text, body, via, state: 'pending', createdAt: now(), ...extra,
   };
   try { createRow(dir, row); } catch (e) {
     throw Object.assign(new Error(`outbox write failed: ${e.message}`), { persist: true });
@@ -115,6 +120,7 @@ async function delivered(ctx, row, session) {
 // One send under a lock scope: a real lock aborts it. A rejection is pending with reason 'error'.
 async function attempt(ctx, row, session) {
   const scope = ctx.host.lockScope();
+  ctx.active.add(row.requestId); // an edit meanwhile is a new message: this send already has its bytes
   try {
     // After a restart the first send waits for the revive result (never sends the continue text itself).
     if (!ctx.ready.has(row.sessionId)) {
@@ -125,7 +131,7 @@ async function attempt(ctx, row, session) {
   } catch (e) {
     ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
     return { state: 'pending', reason: 'error' };
-  } finally { scope.release(); }
+  } finally { ctx.active.delete(row.requestId); scope.release(); }
 }
 
 async function send(ctx, row) {
@@ -239,7 +245,7 @@ function restore(ctx, row) {
 
 /** Loads the row directory once; every later question is answered from memory. */
 export function createOutbox({ host, store, adapters, threads, dir, log, now = () => Date.now() }) {
-  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), ready: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
+  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), active: new Set(), ready: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
   let loaded = { rows: [], bad: [] };
   try {
     ctx.unsafe = checkDir(dir) === 'unsafe';
@@ -248,8 +254,11 @@ export function createOutbox({ host, store, adapters, threads, dir, log, now = (
   } catch (e) { log({ event: 'outbox-unreadable', error: e.code ?? e.name }); }
   for (const row of loaded.rows) restore(ctx, row);
   for (const file of loaded.bad) log({ event: 'row-malformed', file });
+  const amend = createAmend(ctx, { accept, drop, isDelivered, isSubmitted, frozenText, rewriteRow });
   return {
     accept: (args) => accept(ctx, args),
+    edit: amend.edit,
+    deleted: amend.deleted,
     noteLock: (state) => noteLock(ctx, state),
     drain: () => drain(ctx),
     waiting: (adapterId, channel, ts) => waiting(ctx, adapterId, channel, ts),

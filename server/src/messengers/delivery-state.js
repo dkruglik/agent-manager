@@ -18,7 +18,10 @@ export const TEXT_MAX = 2048; // a stored Slack text is cut here
 //   deliveredIds `adapter|channel`         → request ids accepted in the channel, oldest first
 //   submittedIds `adapter|channel`         → request ids whose text may have reached the agent, oldest first
 //   reach        `adapter|channel`         → how many agents the channel reached last time
-export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'deliveredIds', 'submittedIds', 'reach'];
+//   outbound     `adapter|channel|session` → { src, seq, hash, refs, finished? }: the last transcript message
+//                posted (refs are its Slack ts values) and the last finished card's id
+export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'deliveredIds', 'submittedIds', 'reach', 'outbound'];
+export const REFS_MAX = 20;
 
 export const cutText = (s) => String(s ?? '').slice(0, TEXT_MAX);
 
@@ -55,6 +58,11 @@ const KEEP = {
   deliveredIds: keepIds,
   submittedIds: keepIds,
   reach: (v) => (count(v) ? v : undefined),
+  outbound: (v) => {
+    if (!isPlain(v) || typeof v.src !== 'string' || !count(v.seq) || typeof v.hash !== 'string') return undefined;
+    const kept = { src: v.src, seq: v.seq, hash: v.hash, refs: list(v.refs).filter(str).slice(-REFS_MAX) };
+    return typeof v.finished === 'string' ? { ...kept, finished: v.finished } : kept;
+  },
 };
 
 /** Every section of a parsed messengers.json; a file without them (an older install) gives empty ones. */

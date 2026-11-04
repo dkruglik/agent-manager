@@ -71,6 +71,7 @@ import { fileLinkRoots, fileLinksRouter } from './file-links.js';
 import { checkAdoption, ADOPT_NOTE } from './claude-adopt.js';
 import { createMessengers } from './messengers/index.js';
 import { finishedDigest } from './messengers/finished-digest.js';
+import { since } from './transcript-since.js';
 import { requestView } from './codex-view.js';
 // Absolute path of the repo's scripts/, for helpers the agent guide names.
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
@@ -4023,6 +4024,8 @@ const messengers = createMessengers({
     onLock: (fn) => onVisibilityChange((eff) => fn({ locked: eff.locked, reason: eff.reason })),
     lockScope: () => lockScope(),
     sourceKey,
+    // The assistant messages after a cursor, for a `transcript` binding (transcript-since.js).
+    since: (s, cursor) => since(s, cursor),
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];

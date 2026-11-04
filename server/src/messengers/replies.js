@@ -13,14 +13,18 @@ const LOW_NIBBLE = 0x0f;
 const VERSION_8 = 0x80;
 const LOW_6_BITS = 0x3f;
 const VARIANT_10 = 0x80;
-// Shared Codex (CodexInput.send) needs a UUID; a Slack retry or a re-read of the same message must give the same id.
-export const requestIdFor = (adapterId, channel, ts) => {
-  const b = crypto.createHash('sha256').update(`${adapterId}:${channel}:${ts}`).digest().subarray(0, 16);
+// A name-based UUID (RFC 9562 version 8) of the seed text.
+const uuid8 = (seed) => {
+  const b = crypto.createHash('sha256').update(seed).digest().subarray(0, 16);
   b[6] = (b[6] & LOW_NIBBLE) | VERSION_8; // RFC 9562 version 8 (custom, name-based)
   b[8] = (b[8] & LOW_6_BITS) | VARIANT_10; // RFC 9562 variant 10xx
   const h = b.toString('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 };
+// Shared Codex (CodexInput.send) needs a UUID; a Slack retry or a re-read of the same message must give the same id.
+export const requestIdFor = (adapterId, channel, ts) => uuid8(`${adapterId}:${channel}:${ts}`);
+// An edit is its own request: not refused as the message it replaces, and not a row file already taken.
+export const editRequestIdFor = (adapterId, channel, ts, editTs) => uuid8(`${adapterId}:${channel}:${ts}:edit:${editTs}`);
 
 export class ReplyRouter {
   /**
@@ -108,14 +112,15 @@ export class ReplyRouter {
 
   async run(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
+    if (r.deleted) return this.outbox.deleted({ adapterId, r });
     const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
     const target = this.threads.route(adapterId, bindings, r);
-    if (target.unnamed) return this.skipUnnamed(adapterId, r, bindings);
+    if (target.unnamed) return r.edit ? { ignored: 'unnamed' } : this.skipUnnamed(adapterId, r, bindings);
     if (target.ignored) return { ignored: target.ignored };
     const { found, text } = target;
     const posted = found?.[1];
-    const answering = posted?.kind === 'input' && (posted.status === 'open' || !!r.optionId);
+    const answering = !r.edit && posted?.kind === 'input' && (posted.status === 'open' || !!r.optionId);
     const { binding, reached } = this.threads.pick(bindings, target.sessionId, r.user, answering ? posted.bindingId : null);
     const session = this.sessionById(target.sessionId);
     const where = posted ? posted.ref.ts : (r.thread || r.ts);
@@ -175,6 +180,8 @@ export class ReplyRouter {
       this.log({ event: 'refused', reason: 'no-ts', binding: binding.id, session: session.id });
       return { ignored: 'no-ts' };
     }
+    // An edit changes a row still waiting, or is sent as a new message; a delete is handled in run().
+    if (r.edit) return this.outbox.edit({ binding, session, r, body, via });
     const requestId = requestIdFor(adapterId, r.channel, r.ts);
     // Returns once the row is on disk; the drain delivers it (outbox.js).
     return this.outbox.accept({ requestId, binding, session, r, body, via });

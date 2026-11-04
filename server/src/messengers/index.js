@@ -17,6 +17,8 @@ import { SlackAdapter } from './adapters/slack.js';
  *     messageId: string, optionId?: string, text?: string}) => Promise<unknown>,
  *   onCommand: (c: {channel: string, user: {id: string, name?: string}, text: string}) => Promise<string>,
  *   onStatus: (s: {connected: boolean, error: string|null}) => void,
+ *   onConnect: (called once per new connection, not on a service-requested refresh: messages sent while the
+ *     socket was down may be missing, so the bridge reads history) () => Promise<void>,
  *   log: (entry: object) => void,
  * }) => void} start
  * @property {() => Promise<void>} [stop]
@@ -25,6 +27,9 @@ import { SlackAdapter } from './adapters/slack.js';
  * @property {(ref: {channel: string, ts: string}, card: object) => Promise<void>} update
  * @property {(e: {channel: string, user: string, text: string}) => Promise<void>} postEphemeral
  *   Shows `text` in the channel to one user only.
+ * @property {(q: {channel: string, thread?: string, oldest?: string}) => Promise<object[]>} [history]
+ *   Messages after `oldest` (exclusive), oldest first, in the shape of an `onReply` event, bot messages left out.
+ *   `thread` reads that thread's replies instead of the channel. Needed for backfill.
  */
 
 /** @type {Record<string, (config: object) => Adapter>} */

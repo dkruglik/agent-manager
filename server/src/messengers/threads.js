@@ -24,7 +24,7 @@ export function quoteOf(user, text) {
   return `*${String(user.id).replace(/[^A-Za-z0-9]/g, '')}*\n${lines.join('\n')}`;
 }
 
-const bump = (list, ts, at) => list.map((e) => (e.ts === ts ? { ...e, count: e.count + 1, at } : e));
+const bump = (list, ts, at, n = 1) => list.map((e) => (e.ts === ts ? { ...e, count: e.count + n, at } : e));
 
 // A binding reaches a session by its scope alone, so a session that is gone still counts for a session binding.
 const reaches = ({ host }, binding, sessionId) => (binding.scope.type === 'session'
@@ -132,20 +132,41 @@ const stillReached = (ctx, adapterId, channel, sessionId) => ctx.store.bindings(
 
 const needsRoot = (now, last) => !last || last.count >= ROOT_FULL || now() - last.at >= ROOT_IDLE_MS;
 
+// Posts a new root and stores the roots list with it. Returns the list.
+async function openRoot(ctx, adapterId, channel, session, list) {
+  const { host, store, adapters, now } = ctx;
+  const card = { kind: 'root', title: `🧵 ${session.name} · ${session.cli}`, link: host.link(session) };
+  const ref = await adapters.get(adapterId).post({ channel, thread: null }, card);
+  const next = [...list, { ts: ref.ts, at: now(), count: 0 }].slice(-ROOTS_MAX);
+  if (stillReached(ctx, adapterId, channel, session.id)) store.patchState({ roots: { [`${adapterId}|${channel}|${session.id}`]: next } });
+  return next;
+}
+
+// Runs `fn` after the work already queued for the session's thread state, so two writers never interleave.
+function serial(ctx, sk, fn) {
+  const run = (ctx.queues.get(sk) || Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  ctx.queues.set(sk, tail);
+  return run.finally(() => { if (ctx.queues.get(sk) === tail) ctx.queues.delete(sk); });
+}
+
+/** The ts of the session's current root, opened (or rotated, when full or idle) first if need be. */
+function ensureRoot(ctx, adapterId, channel, session) {
+  const sk = `${adapterId}|${channel}|${session.id}`;
+  return serial(ctx, sk, async () => {
+    const list = ctx.store.state('roots', sk) || [];
+    return (needsRoot(ctx.now, list.at(-1)) ? await openRoot(ctx, adapterId, channel, session, list) : list).at(-1).ts;
+  });
+}
+
 // Quotes a top-level message into the session's current root, opening a new root when it is full or idle.
 // Returns the roots list as it should be stored; a Slack failure is logged and the message still counts as delivered.
 async function quote(ctx, adapterId, session, r, text, roots) {
-  const { host, store, adapters, log, now } = ctx;
+  const { adapters, log, now } = ctx;
   const adapter = adapters.get(adapterId);
-  const sk = `${adapterId}|${r.channel}|${session.id}`;
   let list = roots;
   try {
-    if (needsRoot(now, list.at(-1))) {
-      const card = { kind: 'root', title: `🧵 ${session.name} · ${session.cli}`, link: host.link(session) };
-      const ref = await adapter.post({ channel: r.channel, thread: null }, card);
-      list = [...list, { ts: ref.ts, at: now(), count: 0 }].slice(-ROOTS_MAX);
-      if (stillReached(ctx, adapterId, r.channel, session.id)) store.patchState({ roots: { [sk]: list } });
-    }
+    if (needsRoot(now, list.at(-1))) list = await openRoot(ctx, adapterId, r.channel, session, list);
     const rootTs = list.at(-1).ts;
     await adapter.post({ channel: r.channel, thread: rootTs }, { kind: 'quote', mrkdwn: quoteOf(r.user, text) });
     list = bump(list, rootTs, now());
@@ -177,11 +198,9 @@ async function record(ctx, adapterId, session, r, text, via) {
 /** After host.deliver delivered a message: quote it, advance the watermarks, keep the text. Never throws. */
 function recordDelivery(ctx, adapterId, session, r, text, via) {
   const sk = `${adapterId}|${r.channel}|${session.id}`;
-  const run = (ctx.queues.get(sk) || Promise.resolve()).then(() => record(ctx, adapterId, session, r, text, via)).catch((e) => {
+  return serial(ctx, sk, () => record(ctx, adapterId, session, r, text, via)).catch((e) => {
     ctx.log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.message });
   });
-  ctx.queues.set(sk, run);
-  return run.finally(() => { if (ctx.queues.get(sk) === run) ctx.queues.delete(sk); });
 }
 
 // The state keys of a channel that name a session: `adapter|channel|session`.
@@ -233,6 +252,10 @@ export function createThreads({
     notifyUnnamed: (adapterId, r) => notifyUnnamed(ctx, adapterId, r),
     noteReach: (adapterId, channel, sessions) => noteReach(ctx, adapterId, channel, sessions),
     recordDelivery: (adapterId, session, r, text, via) => recordDelivery(ctx, adapterId, session, r, text, via),
+    ensureRoot: (adapterId, channel, session) => ensureRoot(ctx, adapterId, channel, session),
+    stillReached: (adapterId, channel, sessionId) => stillReached(ctx, adapterId, channel, sessionId),
+    exclusive: (adapterId, channel, sessionId, fn) => serial(ctx, `${adapterId}|${channel}|${sessionId}`, fn),
+    bump: (list, ts, at, n) => bump(list, ts, at, n),
     forget: (removed) => forget(ctx, removed),
   };
 }
