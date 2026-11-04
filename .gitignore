@@ -10,3 +10,7 @@ data/
 .env.local
 __pycache__/
 *.pyc
+
+# No trailing slash: a symlinked .cursor (the review skill borrowed from
+# another checkout) must not be committed either.
+.cursor
