@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { BindingStore } from '../src/messengers/store.js';
+import { requestIdFor } from '../src/messengers/replies.js';
 import { ApiError } from '../src/api-errors.js';
 
 // Inbound replies: what is said back in chat, what is logged, and that a card
@@ -338,4 +339,40 @@ test('two replies in the same finished-card thread are two requests', async () =
   const b = await requestIdOf(t, reply(2, '1700000000.000200'));
   assert.match(a, UUID);
   assert.notEqual(b, a);
+});
+
+test('the prompted log carries the request id the host received', async () => {
+  const t = setup();
+  const id = await requestIdOf(t, { ...text(1, 'run the tests'), ts: '1700000000.000100' });
+  const entry = t.logs.find((e) => e.event === 'prompted');
+  assert.equal(entry.requestId, id);
+  assert.ok(!JSON.stringify(t.logs).includes('run the tests'), 'no message text in the log');
+});
+
+test('reply-failed carries the request id when sending a prompt failed', async () => {
+  const t = setup();
+  let sent;
+  t.host.prompt = async (s, body, opts) => { sent = opts.requestId; throw new Error('boom'); };
+  await t.bridge.handleReply('slack', { ...text(1, 'hi'), ts: '1700000000.000100' });
+  assert.equal(t.logs.find((e) => e.event === 'reply-failed').requestId, sent);
+});
+
+test('reply-failed has no request id when no prompt was sent', async () => {
+  const t = setup();
+  t.host.answer = async () => { throw new Error('boom'); };
+  await t.bridge.handleReply('slack', press(1));
+  const entry = t.logs.find((e) => e.event === 'reply-failed');
+  assert.ok(entry);
+  assert.ok(!('requestId' in entry));
+});
+
+test('the request id for a known message is fixed', () => {
+  const id = requestIdFor('slack', 'C0', '1700000000.000100');
+  assert.match(id, UUID);
+  assert.equal(id.split('-')[2][0], '8', 'version 8');
+  assert.equal(id, '50d10fd0-3547-846d-8167-1698d7e79833');
+});
+
+test('the same channel and ts under another adapter is another request id', () => {
+  assert.notEqual(requestIdFor('other', 'C0', '1700000000.000100'), requestIdFor('slack', 'C0', '1700000000.000100'));
 });
