@@ -26,6 +26,7 @@ function setup({ lock = OPEN, root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-m
     sessions: () => host.list.map((s) => ({ ...s })),
     groupOf: () => ({ id: 'g1', name: 'proj' }),
     locked: () => host.lock.locked, lockState: () => ({ ...host.lock }),
+    ready: async () => 'skipped',
     onLock(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     lockScope() {
       const c = new AbortController();

@@ -27,7 +27,7 @@ import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
-import { deliverToSession } from './delivery-outcome.js';
+import { deliverToSession, readyAfterRevive, bootRevive } from './delivery-outcome.js';
 import * as store from './sessions.js';
 import * as groups from './groups.js';
 import * as order from './order.js';
@@ -39,7 +39,7 @@ import * as crons from './crons.js';
 import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js';
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
-  waitForInputReady, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
+  waitForInputReady, promptReady, hasPromptDetector, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
   installClaudeRepinHook, installOpencodeRepinPlugin,
 } from './runner.js';
 
@@ -4035,6 +4035,11 @@ const messengers = createMessengers({
       return finishedDigest(out, digest, readMarks.get(s.id));
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
+    // Resolves once this boot's revive result for the session is known (and, for a CLI with a prompt detector, a
+    // ready prompt): the chat drain sends nothing before it, so it never races the continue message.
+    ready: (s, { signal } = {}) => readyAfterRevive(s, {
+      result: (id) => runstate.reviveResult(id), detector: hasPromptDetector, running: isRunning, promptReady,
+    }, { signal }),
     // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
     deliver: (s, { text, requestId, signal }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
       shared: (session) => sessionRuntime.shared(session),
@@ -4274,14 +4279,16 @@ setTimeout(() => {
   // decision waits for the first (bounded) privacy verdict rather than reading
   // the fail-closed `checking` state as a reason not to revive.
   firstVerdict.then(() => {
-    const done = isLocked()
-      ? Promise.resolve([])
-      : runstate.reviveOnBoot({
+    const done = bootRevive({
+      locked: isLocked(),
+      skipAll: () => runstate.reviveSkipAll(),
+      revive: () => runstate.reviveOnBoot({
         ...loadAmConfig().revive,
         // The Overview reply box's path: privacy-lock aware, submit confirmed.
         send: (s, text, { runId, signal }) => deliver(s, { text }, 'Agent Manager', { signal, runId }),
         scope: lockScope,
-      }).catch((e) => console.error('[revive]', e && e.message));
+      }).catch((e) => console.error('[revive]', e && e.message)),
+    });
     done.then(() => runstate.startRunstateWatch());
   });
 }, 8000);

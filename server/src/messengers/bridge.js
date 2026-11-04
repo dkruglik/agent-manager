@@ -259,6 +259,11 @@ export class MessengerBridge {
 
   start() {
     if (this.timer) return;
+    // messengers.json and the outbox index were loaded when the bridge was built, before any socket connects.
+    // The lock reaches the outbox only through the host. The callback gives just the new state, which the
+    // outbox compares with its own record of the last one; a real lock already in place counts as landing.
+    this.unwatchLock = this.host.onLock((st) => this.outbox.noteLock(st));
+    this.outbox.noteLock(this.host.lockState());
     for (const [id, a] of this.adapters) {
       this.statuses.set(id, { connected: false, error: a.configured() ? null : 'not configured' });
       if (!a.configured()) continue;
@@ -269,10 +274,6 @@ export class MessengerBridge {
         log: (e) => this.log({ adapter: id, ...e }),
       });
     }
-    // The lock reaches the outbox only through the host. The callback gives just the new state, which the
-    // outbox compares with its own record of the last one; a real lock already in place counts as landing.
-    this.unwatchLock = this.host.onLock((st) => this.outbox.noteLock(st));
-    this.outbox.noteLock(this.host.lockState());
     this.timer = setInterval(() => {
       this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.message }));
       this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.message }));

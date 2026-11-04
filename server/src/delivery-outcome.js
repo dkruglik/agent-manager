@@ -86,3 +86,35 @@ export async function deliverToSession(session, { text, requestId }, io) {
   if (outcome.state === 'delivered') io.touch(session.id);
   return outcome;
 }
+
+const READY_MS = 30_000;
+const READY_POLL_MS = 200;
+
+/**
+ * Called before a chat prompt's first send to a session after a restart. Resolves once the boot's revive
+ * result for the session has settled (`io.result(id)`: 'sent', 'skipped' or 'gave-up') and returns it, so
+ * the continue message is never raced. For a CLI with a prompt detector whose pane is running, and unless
+ * revive gave up, it then waits (bounded, stopping when `signal` aborts) for an empty prompt. A CLI
+ * without a detector (Gemini, OpenClaw, fx) never waits on the prompt.
+ * `io`: `{ result, detector(cli), running(id), promptReady(id), sleep(ms), now() }`.
+ */
+export async function readyAfterRevive(session, io, { signal = null, readyMs = READY_MS } = {}) {
+  const result = await io.result(session.id);
+  if (result === 'gave-up' || !io.detector(session.cli) || !io.running(session.id)) return result;
+  const now = io.now || Date.now;
+  const sleep = io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const deadline = now() + readyMs;
+  while (!signal?.aborted && io.running(session.id) && !io.promptReady(session.id) && now() < deadline) {
+    await sleep(READY_POLL_MS);
+  }
+  return result;
+}
+
+/** Boot revive, or, when the Space is locked, no revive at all and every waiting session answered 'skipped'. */
+export function bootRevive({ locked, skipAll, revive }) {
+  if (locked) {
+    skipAll();
+    return Promise.resolve([]);
+  }
+  return revive();
+}

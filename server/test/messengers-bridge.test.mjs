@@ -39,7 +39,7 @@ function setup({ events = ['input-required', 'finished'] } = {}) {
     typed: [], requestsError: null, digestImpl: async () => null, isLocked: false,
     sessions: () => host.list.map((s) => ({ ...s })),
     groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }),
+    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, ready: async () => 'skipped', lockScope: () => ({ signal: new AbortController().signal, release() {} }),
     link: (s) => `http://am/#session=${s.id}`,
     requests: async () => {
       if (host.requestsError) { const e = host.requestsError; host.requestsError = null; throw e; }

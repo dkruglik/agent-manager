@@ -170,6 +170,22 @@ reply under a top-level message that is still waiting routes to its agent.
 Removing a binding deletes an agent's rows only when no other binding in the
 channel still reaches it.
 
+#### After a restart
+
+Rows survive a restart (`messengers.json` and the outbox index are loaded when
+the bridge is built, before any socket connects). Before the first send of a
+session after the process started, the drain waits for the host's `ready(session)`:
+it resolves once that boot's revive result for the session
+(`sent`, `skipped` or `gave-up`, see [session-revive.md](session-revive.md))
+has settled. For a CLI with a prompt detector whose pane is running, and
+unless revive gave up, it then waits (30 s at most, and not past a lock) for an
+empty prompt. Gemini, OpenClaw and fx never wait on the prompt. The drain never
+sends the continue text and never races it; a session revive did not include is
+`skipped`, so a pending row starts it through `deliver` as usual. The wait is
+per session: it does not hold other sessions or the 24-hour expiry. If the
+Space is locked at boot, revive is skipped and every session resolves
+`skipped`. A `submitted` row is never sent again after a restart.
+
 #### The privacy lock
 
 The bridge reaches the lock only through the host: `lockState()` gives

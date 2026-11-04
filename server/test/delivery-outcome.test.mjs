@@ -134,3 +134,63 @@ test('deliverToSession: shared Codex gets the id, remote text is cut, pending ou
   assert.deepEqual(await deliverToSession({ id: 'c', cli: 'codex' }, req, busy.io), { state: 'pending', reason: 'codex-task-busy' });
   assert.deepEqual(busy.calls, []);
 });
+
+// ---- after a restart: wait for the revive result, then for a ready prompt ----
+import { bootRevive, readyAfterRevive } from '../src/delivery-outcome.js';
+
+function readyIo({ result = 'sent', detector = true, running = true, readyAfter = 0 } = {}) {
+  const io = {
+    calls: [], polls: 0,
+    result: async () => result,
+    detector: () => detector,
+    running: () => running,
+    promptReady: () => { io.polls += 1; return io.polls > readyAfter; },
+    sleep: async () => {},
+  };
+  return io;
+}
+
+test('readyAfterRevive: waits for a ready prompt when the CLI has a detector and the pane runs', async () => {
+  const io = readyIo({ readyAfter: 3 });
+  assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, io), 'sent');
+  assert.equal(io.polls, 4);
+});
+
+test('readyAfterRevive: gave-up does not wait for the prompt', async () => {
+  const io = readyIo({ result: 'gave-up', readyAfter: 99 });
+  assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, io), 'gave-up');
+  assert.equal(io.polls, 0);
+});
+
+test('readyAfterRevive: a CLI without a prompt detector, or a pane that is not running, does not wait', async () => {
+  for (const extra of [{ detector: false }, { running: false }]) {
+    const io = readyIo({ readyAfter: 99, ...extra });
+    assert.equal(await readyAfterRevive({ id: 's1', cli: 'gemini' }, io), 'sent');
+    assert.equal(io.polls, 0);
+  }
+  const skipped = readyIo({ result: 'skipped', detector: false });
+  assert.equal(await readyAfterRevive({ id: 's1', cli: 'fx' }, skipped), 'skipped');
+});
+
+test('readyAfterRevive: the wait is bounded and stops when the lock signal aborts', async () => {
+  const bounded = readyIo({ readyAfter: Infinity });
+  let t = 0;
+  bounded.now = () => (t += 1000);
+  assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, bounded, { readyMs: 5000 }), 'sent');
+  assert.ok(bounded.polls >= 1 && bounded.polls < 10);
+  const aborted = readyIo({ readyAfter: Infinity });
+  const c = new AbortController();
+  aborted.sleep = async () => c.abort();
+  await readyAfterRevive({ id: 's1', cli: 'claude' }, aborted, { signal: c.signal });
+  assert.equal(aborted.polls, 1);
+});
+
+test('bootRevive: a locked Space skips every session instead of leaving waiters hanging', async () => {
+  const calls = [];
+  const out = await bootRevive({ locked: true, skipAll: () => calls.push('skipAll'), revive: async () => { calls.push('revive'); return [1]; } });
+  assert.deepEqual(calls, ['skipAll']);
+  assert.deepEqual(out, []);
+  const open = await bootRevive({ locked: false, skipAll: () => calls.push('skipAll2'), revive: async () => { calls.push('revive'); return [1]; } });
+  assert.deepEqual(calls, ['skipAll', 'revive']);
+  assert.deepEqual(open, [1]);
+});

@@ -27,7 +27,7 @@ function setup({ allowedUsers = ['U1'], sessions = ['s1'], root = fs.mkdtempSync
     list: sessions.map((id) => ({ id, name: names[id], cli: 'claude', state: 'working', inputRequired: null })),
     sessions: () => host.list.map((s) => ({ ...s })),
     groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null, sourceKey: () => host.src,
+    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, readyCalls: [], readyImpl: async () => 'skipped', ready: async (s, o) => { host.readyCalls.push(s.id); return host.readyImpl(s, o); }, lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null, sourceKey: () => host.src,
     requests: async () => [], digest: async () => null, answer: async () => {},
     async deliver(s, { text, requestId }) {
       host.deliveries.push({ id: s.id, text, requestId });
@@ -483,4 +483,59 @@ test('a redelivery that arrives while the first is still being persisted is not 
   fs.writeFileSync(t.dir, 'not a directory');
   const results = await Promise.allSettled([t.send(msg('10.1', 'hello')), t.send(msg('10.1', 'hello'))]);
   assert.deepEqual(results.map((r) => r.status), ['rejected', 'rejected']);
+});
+
+// ---- after a restart: the drain waits for the revive result ----
+
+test('the first send of a session waits for host.ready; later rows do not wait again', async () => {
+  const t = setup();
+  let release;
+  t.host.readyImpl = () => new Promise((r) => { release = () => r('sent'); });
+  await t.send(msg('10.1', 'one'));
+  await t.send(msg('10.2', 'two'));
+  const draining = t.bridge.drain();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(t.host.deliveries.length, 0, 'nothing is sent before ready resolves');
+  release();
+  await draining;
+  assert.deepEqual(t.host.deliveries.map((d) => d.text), ['one', 'two']);
+  await t.send(msg('10.3', 'three'));
+  await t.bridge.drain();
+  assert.deepEqual(t.host.readyCalls, ['s1'], 'asked once per session');
+});
+
+test('a gave-up result sends without waiting; the outbox never sends the continue text itself', async () => {
+  const t = setup();
+  t.host.readyImpl = async () => 'gave-up';
+  await t.send(msg('10.1', 'one'));
+  await t.bridge.drain();
+  assert.deepEqual(t.host.deliveries.map((d) => d.text), ['one']);
+  assert.ok(!t.host.deliveries.some((d) => d.text.startsWith('[Agent Manager:')));
+});
+
+test('a session whose ready() is stuck blocks neither another session nor expiry', async () => {
+  const t = setup({ sessions: ['s1', 's2'] });
+  t.host.readyImpl = (s) => (s.id === 's1' ? new Promise(() => {}) : Promise.resolve('skipped'));
+  await t.send(msg('10.1', 'alpha: stuck'));
+  await t.send(msg('10.2', 'beta: fine'));
+  void t.bridge.drain();
+  await new Promise((r) => setImmediate(r));
+  await t.bridge.drain();
+  assert.deepEqual(t.host.deliveries.map((d) => d.text), ['fine']);
+  t.clock.t += DAY + 1;
+  await t.bridge.drain();
+  assert.deepEqual(t.files(), []);
+  assert.ok(t.posts.some((p) => p.card.body === 'Not delivered — still waiting after 24h.'));
+});
+
+test('a submitted row is not sent after a restart', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'submitted', reason: 'typed' });
+  await t.send(msg('10.1', 'one'));
+  await t.bridge.drain();
+  const again = t.make({ fresh: true });
+  await again.drain();
+  await again.drain();
+  assert.equal(t.host.deliveries.length, 1);
+  assert.equal(t.files().length, 1, 'kept until its 24 hours are up');
 });

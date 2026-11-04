@@ -20,7 +20,7 @@ function setup({ approvals = true, allowedUsers = ['U1'] } = {}) {
   const host = {
     isLocked: false, gone: false, answers: [],
     sessions: () => (host.gone ? [] : [{ id: 's1', name: 'alpha', cli: 'codex', state: 'working', inputRequired: null }]),
-    groupOf: () => ({ id: 'g1', name: 'proj' }), locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null,
+    groupOf: () => ({ id: 'g1', name: 'proj' }), locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, ready: async () => 'skipped', lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null,
     requests: async () => [], digest: async () => null,
     answer: async (...a) => { host.answers.push(a); }, prompt: async () => {},
     deliver: async (s, { text, requestId }) => { await host.prompt(s, text, { requestId }); return { state: 'delivered' }; },

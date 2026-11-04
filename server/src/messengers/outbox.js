@@ -116,6 +116,11 @@ async function delivered(ctx, row, session) {
 async function attempt(ctx, row, session) {
   const scope = ctx.host.lockScope();
   try {
+    // After a restart the first send waits for the revive result (never sends the continue text itself).
+    if (!ctx.ready.has(row.sessionId)) {
+      await ctx.host.ready(session, { signal: scope.signal });
+      if (!scope.signal.aborted) ctx.ready.add(row.sessionId);
+    }
     return await ctx.host.deliver(session, { text: row.text, requestId: row.requestId, signal: scope.signal });
   } catch (e) {
     ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
@@ -234,7 +239,7 @@ function restore(ctx, row) {
 
 /** Loads the row directory once; every later question is answered from memory. */
 export function createOutbox({ host, store, adapters, threads, dir, log, now = () => Date.now() }) {
-  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
+  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), ready: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
   let loaded = { rows: [], bad: [] };
   try {
     ctx.unsafe = checkDir(dir) === 'unsafe';
