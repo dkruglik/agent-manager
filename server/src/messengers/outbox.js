@@ -112,6 +112,17 @@ async function delivered(ctx, row, session) {
   await ctx.threads.recordDelivery(row.adapter, session, r, row.body, row.via);
 }
 
+// One send under a lock scope: a real lock aborts it. A rejection is pending with reason 'error'.
+async function attempt(ctx, row, session) {
+  const scope = ctx.host.lockScope();
+  try {
+    return await ctx.host.deliver(session, { text: row.text, requestId: row.requestId, signal: scope.signal });
+  } catch (e) {
+    ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
+    return { state: 'pending', reason: 'error' };
+  } finally { scope.release(); }
+}
+
 async function send(ctx, row) {
   if (isDelivered(ctx, row)) {
     drop(ctx, row);
@@ -127,12 +138,10 @@ async function send(ctx, row) {
     await say(ctx, row, `Not delivered — ${why}.`);
     return true;
   }
-  let out;
-  try { out = await ctx.host.deliver(session, { text: row.text, requestId: row.requestId }); } catch (e) {
-    ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
-    out = { state: 'pending', reason: 'error' };
-  }
+  const out = await attempt(ctx, row, session);
   if (out?.state === 'delivered') { await delivered(ctx, row, session); return true; }
+  // A real lock landed during the send and already deleted the row: nothing is left to record.
+  if (!ctx.rows.has(row.requestId)) return true;
   if (out?.state === 'submitted') {
     Object.assign(row, { state: 'submitted', reason: out.reason });
     remember(ctx, 'submittedIds', row); // durable before the file is rewritten
@@ -150,6 +159,7 @@ async function send(ctx, row) {
 async function drainSession(ctx, list) {
   for (const row of list.sort((a, b) => cmpTs(a.ts, b.ts))) {
     if (!ctx.rows.has(row.requestId) || row.state !== 'pending') continue;
+    if (ctx.host.lockState().locked) return; // a real lock deletes the rows; checking holds them
     try { if (!(await send(ctx, row))) return; } catch (e) {
       ctx.log({ event: 'drain-failed', requestId: row.requestId, session: row.sessionId, error: e.code ?? e.name });
       return;
@@ -168,13 +178,33 @@ async function upkeep(ctx) {
 
 async function drain(ctx) {
   await upkeep(ctx);
-  if (ctx.host.locked()) return;
+  if (ctx.host.lockState().locked) return;
   const waiting = [...ctx.rows.values()].filter((r) => r.state === 'pending');
   const bySession = Map.groupBy(waiting, (r) => r.sessionId);
   await Promise.all([...bySession].filter(([id]) => !ctx.sending.has(id)).map(async ([id, list]) => {
     ctx.sending.add(id);
     try { await drainSession(ctx, list); } finally { ctx.sending.delete(id); }
   }));
+}
+
+// Tracks real locks. A real lock is `locked` with a reason other than 'checking'. When one lands (from unlocked,
+// from checking, or already in place when the bridge starts) every pending row is deleted and its thread
+// remembered in memory; once the manager unlocks, each such thread gets one line. Submitted rows stay.
+function noteLock(ctx, state) {
+  const real = !!state.locked && state.reason !== 'checking';
+  const landed = real && !ctx.realLock;
+  ctx.realLock = real;
+  if (landed) {
+    for (const row of [...ctx.rows.values()].filter((r) => r.state === 'pending')) {
+      ctx.noticeLater.set(`${row.adapter}|${row.channel}|${row.thread || row.ts}`, row);
+      drop(ctx, row);
+    }
+    ctx.log({ event: 'lock-landed', reason: state.reason });
+  }
+  if (state.locked || !ctx.noticeLater.size) return Promise.resolve();
+  const rows = [...ctx.noticeLater.values()];
+  ctx.noticeLater.clear();
+  return Promise.all(rows.map((row) => say(ctx, row, 'Not delivered (locked).')));
 }
 
 /** The session id behind a top-level message that is still waiting (pending or submitted), else null. */
@@ -204,7 +234,7 @@ function restore(ctx, row) {
 
 /** Loads the row directory once; every later question is answered from memory. */
 export function createOutbox({ host, store, adapters, threads, dir, log, now = () => Date.now() }) {
-  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), unsafe: false };
+  const ctx = { host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), unsafe: false, realLock: false, noticeLater: new Map() };
   let loaded = { rows: [], bad: [] };
   try {
     ctx.unsafe = checkDir(dir) === 'unsafe';
@@ -215,6 +245,7 @@ export function createOutbox({ host, store, adapters, threads, dir, log, now = (
   for (const file of loaded.bad) log({ event: 'row-malformed', file });
   return {
     accept: (args) => accept(ctx, args),
+    noteLock: (state) => noteLock(ctx, state),
     drain: () => drain(ctx),
     waiting: (adapterId, channel, ts) => waiting(ctx, adapterId, channel, ts),
     sessionsIn: (adapterId, channel) => sessionsIn(ctx, adapterId, channel),

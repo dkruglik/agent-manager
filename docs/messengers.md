@@ -170,6 +170,29 @@ reply under a top-level message that is still waiting routes to its agent.
 Removing a binding deletes an agent's rows only when no other binding in the
 channel still reaches it.
 
+#### The privacy lock
+
+The bridge reaches the lock only through the host: `lockState()` gives
+`{ locked, reason }`, `onLock(fn)` calls `fn` with the new state, and
+`lockScope()` opens a scope whose signal aborts when a lock lands. A **real
+lock** is any lock whose reason is not `checking`.
+
+- **Real lock.** A new prompt writes no row: the sender gets "Agent Manager is
+  locked; nothing was sent." and the event is acked. When a real lock lands
+  (from unlocked, from `checking`, or already in place when the bridge starts)
+  every `pending` row is deleted, and nothing is sent after the unlock. Once
+  the manager unlocks, each affected thread gets one line, "Not delivered
+  (locked)." The thread list is kept in memory only: a restart during a real
+  lock loses the line, because the rows are already gone. `submitted` rows are
+  kept.
+- **`checking`** (the first privacy verdict is still in flight). A prompt from
+  an allowed sender is saved like any other and waits; the drain sends nothing
+  and nothing is deleted, so a restart keeps the rows. Answers to question and
+  approval cards are refused during either lock, as before.
+- **Every send** holds a `lockScope()` and passes its signal to `host.deliver`.
+  A lock landing aborts a send still inside the host; an abort without the
+  typed flag is `pending`, and the landing then deletes the row.
+
 A full wipe is: stop the server, then delete `messengers.json` and
 `messenger-outbox/`.
 

@@ -120,7 +120,7 @@ export class ReplyRouter {
     const session = this.sessionById(target.sessionId);
     const where = posted ? posted.ref.ts : (r.thread || r.ts);
     const reply = (t) => this.say(adapterId, r.channel, where, t);
-    const refused = await this.refusal(binding, session, r, reply, reached);
+    const refused = await this.refusal(binding, session, r, reply, reached, !answering);
     if (refused) return refused;
     try {
       // A closed input card no longer takes answers: a reply in its thread is an ordinary prompt.
@@ -144,7 +144,8 @@ export class ReplyRouter {
     }
   }
 
-  async refusal(binding, session, r, reply, reached = true) {
+  // `holdable`: a prompt may be saved while the first privacy verdict is in flight ('checking'); a real lock and card answers refuse both.
+  async refusal(binding, session, r, reply, reached = true, holdable = false) {
     if (!this.allowed(binding, r.user)) {
       this.log({ event: 'refused', reason: 'user-not-allowed', binding: binding.id, user: r.user?.id });
       if (r.optionId) await reply(`<@${r.user?.id}> is not allowed to answer for this agent.`);
@@ -158,7 +159,8 @@ export class ReplyRouter {
       await reply('That agent is no longer connected to this channel.');
       return this.refused('not-in-channel', binding, session);
     }
-    if (this.host.locked()) {
+    const lock = this.host.lockState();
+    if (lock.locked && !(holdable && lock.reason === 'checking')) {
       await reply('Agent Manager is locked; nothing was sent.');
       return this.refused('locked', binding, session);
     }

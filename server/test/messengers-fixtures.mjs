@@ -38,7 +38,7 @@ export function fakeHost() {
     isLocked: false,
     sessions: () => h.list.map((s) => ({ ...s })),
     groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => h.isLocked,
+    locked: () => h.isLocked, lockState: () => ({ locked: h.isLocked, reason: h.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }),
     link: (s) => `http://am/#session=${s.id}`,
     requests: async () => [],
     digest: async () => null,

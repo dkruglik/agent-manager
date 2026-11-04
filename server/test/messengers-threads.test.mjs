@@ -29,7 +29,7 @@ function setup({ allowedUsers = ['U1'], link = null, sessions = ['s1'], bindings
     list: sessions.map((id) => ({ id, name: names[id], cli: 'codex', state: 'working', inputRequired: null })),
     sessions: () => host.list.map((s) => ({ ...s })),
     groupOf: (id) => (host.group[id] ? { id: host.group[id], name: 'proj' } : null),
-    locked: () => host.isLocked, link: link ? (s) => `${link}/#session=${s.id}` : () => null,
+    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: link ? (s) => `${link}/#session=${s.id}` : () => null,
     sourceKey: (s) => `src-${s.id}`, requests: async () => [], digest: async () => null,
     answer: async (s, key, response) => { host.answers.push({ id: s.id, key, response }); },
     deliver: async (s, { text, requestId }) => { host.prompts.push({ id: s.id, text, requestId }); return { state: 'delivered' }; },

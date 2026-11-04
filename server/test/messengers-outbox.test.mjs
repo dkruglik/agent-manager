@@ -27,7 +27,7 @@ function setup({ allowedUsers = ['U1'], sessions = ['s1'], root = fs.mkdtempSync
     list: sessions.map((id) => ({ id, name: names[id], cli: 'claude', state: 'working', inputRequired: null })),
     sessions: () => host.list.map((s) => ({ ...s })),
     groupOf: () => ({ id: 'g1', name: 'proj' }),
-    locked: () => host.isLocked, link: () => null, sourceKey: () => host.src,
+    locked: () => host.isLocked, lockState: () => ({ locked: host.isLocked, reason: host.isLocked ? 'public-space' : null }), onLock: () => () => {}, lockScope: () => ({ signal: new AbortController().signal, release() {} }), link: () => null, sourceKey: () => host.src,
     requests: async () => [], digest: async () => null, answer: async () => {},
     async deliver(s, { text, requestId }) {
       host.deliveries.push({ id: s.id, text, requestId });

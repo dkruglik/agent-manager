@@ -4018,6 +4018,10 @@ const messengers = createMessengers({
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
     groupOf: (id) => groups.groupOf(id),
     locked: () => isLocked(),
+    // The messengers reach the privacy lock only through these three.
+    lockState: () => { const { locked, reason } = lockState(); return { locked, reason }; },
+    onLock: (fn) => onVisibilityChange((eff) => fn({ locked: eff.locked, reason: eff.reason })),
+    lockScope: () => lockScope(),
     sourceKey,
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
     async requests(s) {
@@ -4032,14 +4036,17 @@ const messengers = createMessengers({
     },
     answer: (s, key, response) => codexInput.answer(s.id, { key, ...response }),
     // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
-    deliver: (s, { text, requestId }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
+    deliver: (s, { text, requestId, signal }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
       shared: (session) => sessionRuntime.shared(session),
       remote: (session) => isRemote(session.cli),
       limit: remote.MAX_TEXT,
       log: console.error,
       touch: touchInput,
-      sendCodex: (session, message) => sessionRuntime.send(session, message),
-      sendLocal: (session, text, onCommitted) => deliver(session, { text }, undefined, { onCommitted }),
+      sendCodex: (session, message) => {
+        if (signal?.aborted) throw lockedError(); // the messenger's lock scope: a lock landed before the call
+        return sessionRuntime.send(session, message, { signal });
+      },
+      sendLocal: (session, text, onCommitted) => deliver(session, { text }, undefined, { onCommitted, signal }),
     }),
   },
 });
