@@ -118,12 +118,14 @@ RUN set -e; \
         echo "ERROR: cursor-agent $CURSOR_VERSION does not match the pinned SHA-256; refusing to install it" >&2; \
         exit 1; \
       fi; \
-      (mkdir -p "/opt/cursor-agent/$CURSOR_VERSION" \
-        && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
-        && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
-        && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
-        && HOME=/tmp/cursor-home cursor-agent --version) \
-        || { echo "ERROR: cursor-agent $CURSOR_VERSION matched its SHA-256 but did not install or run; failing the build" >&2; exit 1; }; \
+      if ! (mkdir -p "/opt/cursor-agent/$CURSOR_VERSION" /tmp/cursor-home \
+          && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
+          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
+          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
+          && HOME=/tmp/cursor-home cursor-agent --version); then \
+        echo "ERROR: cursor-agent $CURSOR_VERSION matched its SHA-256 but did not install or run; failing the build" >&2; \
+        exit 1; \
+      fi; \
     else \
       echo "cursor-agent install failed"; \
     fi
