@@ -271,6 +271,7 @@ const GEMINI_DEPRECATED = 'Gemini CLI is deprecated: Google replaced it with Ant
  * rest the sender skips and says so instead of guessing. Gemini, OpenClaw and
  * fx are absent because their only captures are startup dialogs, not a
  * composer; add the flag with a captured empty composer and a test.
+ * Cursor's captures live in test/fixtures/cursor-screens.json.
  * `{ idle: RegExp }` instead of `true` also requires that line below the
  * composer, for a CLI that keeps an empty composer on screen mid-turn.
  */
@@ -347,6 +348,28 @@ export const CLIS = [
       flags: ({ model, effort }) => join(model && `--model ${shq(model)}`, effort && `--effort ${shq(effort)}`) },
     noUpdate: 'a pinned prebuilt binary from antigravity.google, not an npm package',
     secrets: ['GEMINI_API_KEY'], setup: setupHint('GEMINI_API_KEY') },
+  // --trust skips the per-folder trust dialog (workspaces are operator-owned);
+  // MCP servers are still not auto-approved, and --yolo is never passed.
+  // No `cont`: `--continue` is cwd-scoped and would resume a sibling pane's
+  // chat; a restart resumes the pane's own chat by id instead. No `efforts`:
+  // the effort tier lives in the model id (`grok-4.7-low`), and the bracket
+  // form `grok-4.7[effort=low]` is rejected by the CLI.
+  // promptDetector: the placeholder composer row, read from the screen because
+  // Cursor hides the terminal cursor (runner.js emptyCursorComposer; captured
+  // in test/fixtures/cursor-screens.json). No confirmSubmit: see docs/cursor-agent.md.
+  { id: 'cursor', label: 'Cursor CLI', bin: 'cursor-agent', color: '#8c8c8c', resizeMode: 'repaint', promptDetector: true,
+    run: (f) => withFlags('cursor-agent --trust', f),
+    resume: (id, f) => withFlags(`cursor-agent --trust --resume ${id}`, f),
+    launch: { model: true, flags: ({ model }) => join(model && `--model ${shq(model)}`) },
+    // Only the unpinned fallback: runner.commandFor's cursor branch builds the
+    // pinned `--resume <id> … <prompt>` line itself and returns before the
+    // generic withPrompt use. Having it here lets index.js queue a quickstart
+    // prompt as pendingPrompt (it does so only for CLIs with withPrompt)
+    // instead of the boot-then-type fallback.
+    withPrompt: (q, _images, f) => `${withFlags('cursor-agent --trust', f)} -- ${q}`, // `--`: a prompt like `--yolo` is text, not a flag
+    noUpdate: 'a pinned prebuilt build in the image (/opt/cursor-agent, see the Dockerfile), not an npm package',
+    secrets: ['CURSOR_API_KEY'],
+    setup: 'Add CURSOR_API_KEY as a Space secret. Signing in from the pane (cursor-agent login) has not been checked from a Space.' },
   // Model only. `--variant` exists on `opencode run` but not on the TUI, and
   // the TUI ignores `agent.build.variant` from OPENCODE_CONFIG_CONTENT (checked
   // on 1.19.5 with a fresh HOME): it keeps its own saved per-model variant.
@@ -444,6 +467,9 @@ function isConfigured(id) {
     case 'gemini':
       return hasEnv('GEMINI_API_KEY', 'GOOGLE_API_KEY')
         || fileOk(path.join(env.GEMINI_CLI_HOME || home, '.gemini', 'oauth_creds.json'));
+    case 'cursor':
+      return hasEnv('CURSOR_API_KEY')
+        || fileOk(path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'cursor', 'auth.json'));
     case 'antigravity':
       // Only the key is detected. A Google sign-in made inside the pane is not
       // (its credential location is unconfirmed), so it may still show "set up".

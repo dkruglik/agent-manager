@@ -338,6 +338,7 @@ export default function Sidebar({
     claude: "Anthropic's coding agent",
     codex: "OpenAI's coding agent",
     antigravity: "Google's newer coding agent, for Gemini 4 Argon",
+    cursor: "Cursor's coding agent, your choice of model",
     opencode: 'open-source agent, your choice of model',
     hermes: "Nous Research's agent",
     openclaw: 'open-source Claude Code fork',

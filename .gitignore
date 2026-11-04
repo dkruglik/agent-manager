@@ -15,5 +15,7 @@ __pycache__/
 .secrets.env
 # Local copy of the shared AI rules kit (AIRules)
 .claude/
-.cursor/
+# No trailing slash: a symlinked .cursor (the review skill borrowed from
+# another checkout) must not be committed either.
+.cursor
 scripts/sync-ai-rules.mjs

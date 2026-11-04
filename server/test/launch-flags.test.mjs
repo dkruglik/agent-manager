@@ -42,7 +42,7 @@ const stub = `#!/bin/sh
 for a in "$@"; do [ -n "$STUB_FAIL" ] && [ "$a" = "$STUB_FAIL" ] && exit 3; done
 exit 0
 `;
-for (const name of ['claude', 'codex', 'gemini', 'opencode', 'hermes', 'openclaw', 'fx', 'agy']) {
+for (const name of ['claude', 'codex', 'gemini', 'opencode', 'hermes', 'openclaw', 'fx', 'agy', 'cursor-agent']) {
   fs.writeFileSync(path.join(BIN, name), stub, { mode: 0o755 });
 }
 
@@ -225,6 +225,24 @@ test('antigravity: flags on fresh, seeded, continue, pinned resume and shared fo
   make('antigravity', { everStarted: true, path: 'shared-agy' });
   assert.deepEqual(launch(runner.commandFor(a), key).calls, [['agy', ...provider, ...f]], 'shared folder: fresh, flags kept');
   assert.deepEqual(launch(runner.commandFor(make('antigravity', { everStarted: true })), key).calls, [['agy', ...provider, '-c']], 'no choice: as before');
+});
+
+test('cursor: every launch resumes its own chat id, flags kept, prompt only on first launch', () => {
+  const f = ["--model", 'grok-4.7-low'];
+  const first = make('cursor', { model: 'grok-4.7-low', pendingPrompt: 'do it' });
+  const id = first.sessionUuid;
+  assert.deepEqual(launch(runner.commandFor(first)).calls, [['cursor-agent', '--trust', '--resume', id, ...f, '--', 'do it']]);
+  const later = sessions.update(first.id, { everStarted: true });
+  assert.deepEqual(launch(runner.commandFor(later)).calls, [['cursor-agent', '--trust', '--resume', id, ...f]]);
+  const bad = make('cursor', { sessionUuid: 'x; touch PWNED' });
+  assert.deepEqual(launch(runner.commandFor(bad)).calls, [['cursor-agent', '--trust']]);
+  const badQ = make('cursor', { sessionUuid: 'x; touch PWNED', pendingPrompt: 'do it' });
+  assert.deepEqual(launch(runner.commandFor(badQ)).calls, [['cursor-agent', '--trust', '--', 'do it']], 'malformed id: unpinned, prompt kept');
+  for (const word of ['--yolo', '--force', '--version']) {
+    const flaggy = make('cursor', { pendingPrompt: word });
+    assert.deepEqual(launch(runner.commandFor(flaggy)).calls, [['cursor-agent', '--trust', '--resume', flaggy.sessionUuid, '--', word]], `${word} reaches cursor-agent as the prompt, after --`);
+  }
+  assert.equal(fs.existsSync(PWNED), false);
 });
 
 test('openclaw: --thinking on both the onboarding and the ready path; no model', () => {

@@ -325,6 +325,61 @@ async function findFxEvents(session, allSessions = []) {
   return null;
 }
 
+// Cursor CLI: `cursor-agent --resume <id>` makes the pane's sessionUuid the chat
+// id, and the transcript is $HOME/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl
+// (under HOME: only chats/ follows CURSOR_CONFIG_DIR; sign-in follows XDG_CONFIG_HOME). The slug is a lossy,
+// sometimes truncated-and-hashed form of the cwd, so it is never computed: the
+// file is found by id. The uuid test keeps the id from being a path.
+const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cursorPaths = new Map(); // id -> last path found
+const cursorLogged = new Set();
+// ENOENT/ENOTDIR is a normal miss. Anything else (EACCES, EIO, ...) is logged
+// once per (code, path), with the error's message and the chat id, so a broken
+// mount is visible without flooding the log and a later failure elsewhere is not
+// hidden behind an earlier one.
+function cursorFsError(e, p, id) {
+  const code = e?.code || 'UNKNOWN';
+  if (code === 'ENOENT' || code === 'ENOTDIR') return code;
+  const key = `${code}\0${p}`;
+  if (!cursorLogged.has(key)) {
+    if (cursorLogged.size > 500) cursorLogged.clear();
+    cursorLogged.add(key);
+    console.error('[cursor] transcript lookup failed', code, p, `(chat ${id}):`, e?.message || '');
+  }
+  return code;
+}
+// A failed stat that says nothing lasting about the file: keep the cached path.
+// Anything else (EACCES, EPERM, ELOOP, ...) drops it and rescans.
+const CURSOR_TRANSIENT = new Set(['EIO', 'EMFILE', 'ENFILE', 'EAGAIN', 'EBUSY']);
+export async function cursorTranscriptPath(id) {
+  if (typeof id !== 'string' || !CURSOR_ID.test(id)) return null;
+  // true = a file; false = a miss or a lasting failure; null = transient failure.
+  const isFile = async (p) => {
+    try { return (await fsp.stat(p)).isFile(); } catch (e) {
+      const c = cursorFsError(e, p, id);
+      return CURSOR_TRANSIENT.has(c) ? null : false;
+    }
+  };
+  const known = cursorPaths.get(id);
+  if (known) {
+    const k = await isFile(known);
+    if (k !== false) return known;
+    cursorPaths.delete(id);
+  }
+  const root = path.join(process.env.HOME || os.homedir(), '.cursor', 'projects');
+  let slugs = [];
+  try { slugs = await fsp.readdir(root); } catch (e) { cursorFsError(e, root, id); return null; }
+  for (const slug of slugs) {
+    const p = path.join(root, slug, 'agent-transcripts', id, `${id}.jsonl`);
+    if (await isFile(p) === true) {
+      if (cursorPaths.size > 500) cursorPaths.clear();
+      cursorPaths.set(id, p);
+      return p;
+    }
+  }
+  return null;
+}
+
 const opencodeDbPath = () =>
   path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'), 'opencode', 'opencode.db');
 const hermesDbPath = () => path.join(process.env.HOME || '', '.hermes', 'state.db');
@@ -424,6 +479,7 @@ export async function findTrace(session, allSessions = []) {
     case 'codex': { const p = await findRollout(session, allSessions); return p && { src: p }; }
     case 'openclaw': { const p = await findOpenClaw(session, allSessions); return p && { src: p }; }
     case 'fx': { const p = await findFxEvents(session, allSessions); return p && { src: p }; }
+    case 'cursor': { const p = await cursorTranscriptPath(session.sessionUuid); return p && { src: p }; }
     case 'antigravity': {
       const p = findAgyConversation(session, allSessions);
       return p && { src: p, sessionId: path.basename(p, '.db') };
@@ -443,7 +499,8 @@ export async function findTrace(session, allSessions = []) {
 // resolves through findTrace() for the reader.
 export const SHAREABLE_CLIS = ['claude', 'codex', 'hermes', 'opencode', 'openclaw'];
 export const HARNESS_LABEL = { claude: 'Claude Code', codex: 'Codex', hermes: 'Hermes',
-                               opencode: 'opencode', openclaw: 'OpenClaw', fx: 'fx', antigravity: 'Antigravity CLI' };
+                               opencode: 'opencode', openclaw: 'OpenClaw', fx: 'fx', antigravity: 'Antigravity CLI',
+                               cursor: 'Cursor CLI' };
 
 /** Dataset card. `configs` pins the data file so meta/ can't collide on schema (§4). */
 function datasetCard({ title, visibility, traceName, stats, redaction, harnessLabel }) {
