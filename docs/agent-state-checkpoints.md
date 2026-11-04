@@ -41,11 +41,24 @@ interval, so its last turns still arrive. The final checkpoint at shutdown never
 waits. A real `~/.cursor` or `~/.config/cursor` left in HOME by a hand-run
 cursor-agent is migrated the same way (`agent-state.sh migrate-cursor`: files
 with the filters above, databases through the backup, a database that cannot be
-copied is named and stays in the rollback copy) and kept as
-`<dir>.pre-agent-state`.
+copied is named and stays in the rollback copy, and the migration still
+succeeds; a database listing that fails exits 1 before anything is renamed) and
+kept as `<dir>.pre-agent-state`.
+
+On a hot restart a valid live Antigravity or Cursor database is kept as it is,
+because its WAL can hold rows newer than its checkpoint. A live database is
+moved aside to `$AM_LOCAL/agent-state-invalid/` (and its checkpoint restored)
+only when `PRAGMA quick_check` ran and reported damage, or SQLite does not
+recognise the file. A check that could not run (locked, busy) keeps the file,
+and so does a move aside that fails. If the live databases cannot be listed,
+the adapter's restore fails and leaves the live tree as it is. For the listing,
+`find` errors that are only vanished files (a live tree still being written)
+count as a complete listing, as rsync exit 24 does for the tree copy.
 
 The image pins the agent itself: `/opt/cursor-agent/<version>` (checksum-verified
-in the Dockerfile; a mismatch fails the build), linked as `cursor-agent` and
+in the Dockerfile; a mismatch fails the build, and so does a matching tarball
+that does not unpack or run `--version`; a failed download leaves the image
+without the agent), linked as `cursor-agent` and
 `agent` in `/usr/local/bin`. Because `~/.local/bin` (a hand install, durable
 HOME) is on `PATH` after `$AM_LOCAL/bin`, the entrypoint writes two wrappers
 there that run the pinned build and default `NODE_COMPILE_CACHE` to
@@ -70,7 +83,8 @@ having all three files is not proof that the copy is a consistent database.
    ungraceful stop loses at most the checkpoint interval (15 seconds by
    default), not the lifetime of an open transcript. Cursor chat databases are
    copied at most once per `CURSOR_DB_MIN_INTERVAL` (120 seconds by default),
-   so for them an ungraceful stop can lose up to that long; the final
+   so for them an ungraceful stop can lose up to that interval plus one
+   checkpoint pass; the final
    checkpoint of a normal shutdown ignores it.
 
 ## Layout
