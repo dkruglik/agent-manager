@@ -1,4 +1,6 @@
-import { noticeCard } from './cards.js';
+import { postNotice } from './cards.js';
+import { laterTs } from './delivery-state.js';
+import { persistError } from './outbox-files.js';
 import { editRequestIdFor, requestIdFor } from './replies.js';
 
 // A Slack message that was edited or deleted after it was accepted (message_changed, message_deleted).
@@ -7,8 +9,6 @@ import { editRequestIdFor, requestIdFor } from './replies.js';
 
 export const EDIT_HEAD = 'Edited in Slack (replaces the earlier message):\n';
 export const DELETED_LINE = 'The Slack message was deleted after it was sent to the agent.';
-
-const persistError = (e) => Object.assign(new Error(`outbox write failed: ${e.message}`), { persist: true });
 
 /**
  * @param ctx the outbox state (rows, store, adapters, dir, log, active)
@@ -22,13 +22,17 @@ export function createAmend(ctx, h) {
   const known = (adapter, channel, requestId) => rows.has(requestId)
     || h.isDelivered(ctx, idRow(adapter, channel, requestId)) || h.isSubmitted(ctx, idRow(adapter, channel, requestId));
 
-  function replace(row, session, body) {
+  // Memory follows the disk: editTs moves only once the rewritten file is written.
+  function replace(row, session, body, editTs) {
     const text = h.frozenText(ctx, row.adapter, row.channel, session, row.user, body, row.requestId);
-    try { h.rewriteRow(ctx.dir, { ...row, text, body }); } catch (e) { throw persistError(e); }
-    Object.assign(row, { text, body });
+    const next = { text, body, ...(editTs ? { editTs } : {}) };
+    try { h.rewriteRow(ctx.dir, { ...row, ...next }); } catch (e) { throw persistError(e); }
+    Object.assign(row, next);
     log({ event: 'edited', requestId: row.requestId, session: session.id });
     return { edited: session.id };
   }
+
+  const stale = (row, editTs) => !!(row.editTs && editTs && laterTs(editTs, row.editTs) !== editTs);
 
   function edit({ binding, session, r, body, via }) {
     const ignore = (reason) => {
@@ -37,10 +41,23 @@ export function createAmend(ctx, h) {
     };
     const id = requestIdFor(binding.adapter, r.channel, r.edit.ts);
     const row = rows.get(id);
+    // The send already has its bytes. Leave the event unacked so Slack retries once the send finishes.
+    if (row && ctx.active.has(row.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
     if (!known(binding.adapter, r.channel, id)) return ignore('unknown-message');
-    if (editable(row)) return row.sessionId === session.id ? replace(row, session, body) : ignore('session-changed');
+    if (editable(row)) {
+      if (row.sessionId !== session.id) return ignore('session-changed');
+      if (stale(row, r.edit.editTs)) return ignore('stale-edit');
+      return replace(row, session, body, r.edit.editTs);
+    }
+    // A second edit of the same message replaces the edit that is still waiting instead of queueing another.
+    const waiting = [...rows.values()].find((x) => x.adapter === binding.adapter && x.channel === r.channel && x.editOf === r.edit.ts);
+    if (waiting && ctx.active.has(waiting.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
+    if (waiting && editable(waiting) && waiting.sessionId === session.id) {
+      if (stale(waiting, r.edit.editTs)) return ignore('stale-edit');
+      return replace(waiting, session, EDIT_HEAD + body, r.edit.editTs);
+    }
     const requestId = editRequestIdFor(binding.adapter, r.channel, r.edit.ts, r.edit.editTs);
-    return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts } });
+    return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts, editTs: r.edit.editTs } });
   }
 
   // The thread for a line about a message: its own, else the session's current root, else the channel.
@@ -57,11 +74,15 @@ export function createAmend(ctx, h) {
     for (const x of waiting) h.drop(ctx, x);
     if (waiting.length) { log({ event: 'deleted-dropped', requestId: id, rows: waiting.length }); return { dropped: waiting.length }; }
     if (!known(adapterId, r.channel, id)) return { ignored: 'unknown-message' };
-    const sessionId = row?.sessionId ?? store.state('deliveredTs', `${adapterId}|${r.channel}`)?.find((e) => e.ts === r.deleted.ts)?.sessionId;
-    const thread = where(adapterId, r.channel, r.thread || row?.thread, sessionId);
-    try { await ctx.adapters.get(adapterId)?.post({ channel: r.channel, thread }, noticeCard(DELETED_LINE)); } catch (e) {
-      log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.message });
+    let sessionId = row?.sessionId;
+    if (!sessionId) {
+      sessionId = store.state('deliveredTs', `${adapterId}|${r.channel}`)?.find((e) => e.ts === r.deleted.ts)?.sessionId;
     }
+    // Under a real lock nothing is said in the channel (the line would reveal the lock); 'checking' is not one.
+    const lock = ctx.host.lockState();
+    if (lock.locked && lock.reason !== 'checking') return { ignored: 'locked' };
+    const thread = where(adapterId, r.channel, r.thread || row?.thread, sessionId);
+    await postNotice(ctx.adapters, adapterId, { channel: r.channel, thread }, DELETED_LINE, log);
     return { noted: id };
   }
 

@@ -35,7 +35,7 @@ export class HookDecisions {
       this.postHookCards(bindings, entry, withKey)
         .then(() => { if (signal?.aborted) onAbort(); })
         .catch((e) => {
-          this.bridge.log({ event: 'hook-post-failed', key, session: sessionId, binding: e.binding, adapter: e.adapter, error: e.message });
+          this.bridge.log({ event: 'hook-post-failed', key, session: sessionId, binding: e.binding, adapter: e.adapter, error: e.code ?? e.name });
           this.settle(key, null, 'Could not be posted.');
         });
     });
@@ -75,7 +75,7 @@ export class HookDecisions {
     for (const [k, p] of this.bridge.store.allPosted()) {
       if (p.key !== key || p.status !== 'open' || p.bindingId === answeredBy) continue;
       this.bridge.closeCard(k, p, entry.session, text).catch((e) => this.bridge.log({
-        event: 'close-failed', key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.message,
+        event: 'close-failed', key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.code ?? e.name,
       }));
     }
   }

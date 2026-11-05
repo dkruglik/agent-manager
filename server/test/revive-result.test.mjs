@@ -78,6 +78,13 @@ try {
     assert.equal(await state(w), 'skipped');
     assert.equal(await state(runstate.reviveResult('later')), 'skipped');
   });
+  await check('a new round (init) resolves the waiters of the old one skipped instead of dropping them', async () => {
+    runstate.init();
+    const w = runstate.reviveResult('left-waiting');
+    assert.equal(await state(w), 'pending');
+    runstate.init();
+    assert.equal(await state(w), 'skipped');
+  });
   await check('no previous run: skipped for everyone', async () => {
     fs.rmSync(path.join(process.env.DATA_DIR, 'runstate.json'), { force: true });
     runstate.init();
@@ -173,8 +180,19 @@ try {
   const broken = make('broken');
   wentDown(broken.id);
   const b = runstate.reviveResult(broken.id);
-  await runstate.reviveOnBoot({ ...FAST, send: async () => { throw new Error('boom'); } });
+  const logged = [];
+  const consoleError = console.error;
+  console.error = (...args) => logged.push(args.join(' '));
+  const quoting = Object.assign(new Error('unsent text on its input line ("PASSWORD=hunter2-from-the-terminal")'), { code: 'input-line-busy' });
+  try {
+    await runstate.reviveOnBoot({ ...FAST, send: async () => { throw quoting; } });
+    await b; // the message goes out after the slot, off the stagger
+  } finally { console.error = consoleError; }
   await check('send() throwing is gave-up', async () => assert.equal(await b, 'gave-up'));
+  await check('the log names the error code, never the terminal text its message quotes', async () => {
+    assert.ok(logged.some((l) => l.includes('input-line-busy')), logged.join('\n'));
+    assert.ok(logged.every((l) => !l.includes('hunter2')), logged.join('\n'));
+  });
   await runner.stopAll();
 
   console.log('\n# 6. the operator got there first');

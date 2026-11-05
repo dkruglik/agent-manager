@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ApiError } from '../api-errors.js';
-import { noticeCard, reviewable, TOO_LONG } from './cards.js';
+import { postNotice, reviewable, TOO_LONG } from './cards.js';
 import { allowed } from './threads.js';
 
 // Inbound side of the bridge: a button press or a chat message becomes a typed
@@ -48,10 +48,8 @@ export class ReplyRouter {
     this.answering = new Set(); // posted keys with an answer in flight; never persisted, so a crash leaves the card open
   }
 
-  async say(adapterId, channel, thread, text) {
-    try { await this.adapters.get(adapterId)?.post({ channel, thread }, noticeCard(text)); } catch (e) {
-      this.log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
-    }
+  say(adapterId, channel, thread, text) {
+    return postNotice(this.adapters, adapterId, { channel, thread }, text, this.log);
   }
 
   // One log line per refusal, never the message text.
@@ -80,6 +78,15 @@ export class ReplyRouter {
   }
 
   byName(bindings, text) { return this.threads.byName(bindings, text); }
+
+  // A refused message is settled: backfill reads the same message from history after a reconnect and
+  // must neither deliver it later nor answer it a second time. A failed write is a log line, not a failed refusal.
+  settle(adapterId, r) {
+    if (!r.ts || r.edit || r.deleted || r.optionId) return;
+    try { this.outbox.settle(adapterId, r.channel, requestIdFor(adapterId, r.channel, r.ts)); } catch (e) {
+      this.log({ event: 'settle-failed', adapter: adapterId, channel: r.channel, error: e.code ?? e.name });
+    }
+  }
 
   // An unaddressed message in a channel with several agents goes to none of them. An allowed sender is told
   // once with an ephemeral notice; the log records the skip (never the text).
@@ -112,12 +119,30 @@ export class ReplyRouter {
 
   async run(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
+    try {
+      return await this.runBody(adapterId, r);
+    } catch (e) {
+      if (r.messageId) this.handled = this.handled.filter((id) => id !== r.messageId);
+      throw e;
+    }
+  }
+
+  async runBody(adapterId, r) {
     if (r.deleted) return this.outbox.deleted({ adapterId, r });
     const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
     const target = this.threads.route(adapterId, bindings, r);
-    if (target.unnamed) return r.edit ? { ignored: 'unnamed' } : this.skipUnnamed(adapterId, r, bindings);
-    if (target.ignored) return { ignored: target.ignored };
+    if (target.unnamed) {
+      if (r.edit) return { ignored: 'unnamed' };
+      this.settle(adapterId, r);
+      return this.skipUnnamed(adapterId, r, bindings);
+    }
+    if (target.ignored) {
+      // Never routed, so a backfill must not announce it as missed. Only an allowed sender can be told of a miss:
+      // settling the chatter of everyone else would write per message and push real refusals out of the id cap.
+      if (bindings.some((b) => this.allowed(b, r.user))) this.settle(adapterId, r);
+      return { ignored: target.ignored };
+    }
     const { found, text } = target;
     const posted = found?.[1];
     const answering = !r.edit && posted?.kind === 'input' && (posted.status === 'open' || !!r.optionId);
@@ -126,7 +151,10 @@ export class ReplyRouter {
     const where = posted ? posted.ref.ts : (r.thread || r.ts);
     const reply = (t) => this.say(adapterId, r.channel, where, t);
     const refused = await this.refusal(binding, session, r, reply, reached, !answering);
-    if (refused) return refused;
+    if (refused) {
+      this.settle(adapterId, r);
+      return refused;
+    }
     try {
       // A closed input card no longer takes answers: a reply in its thread is an ordinary prompt.
       if (answering) return await this.answer(found, binding, session, r, text, reply);
@@ -139,7 +167,7 @@ export class ReplyRouter {
       }
       this.log({
         event: 'reply-failed', binding: binding.id, session: session.id,
-        ...(e.requestId ? { requestId: e.requestId } : {}), error: e.message,
+        ...(e.requestId ? { requestId: e.requestId } : {}), error: e.code ?? e.name,
       });
       // Only errors written for the operator are shown (a 4xx ApiError, like the API's error envelope);
       // anything else may carry paths or internals.
@@ -220,7 +248,7 @@ export class ReplyRouter {
     this.log({ event: 'answered', binding: binding.id, session: session.id, key: p.item.key, user: r.user.id });
     // The answer was delivered: a card that cannot be closed is a log line, not a failed reply.
     try { await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text); } catch (e) {
-      this.log({ event: 'close-failed', binding: binding.id, session: session.id, key: p.item.key, error: e.message });
+      this.log({ event: 'close-failed', binding: binding.id, session: session.id, key: p.item.key, error: e.code ?? e.name });
     }
     return { answered: p.item.key };
   }

@@ -1,3 +1,6 @@
+/** Escapes &, < and > for Slack mrkdwn. */
+export const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 // Slack message events and history entries, turned into the replies the bridge takes:
 // `{ channel, ts, thread, user, messageId, text }`, plus `edit: { ts, editTs }` for an edit and
 // `deleted: { ts }` for a delete. A live event and a history entry go through the same filter, so a
@@ -23,18 +26,23 @@ function bodyOf(m) {
   return text ? `${text}\n\n${FILE_NOTE}` : FILE_NOTE;
 }
 
-// A plain message, or a file share; every other subtype is dropped.
+// A plain message, a file share, or a thread reply also sent to the channel; every other subtype is dropped.
+const PLAIN_SUBTYPES = new Set(['file_share', 'thread_broadcast']);
+
 function plain(m, channel, botUser, messageId) {
-  if ((m.subtype && m.subtype !== 'file_share') || fromBot(m, botUser)) return null;
+  if ((m.subtype && !PLAIN_SUBTYPES.has(m.subtype)) || fromBot(m, botUser)) return null;
   const thread = m.thread_ts && m.thread_ts !== m.ts ? m.thread_ts : null;
   return { channel, ts: m.ts, thread, user: { id: m.user }, messageId: messageId || `${channel}:${m.ts}`, text: bodyOf(m) };
 }
 
-// The user and the new text are on the nested message. An event that changes no text (a link unfurl) is not an edit.
+const fileIds = (m) => (m?.files ?? []).map((f) => f.id).join(',');
+
+// The user and the new text are on the nested message. An event that changes neither text nor files
+// (a link unfurl, upload processing) is not an edit. The nested subtype is judged by plain().
 function changed(e, botUser, id) {
   const m = e.message;
-  if (!m || m.subtype || fromBot(m, botUser)) return null;
-  if (fromMrkdwn(m.text) === fromMrkdwn(e.previous_message?.text) && !m.files?.length) return null;
+  if (!m || fromBot(m, botUser)) return null;
+  if (fromMrkdwn(m.text) === fromMrkdwn(e.previous_message?.text) && fileIds(m) === fileIds(e.previous_message)) return null;
   const reply = plain(m, e.channel, botUser, id);
   return reply && { ...reply, edit: { ts: m.ts, editTs: m.edited?.ts || e.event_ts } };
 }
@@ -52,18 +60,13 @@ export function messageReply(p, botUser) {
   if (e.type !== 'message') return null;
   if (e.subtype === 'message_changed') return changed(e, botUser, p.event_id);
   if (e.subtype === 'message_deleted') return deleted(e, botUser, p.event_id);
-  return plain(e, e.channel, botUser, p.event_id);
+  // No event id: the live message and its history copy must have one id (`channel:ts`), or a message
+  // read again after a reconnect would not be recognised as handled.
+  return plain(e, e.channel, botUser, null);
 }
 
 /** A message from conversations.history or .replies; `thread` is the thread asked for, whose root is skipped. */
 export function historyReply(m, channel, thread, botUser) {
   if (thread && m.ts === thread) return null;
   return plain(m, channel, botUser, null);
-}
-
-/** Orders replies by their Slack ts (`seconds.micros`), exactly: the digits do not fit a double. */
-export function byTs(a, b) {
-  const [as, af = ''] = a.ts.split('.');
-  const [bs, bf = ''] = b.ts.split('.');
-  return (as.length - bs.length) || (as < bs ? -1 : as > bs ? 1 : 0) || (af.padEnd(9, '0') < bf.padEnd(9, '0') ? -1 : af.padEnd(9, '0') > bf.padEnd(9, '0') ? 1 : 0);
 }

@@ -1,5 +1,6 @@
 import { noticeCard } from './cards.js';
 import { ROOTS_MAX, SECTIONS, cutText, addDelivered, pushRecent, laterTs } from './delivery-state.js';
+import { escapeMrkdwn } from './adapters/slack-events.js';
 
 // One bot-owned thread per agent per channel, and the routing of a chat message
 // to an agent. The bot posts the root (`🧵 name · cli`); a person's message is
@@ -16,11 +17,9 @@ const NAME_NEEDED = 'This channel now reaches several agents. Plain messages are
 export const allowed = (binding, user) => !!user?.id && binding.allowedUsers.includes(user.id);
 
 // Slack reads &, < and > as markup, so quoted text is escaped before the `>` is added.
-const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-/** The quote posted under a root: the sender's id in bold (no mention, so nobody is pinged) and the first lines. */
+/** The quote posted under a root: the sender's id in bold (no mention, so nobody is pinged) and the first five lines after the 2 KB cut. */
 export function quoteOf(user, text) {
-  const lines = cutText(text).split('\n').slice(0, QUOTE_LINES).map((l) => `> ${escape(l)}`);
+  const lines = cutText(text).split('\n').slice(0, QUOTE_LINES).map((l) => `> ${escapeMrkdwn(l)}`);
   return `*${String(user.id).replace(/[^A-Za-z0-9]/g, '')}*\n${lines.join('\n')}`;
 }
 
@@ -105,23 +104,33 @@ async function notifyUnnamed({ adapters, log, now, told }, adapterId, r) {
   if (now() - (told.get(k) ?? -Infinity) < NOTICE_EVERY_MS) return;
   told.set(k, now());
   try { await adapters.get(adapterId).postEphemeral({ channel: r.channel, user: r.user.id, text: NOT_DELIVERED }); } catch (e) {
-    log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.message });
+    log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.code ?? e.name });
   }
 }
 
-// One channel notice when a channel that reached one agent now reaches several. The count is stored first,
-// so a failed post is not retried every tick and a restart does not repeat it.
-async function noteReach({ store, adapters, scope, log }, adapterId, channel, sessions) {
+// One channel notice when a channel that reached one agent now reaches several. The count is stored
+// after the post, so a failed post is retried (at most once an hour) and a restart does not repeat a success.
+async function noteReach(ctx, adapterId, channel, sessions) {
+  const { store, adapters, scope, log, now } = ctx;
   try {
     const bindings = store.bindings().filter((b) => b.adapter === adapterId && b.target.channel === channel);
     const count = new Set(bindings.flatMap((b) => scope(b, sessions).map((s) => s.id))).size;
     const key = `${adapterId}|${channel}`;
     const before = store.state('reach', key);
     if (before === count) return;
+    if (before === 1 && count > 1) {
+      if (now() - (ctx.reachTried.get(key) ?? -Infinity) < NOTICE_EVERY_MS) return;
+      try {
+        await adapters.get(adapterId).post({ channel, thread: null }, noticeCard(NAME_NEEDED));
+      } catch (e) {
+        ctx.reachTried.set(key, now());
+        log({ event: 'notice-failed', adapter: adapterId, channel, error: e.code ?? e.name });
+        return;
+      }
+    }
     store.patchState({ reach: { [key]: count } });
-    if (before === 1 && count > 1) await adapters.get(adapterId).post({ channel, thread: null }, noticeCard(NAME_NEEDED));
   } catch (e) {
-    log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
+    log({ event: 'notice-failed', adapter: adapterId, channel, error: e.code ?? e.name });
   }
 }
 
@@ -145,7 +154,9 @@ async function openRoot(ctx, adapterId, channel, session, list) {
 // Runs `fn` after the work already queued for the session's thread state, so two writers never interleave.
 function serial(ctx, sk, fn) {
   const run = (ctx.queues.get(sk) || Promise.resolve()).then(fn);
-  const tail = run.catch(() => {});
+  const tail = run.catch((e) => {
+    ctx.log({ event: 'thread-queue-failed', sessionKey: sk, error: String(e?.message || e).slice(0, 200) });
+  });
   ctx.queues.set(sk, tail);
   return run.finally(() => { if (ctx.queues.get(sk) === tail) ctx.queues.delete(sk); });
 }
@@ -155,7 +166,8 @@ function ensureRoot(ctx, adapterId, channel, session) {
   const sk = `${adapterId}|${channel}|${session.id}`;
   return serial(ctx, sk, async () => {
     const list = ctx.store.state('roots', sk) || [];
-    return (needsRoot(ctx.now, list.at(-1)) ? await openRoot(ctx, adapterId, channel, session, list) : list).at(-1).ts;
+    const roots = needsRoot(ctx.now, list.at(-1)) ? await openRoot(ctx, adapterId, channel, session, list) : list;
+    return roots.at(-1).ts;
   });
 }
 
@@ -171,7 +183,7 @@ async function quote(ctx, adapterId, session, r, text, roots) {
     await adapter.post({ channel: r.channel, thread: rootTs }, { kind: 'quote', mrkdwn: quoteOf(r.user, text) });
     list = bump(list, rootTs, now());
   } catch (e) {
-    log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.message });
+    log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.code ?? e.name });
   }
   return list;
 }
@@ -199,7 +211,7 @@ async function record(ctx, adapterId, session, r, text, via) {
 function recordDelivery(ctx, adapterId, session, r, text, via) {
   const sk = `${adapterId}|${r.channel}|${session.id}`;
   return serial(ctx, sk, () => record(ctx, adapterId, session, r, text, via)).catch((e) => {
-    ctx.log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.message });
+    ctx.log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: String(e?.message || e).slice(0, 200) });
   });
 }
 
@@ -223,7 +235,7 @@ function forget(ctx, removed) {
   const patch = {};
   for (const [section, k] of keys) if (gone.has(k.slice(prefix.length))) (patch[section] ||= {})[k] = null;
   const kept = delivered.filter((e) => !gone.has(e.sessionId));
-  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, deliveredIds: { [ck]: null }, submittedIds: { [ck]: null }, reach: { [ck]: null } });
+  if (!left.length) Object.assign(patch, { channelMarks: { [ck]: null }, deliveredIds: { [ck]: null }, submittedIds: { [ck]: null }, settledIds: { [ck]: null }, skippedIds: { [ck]: null }, reach: { [ck]: null } });
   if (kept.length !== delivered.length || !left.length) patch.deliveredTs = { [ck]: left.length && kept.length ? kept : null };
   if (Object.keys(patch).length) store.patchState(patch);
 }
@@ -242,6 +254,7 @@ export function createThreads({
   const ctx = {
     host, store, adapters, scope, log, now, outbox, rows,
     told: new Map(),   // `adapter|channel|user` → when the last "not delivered" notice went out
+    reachTried: new Map(), // `adapter|channel` → when a failed multi-agent notice was last tried
     queues: new Map(), // `adapter|channel|session` → tail of the deliveries in flight for it
   };
   return {

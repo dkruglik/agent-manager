@@ -1,6 +1,6 @@
 // `sendInput` marks an error `typed: true` once the first byte of the prompt
-// went to the terminal, and not before (plans/slack_history.md, "Per-runtime
-// delivery"). The chat outbox reads that flag: an error without it means
+// went to the terminal, and not before (docs/messengers.md, "Delivery per
+// runtime"). The chat outbox reads that flag: an error without it means
 // nothing was typed and the send may be tried again; one with it may already be
 // on the agent's input line, so it is never replayed.
 //
@@ -74,7 +74,7 @@ test('before the first write: no pane, and a line that already holds text', asyn
   assert.ok(await ready(s.id), 'the fake composer never became ready');
   runner.pasteInput(s.id, 'half typed');
   assert.ok(await until(() => fs.existsSync(received) && fs.readFileSync(received, 'utf8').includes('half typed')));
-  await sleep(400);
+  assert.ok(await painted(s.id, 'half typed'), 'the half-typed line never showed in the pane');
   const busy = await fails(runner.sendInput(s.id, 'second message'));
   assert.equal(busy.code, 'input-line-busy');
   assert.equal(busy.typed, undefined, 'nothing was typed, so a retry is safe');
@@ -82,7 +82,7 @@ test('before the first write: no pane, and a line that already holds text', asyn
   runner.stop(s.id);
 });
 
-test('OpenCode echo wait: a timeout and a stop, both after the first write, are typed', async () => {
+test('OpenCode echo wait: a timeout and a stop never press Enter, so they are not typed; the line is cleared', async () => {
   as('opencode', 'silent');
   const s = make('opencode');
   runner.ensureRunning(s);
@@ -90,19 +90,20 @@ test('OpenCode echo wait: a timeout and a stop, both after the first write, are 
   const timedOut = await fails(runner.sendInput(s.id, 'into the void', { confirmEcho: true }));
   assert.equal(timedOut.code, 'input-not-ready');
   assert.match(timedOut.message, /did not acknowledge/);
-  assert.equal(timedOut.typed, true);
+  assert.equal(timedOut.typed, undefined, 'Enter was never pressed: the send is still pending');
+  assert.ok(await until(() => fs.readFileSync(received, 'utf8').endsWith('\x15')), 'the unsent text was cleared with Ctrl+U');
   runner.stop(s.id);
 
   const t = make('opencode');
   runner.ensureRunning(t);
   assert.ok(await painted(t.id, '\u2503'));
   const pending = fails(runner.sendInput(t.id, 'stopped midway', { confirmEcho: true }));
-  await sleep(500);
+  assert.ok(await until(() => fs.readFileSync(received, 'utf8').includes('stopped midway')), 'the text never reached the box');
   runner.stop(t.id);
   const stopped = await pending;
   assert.equal(stopped.code, 'input-not-ready');
   assert.match(stopped.message, /stopped while waiting/);
-  assert.equal(stopped.typed, true);
+  assert.equal(stopped.typed, undefined);
 });
 
 test('submit confirmation: not confirmed, not submitted and a stop are typed; a good send is not an error', async () => {
@@ -132,11 +133,36 @@ test('submit confirmation: not confirmed, not submitted and a stop are typed; a 
   runner.ensureRunning(u);
   assert.ok(await ready(u.id));
   fakeMode({ paintMs: 5000 });
+  const pastes = () => (fs.existsSync(path.join(FAKE_DIR, 'pastes')) ? fs.readFileSync(path.join(FAKE_DIR, 'pastes'), 'utf8').split('\n').filter(Boolean).length : 0);
+  const before = pastes();
   const pending = fails(runner.sendInput(u.id, 'stopped in\nconfirmation'));
-  await sleep(300);
+  assert.ok(await until(() => pastes() > before), 'the paste never reached the fake');
   runner.stop(u.id);
   const stopped = await pending;
   assert.equal(stopped.code, 'input-not-ready');
   assert.match(stopped.message, /stopped while its prompt/);
   assert.equal(stopped.typed, true);
+});
+
+test('a pty write that throws marks nothing as typed, on the plain path and on the OpenCode path', async () => {
+  as('hermes', 'composer');
+  const s = make('hermes');
+  runner.ensureRunning(s);
+  assert.ok(await ready(s.id), 'the fake composer never became ready');
+  const dead = () => { throw Object.assign(new Error('write EIO'), { code: 'EIO' }); };
+  runner.__hostForTest(s.id).pty.write = dead;
+  const plain = await fails(runner.sendInput(s.id, 'never reaches the terminal'));
+  assert.equal(plain.message, 'write EIO');
+  assert.equal(plain.typed, undefined, 'the first write threw: nothing was typed, a retry is safe');
+  runner.stop(s.id);
+
+  as('opencode', 'silent');
+  const t = make('opencode');
+  runner.ensureRunning(t);
+  assert.ok(await painted(t.id, '┃'), 'the fake box never painted');
+  runner.__hostForTest(t.id).pty.write = dead;
+  const opencode = await fails(runner.sendInput(t.id, 'nor this one', { confirmEcho: true }));
+  assert.equal(opencode.message, 'write EIO');
+  assert.equal(opencode.typed, undefined);
+  runner.stop(t.id);
 });

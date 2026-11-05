@@ -48,18 +48,21 @@ const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
 export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {}, dataDir = path.dirname(store.file),
-    settleMs = 8000, filter = createFilter(), digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
+    settleMs = 8000, filter = null, getKnownCredentialValues = () => [], digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
     decisionTimeoutMs = 120_000, setTimer = setTimeout, clearTimer = clearTimeout,
   }) {
-    Object.assign(this, { filter, host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
+    Object.assign(this, { filter: filter || createFilter(getKnownCredentialValues), host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
     this.hooks = new HookDecisions(this);
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
     this.failing = new Map();      // bindingId → {count, error, retryAt} while its posts keep failing
     this.timer = null;
+    this.draining = new Set(); // drains in flight; stop() waits for them
     this.stopped = false; // set by stop(): a backfill still running then writes no row
     this.ticking = false;
+    this.retries = new Set(); // backfill retries waiting out a rate limit; stop() clears them
+    this.running = null; // the tick in flight; stop() waits for it
     const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
     this.threads = createThreads({
       host, store, adapters, log, now, scope,
@@ -68,7 +71,7 @@ export class MessengerBridge {
     });
     // The old `seen` marks become outbound records before the first tick (outbound.js migrateSeen).
     migrateSeen(store);
-    this.outbound = { host, store, adapters, threads: this.threads, filter, settled: (s) => this.settled(s), log, now: () => this.now() };
+    this.outbound = { host, store, adapters, threads: this.threads, filter: this.filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now(), stopped: () => this.stopped };
     this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
       host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
@@ -89,8 +92,18 @@ export class MessengerBridge {
     return { id: s.id, name: s.name, cli: s.cli, group: this.host.groupOf(s.id)?.name || null };
   }
 
+  // Question text and option labels come from the agent, so both go through the credential filter.
+  filteredQuestion(q) {
+    const label = (o) => (typeof o === 'string' ? this.filter(o) : { ...o, label: this.filter(o.label) });
+    return { ...q, text: this.filter(q.text), ...(Array.isArray(q.options) ? { options: q.options.map(label) } : {}) };
+  }
+
   inputCardFor(binding, s, item, extra = {}) {
-    return inputCard({ agent: this.agent(s), link: this.host.link(s), item, approvals: binding.approvals, ...extra });
+    let shown = item.details ? { ...item, details: this.filter(item.details) } : item;
+    if (shown.questions?.length) {
+      shown = { ...shown, questions: shown.questions.map((q) => this.filteredQuestion(q)) };
+    }
+    return inputCard({ agent: this.agent(s), link: this.host.link(s), item: shown, approvals: binding.approvals, ...extra });
   }
 
   post(binding, card) {
@@ -104,7 +117,7 @@ export class MessengerBridge {
     if (!s.inputRequired) return [];
     let typed;
     try { typed = await this.host.requests(s); } catch (e) {
-      throw Object.assign(new Error(e.message), { event: 'requests-failed' });
+      throw Object.assign(new Error(String(e.code ?? e.name)), { event: 'requests-failed', code: e.code });
     }
     if (typed.length) return typed;
     const ir = s.inputRequired;
@@ -160,22 +173,32 @@ export class MessengerBridge {
     try {
       await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial: p.partial, resolved: { text } }));
     } catch (e) {
-      this.log({ event: 'update-failed', key: p.key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.message });
+      this.log({ event: 'update-failed', key: p.key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.code ?? e.name });
     }
   }
 
-  // True once a session has sat in `waiting` for the settle window, and only
-  // for a while after: a reply lands in the transcript within moments of the
-  // turn ending, and an idle agent should not cost a read every few seconds.
-  settled(s) {
+  // True once a session has sat in `waiting` for the settle window. The finished card also stops at the
+  // end of the look window (`bounded`): a reply lands in the transcript within moments of the turn ending,
+  // and an idle agent should not cost a read every few seconds. The transcript mirror is unbounded, so
+  // what was written during a lock, an outage or a backoff still goes out after it; its revision check
+  // is a stat, which keeps an idle session cheap.
+  settled(s, { bounded = true } = {}) {
     if (s.state !== 'waiting' || s.inputRequired) { this.waitingSince.delete(s.id); return false; }
     if (!this.waitingSince.has(s.id)) this.waitingSince.set(s.id, this.now());
     const settledFor = this.now() - this.waitingSince.get(s.id);
-    return settledFor >= this.settleMs && settledFor <= this.settleMs + this.lookForMs;
+    return settledFor >= this.settleMs && (!bounded || settledFor <= this.settleMs + this.lookForMs);
   }
 
-  async tick() {
-    if (this.ticking || this.host.locked()) return;
+  tick() {
+    if (this.ticking || this.stopped) return Promise.resolve();
+    this.running = this.runTick();
+    return this.running;
+  }
+
+  async runTick() {
+    const lock = this.host.lockState();
+    // A real lock holds every post. `checking` is not one for the transcript; cards still wait.
+    if (lock.locked && lock.reason !== 'checking') return;
     this.ticking = true;
     try {
       const sessions = this.host.sessions();
@@ -185,7 +208,8 @@ export class MessengerBridge {
         let failure = null;
         await this.threads.noteReach(binding.adapter, binding.target.channel, sessions);
         for (const s of this.sessionsFor(binding, sessions)) {
-          const e = await this.checkSession(binding, s);
+          if (this.stopped) return;
+          const e = await this.checkSession(binding, s, { cards: !lock.locked });
           if (e) failure = e;
         }
         this.noteOutcome(binding, failure);
@@ -194,14 +218,14 @@ export class MessengerBridge {
   }
 
   // Returns the error when the check failed, so the binding can be backed off.
-  async checkSession(binding, s) {
+  async checkSession(binding, s, { cards = true } = {}) {
     try {
-      if (binding.events.includes('input-required')) await this.checkInput(binding, s);
-      if (postsFinished(binding)) await checkFinished(this, binding, s);
+      if (cards && binding.events.includes('input-required')) await this.checkInput(binding, s);
+      if (cards && postsFinished(binding)) await checkFinished(this, binding, s);
       await transcriptTick(this.outbound, binding, s);
       return null;
     } catch (e) {
-      this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.message });
+      this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.code ?? e.name });
       return e;
     }
   }
@@ -211,15 +235,25 @@ export class MessengerBridge {
   noteOutcome(binding, failure) {
     if (!failure) { this.failing.delete(binding.id); return; }
     const count = (this.failing.get(binding.id)?.count || 0) + 1;
-    const wait = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (count - 1));
+    // A rate-limited adapter names the wait (slack.js `retryAfter`, seconds); otherwise the backoff doubles.
+    const asked = Number.isFinite(failure.retryAfter) ? failure.retryAfter * 1000 : 0;
+    const wait = Math.min(BACKOFF_MAX_MS, Math.max(asked, BACKOFF_MIN_MS * 2 ** (count - 1)));
     this.failing.set(binding.id, { count, error: publicError(failure), retryAt: this.now() + wait });
   }
 
   /** What Settings shows for a binding whose posts or lookups are failing, else null. */
   lastError(bindingId) { return this.failing.get(bindingId)?.error ?? null; }
 
-  /** Delivers the waiting chat prompts (outbox.js); tests call it directly. */
-  drain() { return this.outbox.drain(); }
+  /**
+   * Delivers the waiting chat prompts (outbox.js); tests call it directly. Calls are not coalesced: one hung
+   * send must not stop later drains from running upkeep and expiry (the outbox skips sessions it is already sending to).
+   */
+  drain() {
+    if (this.stopped) return Promise.resolve();
+    const run = this.outbox.drain().finally(() => this.draining.delete(run));
+    this.draining.add(run);
+    return run;
+  }
 
   handleReply(adapterId, r) { return this.replies.handle(adapterId, r); }
   handleCommand(adapterId, c) { return this.replies.command(adapterId, c); }
@@ -236,7 +270,15 @@ export class MessengerBridge {
   backfill(id, adapter) {
     const accept = async (adapterId, r) => (this.stopped ? { ignored: 'stopped' } : this.handleReply(adapterId, r));
     return backfill({ adapterId: id, adapter, store: this.store, now: this.now, accept, log: (e) => this.log({ adapter: id, ...e }) })
-      .catch((e) => this.log({ adapter: id, event: 'backfill-failed', error: e.message }));
+      .catch((e) => {
+        this.log({ adapter: id, event: 'backfill-failed', error: e.code ?? e.name, acceptFailed: !!e.acceptFailed });
+        // A rate limit names its wait; the retry is dropped by stop().
+        if (e.code === 'rate-limited' && !this.stopped) {
+          const t = setTimeout(() => { this.retries.delete(t); this.backfill(id, adapter); }, (e.retryAfter || 30) * 1000);
+          t.unref?.();
+          this.retries.add(t);
+        }
+      });
   }
 
   start() {
@@ -259,8 +301,8 @@ export class MessengerBridge {
       });
     }
     this.timer = setInterval(() => {
-      this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.message }));
-      this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.message }));
+      this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.code ?? e.name }));
+      this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.code ?? e.name }));
     }, this.tickMs);
     this.timer.unref?.();
   }
@@ -269,8 +311,11 @@ export class MessengerBridge {
     this.stopped = true;
     clearInterval(this.timer);
     this.unwatchLock?.();
+    for (const t of this.retries) clearTimeout(t);
+    this.retries.clear();
     this.timer = null;
     this.hooks.settleAll('Agent Manager is stopping — answer in the terminal.');
+    await Promise.allSettled([...this.draining, this.running]); // a tick in flight posts nothing more: outbound checks `stopped`
     for (const a of this.adapters.values()) await a.stop?.();
   }
 }

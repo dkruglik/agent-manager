@@ -84,6 +84,32 @@ test('messages older than an hour are not delivered; each user gets one ephemera
   assert.equal(out.skipped, 3);
 });
 
+test('a skipped message is announced once, not again on the next reconnect', async () => {
+  const t = rig();
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD), m(OLD2), m(NEW1)]);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1, 'no second notice for the same messages');
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD), m(OLD2), m('4990003.1')]);
+  await backfill(t.ctx);
+  assert.deepEqual(t.ephemerals.map((e) => e.text), [
+    '2 messages you sent while Agent Manager was offline were not delivered.',
+    '1 message you sent while Agent Manager was offline was not delivered.',
+  ]);
+});
+
+test('a notice that could not be posted is tried again on the next reconnect', async () => {
+  const t = rig();
+  t.answers.fn = ({ thread }) => (thread ? [] : [m(OLD)]);
+  const post = t.ctx.adapter.postEphemeral;
+  t.ctx.adapter.postEphemeral = async () => { throw new Error('rate limited'); };
+  await backfill(t.ctx);
+  t.ctx.adapter.postEphemeral = post;
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+});
+
 test('a user no binding allows gets no notice, and a message already delivered is not counted as missed', async () => {
   const t = rig();
   const delivered = requestIdFor('slack', 'C0', OLD);
@@ -107,16 +133,59 @@ test('replies under a root and under a delivered ts are sent too, in ts order, w
   assert.match(t.ephemerals[0].text, /^1 message you sent/);
 });
 
-test('a failed fetch or accept is logged without text and does not stop the rest', async () => {
+test('a failed fetch is not an empty history: the rest is read, then backfill throws', async () => {
   const t = rig();
   t.answers.fn = ({ thread }) => { if (thread === '300.0') throw new Error('slack conversations.replies: ratelimited'); return thread ? [m(NEW2)] : [m(NEW1)]; };
   let n = 0;
   t.ctx.accept = async (id, r) => { t.accepted.push(r); if (++n === 1) throw new Error('outbox write failed'); return {}; };
-  await backfill(t.ctx);
+  await assert.rejects(() => backfill(t.ctx), (e) => e.event === 'backfill-failed');
   assert.deepEqual(t.accepted.map((r) => r.ts), [NEW1, NEW2]);
   assert.ok(t.logs.some((e) => e.event === 'backfill-failed' && e.thread === '300.0'));
   assert.ok(t.logs.some((e) => e.event === 'backfill-accept-failed'));
+  assert.ok(t.logs.some((e) => e.event === 'backfill'));
   assert.ok(!JSON.stringify(t.logs).includes('text 4999'));
+});
+
+test('skipped ids have their own cap: announcing them never evicts settled ids', async () => {
+  const t = rig({ marks: false });
+  const settled = Array.from({ length: 500 }, (_, i) => `slack:C0:${i}`);
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' }, settledIds: { 'slack|C0': settled } });
+  t.answers.fn = () => [m(OLD), m(OLD2)];
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+  assert.deepEqual(t.store.state('settledIds', 'slack|C0'), settled, 'settled ids are untouched');
+  assert.equal(t.store.state('skippedIds', 'slack|C0').length, 2);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1, 'not announced again on the next connect');
+  const full = Array.from({ length: 500 }, (_, i) => `slack:C0:s${i}`);
+  t.store.patchState({ skippedIds: { 'slack|C0': full } });
+  t.answers.fn = () => [m('4990002.100000')];
+  await backfill(t.ctx);
+  const kept = t.store.state('skippedIds', 'slack|C0');
+  assert.equal(kept.length, 500, 'capped on its own');
+  assert.ok(!kept.includes('slack:C0:s0') && kept.includes(requestIdFor('slack', 'C0', '4990002.100000')));
+});
+
+test('a thread read (oldest first) cut off at the page limit keeps the pages it read and logs a warning', async () => {
+  const t = rig({ marks: false });
+  t.store.patchState({ channelMarks: { 'slack|C0': null }, threadMarks: { 'slack|C0|s1': '200.0' }, roots: { 'slack|C0|s1': [{ ts: '300.0', at: 1, count: 0 }] }, deliveredTs: { 'slack|C0': null } });
+  t.answers.fn = () => { throw Object.assign(new Error('history read hit the page limit'), { event: 'history-truncated', partial: [m(NEW1), m(NEW2)] }); };
+  const total = await backfill(t.ctx);
+  assert.deepEqual(t.accepted.map((r) => r.ts), [NEW1, NEW2], 'what was read is delivered');
+  assert.equal(total.accepted, 2);
+  assert.ok(t.logs.some((e) => e.event === 'backfill-truncated' && e.kept === 2));
+  assert.ok(!t.logs.some((e) => e.event === 'backfill-failed'));
+  assert.ok(!JSON.stringify(t.logs).includes('text 4999'));
+});
+
+test('a failed accept is not a successful backfill: backfill throws so the next connect retries', async () => {
+  const t = rig({ marks: false });
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });
+  t.answers.fn = () => [m(NEW1), m(NEW2)];
+  t.ctx.accept = async (id, r) => { t.accepted.push(r); throw new Error('outbox write failed'); };
+  await assert.rejects(() => backfill(t.ctx), (e) => e.event === 'backfill-failed' && e.acceptFailed);
+  assert.equal(t.accepted.length, 2);
+  assert.equal(t.logs.filter((e) => e.event === 'backfill-accept-failed').length, 2);
 });
 
 // With a real bridge behind accept: the delivered-id set makes a second pass a no-op.

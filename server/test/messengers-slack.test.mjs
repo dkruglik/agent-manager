@@ -195,7 +195,7 @@ test('no reconnect is scheduled after stop()', async () => {
 
 test('a slash command whose handler throws is still acked, with a generic reply', async () => {
   const t = setup();
-  t.hooks.onCommand = async () => { throw new Error('EACCES /home/op/.am/data'); };
+  t.hooks.onCommand = async () => { throw Object.assign(new Error('EACCES /home/op/.am/data'), { code: 'EACCES' }); };
   t.adapter.start(t.hooks);
   await firstSocket();
   const ws = FakeWs.all[0];
@@ -206,7 +206,7 @@ test('a slash command whose handler throws is still acked, with a generic reply'
   assert.equal(sent[0].envelope_id, 'e1');
   assert.equal(sent[0].payload.response_type, 'ephemeral');
   assert.doesNotMatch(sent[0].payload.text, /EACCES|home/, 'the error text stays out of chat');
-  assert.deepEqual(t.logs.find((e) => e.event === 'command-failed'), { event: 'command-failed', error: 'EACCES /home/op/.am/data' });
+  assert.deepEqual(t.logs.find((e) => e.event === 'command-failed'), { event: 'command-failed', error: 'EACCES' });
 });
 
 test('a Slack API error carries a public message; a network error does not', async () => {

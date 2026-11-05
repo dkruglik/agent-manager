@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isUuid } from '../codex-input.js';
 
 // Row files of the outbox: `<dir>/<requestId>.json`, written the way Codex
 // receipts are (codex-input.js saveReceipt): directory 0700, file 0600, opened
@@ -11,12 +12,11 @@ const MAX_ROW_BYTES = 1 << 20;
 const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
 const STATES = ['pending', 'submitted'];
 
-const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const str = (v) => typeof v === 'string' && v !== '';
 
 /** True when `row` has every field the drain relies on and its id matches `id`. */
 export function wellFormedRow(row, id) {
-  return !!row && typeof row === 'object' && row.requestId === id && UUID.test(id)
+  return !!row && typeof row === 'object' && row.requestId === id && isUuid(id)
     && ['adapter', 'channel', 'ts', 'sessionId', 'bindingId'].every((k) => str(row[k]))
     && typeof row.text === 'string' && typeof row.body === 'string' && str(row.user?.id)
     && STATES.includes(row.state) && Number.isFinite(row.createdAt)
@@ -25,7 +25,7 @@ export function wellFormedRow(row, id) {
 
 // The id names the file, so only a UUID is accepted: no path can come out of it.
 function rowFile(dir, id) {
-  if (!UUID.test(String(id))) throw new Error('row request id is not a UUID');
+  if (!isUuid(String(id))) throw new Error('row request id is not a UUID');
   return path.join(dir, `${id}.json`);
 }
 
@@ -36,21 +36,35 @@ function syncDir(dir) {
 
 function writeNew(file, data) {
   const fd = fs.openSync(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600);
-  try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+    try { fs.unlinkSync(file); } catch { /* nothing to remove */ }
+    throw e;
+  }
+  fs.closeSync(fd);
 }
+
+/** A failed row write: the adapter leaves the event unacked so the service redelivers it. */
+export const persistError = (e) => Object.assign(new Error(`outbox write failed: ${e.message}`), { persist: true });
+
+/**
+ * @typedef {object} OutboxRow A queue file. `state` is the row (`pending` or `submitted`), not the host's
+ *   delivery outcome (delivery-outcome.js), which uses the same words for a different fact.
+ * @property {string} requestId UUID. The file name.
+ * @property {'pending'|'submitted'} state
+ * @property {string} text Frozen bytes sent to the agent.
+ * @property {string} body The Slack text, without preamble or sender prefix.
+ */
 
 /** Creates the row file; throws when one (or a symlink) is already there. A file this call made is removed on failure. */
 export function createRow(dir, row) {
   const file = rowFile(dir, row.requestId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const fd = fs.openSync(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600);
-  try {
-    fs.writeFileSync(fd, JSON.stringify(row));
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    syncDir(dir);
-  } catch (e) {
-    try { fs.closeSync(fd); } catch { /* already closed */ }
+  writeNew(file, JSON.stringify(row));
+  try { syncDir(dir); } catch (e) {
     try { fs.unlinkSync(file); } catch { /* nothing to remove */ }
     throw e;
   }
@@ -89,9 +103,13 @@ function readRow(dir, file) {
  * Looks at the directory before anything is read or written. 'unsafe' for a symlink or a non-directory
  * (the outbox must not write through it); a directory looser than 0700 is tightened.
  */
-export function checkDir(dir) {
+export function checkDir(dir, log) {
   let st;
-  try { st = fs.lstatSync(dir); } catch (e) { return e.code === 'ENOENT' ? 'missing' : 'unsafe'; }
+  try { st = fs.lstatSync(dir); } catch (e) {
+    if (e.code === 'ENOENT') return 'missing';
+    log?.({ event: 'outbox-dir-stat-failed', error: e.code ?? e.name, message: String(e.message || '').slice(0, 200) });
+    return 'unsafe';
+  }
   if (!st.isDirectory()) return 'unsafe';
   if (st.mode & 0o077) fs.chmodSync(dir, 0o700);
   return 'ok';

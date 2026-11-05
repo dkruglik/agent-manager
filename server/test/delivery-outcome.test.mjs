@@ -1,5 +1,5 @@
 // How a chat prompt's delivery attempt is classified, per runtime
-// (plans/slack_history.md "Per-runtime delivery"). Pure: no server, no pane.
+// (docs/messengers.md, "Delivery per runtime"). Pure: no server, no pane.
 //
 // Run with: node test/delivery-outcome.test.mjs
 import assert from 'node:assert/strict';
@@ -156,10 +156,10 @@ test('readyAfterRevive: waits for a ready prompt when the CLI has a detector and
   assert.equal(io.polls, 4);
 });
 
-test('readyAfterRevive: gave-up does not wait for the prompt', async () => {
-  const io = readyIo({ result: 'gave-up', readyAfter: 99 });
+test('readyAfterRevive: gave-up still waits for an empty prompt when the pane is running', async () => {
+  const io = readyIo({ result: 'gave-up', readyAfter: 2 });
   assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, io), 'gave-up');
-  assert.equal(io.polls, 0);
+  assert.ok(io.polls >= 1);
 });
 
 test('readyAfterRevive: a CLI without a prompt detector, or a pane that is not running, does not wait', async () => {
@@ -174,10 +174,16 @@ test('readyAfterRevive: a CLI without a prompt detector, or a pane that is not r
 
 test('readyAfterRevive: the wait is bounded and stops when the lock signal aborts', async () => {
   const bounded = readyIo({ readyAfter: Infinity });
+  bounded.logs = [];
+  bounded.log = (e) => bounded.logs.push(e);
   let t = 0;
   bounded.now = () => (t += 1000);
-  assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, bounded, { readyMs: 5000 }), 'sent');
+  await assert.rejects(
+    () => readyAfterRevive({ id: 's1', cli: 'claude' }, bounded, { readyMs: 5000 }),
+    (e) => e.code === 'prompt-not-ready',
+  );
   assert.ok(bounded.polls >= 1 && bounded.polls < 10);
+  assert.equal(bounded.logs[0]?.event, 'ready-timeout');
   const aborted = readyIo({ readyAfter: Infinity });
   const c = new AbortController();
   aborted.sleep = async () => c.abort();

@@ -107,3 +107,12 @@ export function finishedCard({ agent, link, text }) {
 export function noticeCard(body, title = null) {
   return { kind: 'notice', title, body, options: [] };
 }
+
+/** Posts a notice card. A Slack failure is a log line; the caller still finishes its own work. */
+export async function postNotice(adapters, adapterId, target, text, log) {
+  try {
+    await adapters.get(adapterId)?.post(target, noticeCard(text));
+  } catch (e) {
+    log({ event: 'notice-failed', adapter: adapterId, channel: target.channel, error: e.code ?? e.name });
+  }
+}

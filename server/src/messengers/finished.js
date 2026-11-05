@@ -1,5 +1,5 @@
 import { finishedCard } from './cards.js';
-import { finishedMark, markFinished, redactCard } from './outbound.js';
+import { finishedMark, markFinished } from './outbound.js';
 
 // The `finished` card: the latest assistant text, clipped, as a top-level channel post. `b` is the
 // MessengerBridge. A binding that also has `transcript` never gets here (outbound.js postsFinished).
@@ -14,13 +14,13 @@ export async function checkFinished(b, binding, s) {
   const baseline = mark === null;
   if (!baseline && !b.settled(s)) return;
   if (now() - (b.digestAt.get(k) || 0) < b.digestEveryMs) return;
-  b.digestAt.set(k, now());
   let d;
   try { d = await host.digest(s); } catch (e) {
     // Not a baseline: recording an empty one would replay an old answer later.
-    log({ event: 'digest-failed', session: s.id, error: e.message });
+    log({ event: 'digest-failed', session: s.id, error: e.code ?? e.name });
     return;
   }
+  b.digestAt.set(k, now());
   const id = d?.id || '';
   // The first look at a session only records where its conversation stands:
   // binding a channel must not replay an answer the operator already read.
@@ -33,7 +33,7 @@ export async function checkFinished(b, binding, s) {
     return;
   }
   // Marked only once posted: a failed post is retried on the next look.
-  const card = redactCard(b.filter, finishedCard({ agent: b.agent(s), link: host.link(s), text: d.text }));
+  const card = finishedCard({ agent: b.agent(s), link: host.link(s), text: b.filter(d.text) });
   const ref = await b.post(binding, card);
   markFinished(store, adapter, channel, s.id, id);
   store.putPosted(`${k}|done:${id}`, {

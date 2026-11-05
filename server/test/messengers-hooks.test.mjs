@@ -137,12 +137,12 @@ test('a hook card that cannot be posted falls back to the terminal and closes th
   const t = setup([{ events: ['input-required'], approvals: true }, { events: ['input-required'], approvals: true }]);
   const post = t.slack.post;
   t.slack.post = async (target, card) => {
-    if (target.channel === 'C1') throw new Error('slack chat.postMessage: channel_not_found');
+    if (target.channel === 'C1') throw Object.assign(new Error('slack chat.postMessage: channel_not_found'), { code: 'channel_not_found' }); // as the adapter throws it
     return post(target, card);
   };
   assert.equal(await t.bridge.hooks.wait('s1', hookItem(perm)), null, 'the terminal keeps the dialog');
   const failed = t.logs.find((e) => e.event === 'hook-post-failed');
-  assert.deepEqual([failed.binding, failed.session, failed.adapter, failed.error], ['b1', 's1', 'slack', 'slack chat.postMessage: channel_not_found']);
+  assert.deepEqual([failed.binding, failed.session, failed.adapter, failed.error], ['b1', 's1', 'slack', 'channel_not_found']);
   await waitFor(() => t.updates.length === 1, 'the first card to close');
   assert.equal(t.updates[0].ref.channel, 'C0');
   assert.equal(t.updates[0].card.resolved.text, 'Could not be posted.');
@@ -182,10 +182,10 @@ test('a card update or close that fails is logged with its binding, session and 
   const c = setup();
   const waiting2 = c.bridge.hooks.wait('s1', hookItem(perm));
   await waitFor(() => c.posts.length === 1, 'the card');
-  c.bridge.store.putPosted = () => { throw new Error('disk full'); };
+  c.bridge.store.putPosted = () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); };
   c.timers.values().next().value.fn();
   assert.equal(await waiting2, null);
   await waitFor(() => c.logs.some((e) => e.event === 'close-failed'), 'the close failure');
   const closeFailed = c.logs.find((e) => e.event === 'close-failed');
-  assert.deepEqual([closeFailed.binding, closeFailed.session, closeFailed.adapter, closeFailed.error], ['b0', 's1', 'slack', 'disk full']);
+  assert.deepEqual([closeFailed.binding, closeFailed.session, closeFailed.adapter, closeFailed.error], ['b0', 's1', 'slack', 'ENOSPC']);
 });

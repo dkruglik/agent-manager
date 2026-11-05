@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
-import { fromMrkdwn, historyReply, messageReply, byTs } from './slack-events.js';
+import { fromMrkdwn, historyReply, messageReply, escapeMrkdwn } from './slack-events.js';
+import { compareSlackTs } from '../delivery-state.js';
 
 export { fromMrkdwn };
 
@@ -20,6 +21,9 @@ const SILENT_AFTER_MS = 120_000;
 
 const RATE_LIMIT_RETRIES = 2;
 const RETRY_AFTER_MAX_MS = 60_000;
+// A tick serves every channel, so a call sleeps only through a short Retry-After. A longer one is an error the
+// binding backs off on (bridge noteOutcome reads `retryAfter`), and the other channels carry on.
+const RETRY_SLEEP_MAX_MS = 5000;
 const retryAfterMs = (res) => {
   const raw = res.headers?.get?.('retry-after');
   const seconds = raw == null || raw === '' ? NaN : Number(raw);
@@ -31,8 +35,6 @@ const FORM_METHODS = new Set(['conversations.history', 'conversations.replies'])
 const HISTORY_PAGES = 5;
 const HISTORY_PAGE_SIZE = 200;
 const REFRESH = 'refresh requested'; // Slack's hourly `disconnect` frame; any other reconnect reason is a real one
-
-const escapeMrkdwn = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Slack's mrkdwn is not Markdown: bold is *x*, links are <url|text>, and
 // &, < and > must be escaped. Good enough for agent replies; code survives.
@@ -86,7 +88,10 @@ export function renderBlocks(card) {
   return blocks;
 }
 
-const fallbackText = (card) => [card.title, card.body, card.mrkdwn].filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
+// The plain text of a post (notifications, clients without blocks). Title and body are agent text, so they
+// are escaped like the blocks: `<!channel>` and `<@U…>` stay text. `mrkdwn` was escaped by its builder.
+const fallbackText = (card) => [card.title && escapeMrkdwn(card.title), card.body && escapeMrkdwn(card.body), card.mrkdwn]
+  .filter(Boolean).join('\n').slice(0, 3000) || 'Agent Manager';
 
 // Slack's Socket Mode envelope types that carry something for us.
 function interactiveReply(p) {
@@ -118,8 +123,9 @@ export class SlackAdapter {
 
   configured() { return !!(this.botToken && this.appToken); }
 
-  // A 429 carries Retry-After in seconds. The call waits that long (at most a minute) and tries again,
-  // twice at most; then the 429 is the error, like any other Slack answer.
+  // A 429 carries Retry-After in seconds. Up to 5 s the call waits and tries again, twice at most; then the
+  // 429 is the error, like any other Slack answer. A longer wait is not slept: the call throws at once with
+  // `code: 'rate-limited'` and `retryAfter` (seconds, at most 60).
   async call(method, body, token = this.botToken) {
     for (let retry = 0; ; retry++) {
       const form = FORM_METHODS.has(method);
@@ -128,15 +134,28 @@ export class SlackAdapter {
         headers: { authorization: `Bearer ${token}`, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8' },
         body: form ? new URLSearchParams(body || {}).toString() : JSON.stringify(body || {}),
       });
-      if (res.status === 429 && retry < RATE_LIMIT_RETRIES) {
-        await new Promise((resolve) => this.setTimer(resolve, retryAfterMs(res)));
-        continue;
+      if (res.status === 429) {
+        const wait = retryAfterMs(res);
+        if (wait > RETRY_SLEEP_MAX_MS) {
+          const message = `slack ${method}: rate-limited (retry in ${Math.ceil(wait / 1000)}s)`;
+          throw Object.assign(new Error(message), { publicMessage: message, code: 'rate-limited', retryAfter: wait / 1000 });
+        }
+        if (retry < RATE_LIMIT_RETRIES) {
+          await new Promise((resolve) => this.setTimer(resolve, wait));
+          continue;
+        }
       }
-      const json = await res.json().catch(() => ({}));
+      let json;
+      try { json = await res.json(); } catch (e) {
+        const message = `slack ${method}: bad response (HTTP ${res.status})`;
+        throw Object.assign(new Error(message), { publicMessage: message, code: 'bad-response' });
+      }
       if (!json.ok) {
         // Slack's error code is safe to show in Settings (bridge lastError); a network error is not marked.
-        const message = `slack ${method}: ${String(json.error || `HTTP ${res.status}`).slice(0, 80)}`;
-        throw Object.assign(new Error(message), { publicMessage: message });
+        // The code is Slack's own error string (not_in_channel, …), so a code-only log still says what failed.
+        const code = String(json.error || `http-${res.status}`).slice(0, 80);
+        const message = `slack ${method}: ${json.error ? code : `HTTP ${res.status}`}`;
+        throw Object.assign(new Error(message), { publicMessage: message, code });
       }
       return json;
     }
@@ -169,9 +188,9 @@ export class SlackAdapter {
     this.heard(ws);
     this.schedulePing(ws);
     for (const e of ['ping', 'pong']) ws.on(e, () => this.heard(ws));
-    ws.on('message', (raw) => { this.heard(ws); this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.message })); });
+    ws.on('message', (raw) => { this.heard(ws); this.onFrame(ws, raw).catch((e) => this.hooks.log({ event: 'frame-failed', error: e.code ?? e.name })); });
     ws.on('close', () => { if (this.socket === ws) { this.unwatch(); this.reconnectLater('socket closed'); } });
-    ws.on('error', (e) => this.hooks.log({ event: 'socket-error', error: e.message }));
+    ws.on('error', (e) => this.hooks.log({ event: 'socket-error', error: e.code ?? e.name }));
   }
 
   timer(fn, ms) {
@@ -207,7 +226,7 @@ export class SlackAdapter {
   schedulePing(ws) {
     this.watch.ping = this.timer(() => {
       if (this.socket !== ws) return;
-      try { ws.ping(); } catch (e) { this.hooks.log({ event: 'ping-failed', error: e.message }); }
+      try { ws.ping(); } catch (e) { this.hooks.log({ event: 'ping-failed', error: e.code ?? e.name }); }
       this.schedulePing(ws);
     }, PING_EVERY_MS);
   }
@@ -217,7 +236,7 @@ export class SlackAdapter {
     if (this.greeted.has(ws)) return;
     this.greeted.add(ws);
     if (this.refreshing) { this.refreshing = false; return; }
-    Promise.resolve().then(() => this.hooks.onConnect?.()).catch((e) => this.hooks.log({ event: 'connect-hook-failed', error: e.message }));
+    Promise.resolve().then(() => this.hooks.onConnect?.()).catch((e) => this.hooks.log({ event: 'connect-hook-failed', error: e.code ?? e.name }));
   }
 
   async onFrame(ws, raw) {
@@ -237,7 +256,7 @@ export class SlackAdapter {
       let text;
       try { text = await this.hooks.onCommand({ channel: p.channel_id, user: { id: p.user_id, name: p.user_name }, text: p.text || '' }); } catch (e) {
         // Unacked, Slack shows the user a timeout; the error may carry paths, so chat gets a generic line.
-        this.hooks.log({ event: 'command-failed', error: e.message });
+        this.hooks.log({ event: 'command-failed', error: e.code ?? e.name });
         text = 'Something went wrong — see the Agent Manager server log.';
       }
       ws.send(JSON.stringify({ envelope_id: msg.envelope_id, payload: { response_type: 'ephemeral', text: toMrkdwn(text) } }));
@@ -249,7 +268,7 @@ export class SlackAdapter {
       // A message is acked once its row is durable; a failed write leaves it unacked, so Slack redelivers.
       if (reply) {
         try { await this.hooks.onReply(reply); } catch (e) {
-          this.hooks.log({ event: 'persist-failed', error: e.message });
+          this.hooks.log({ event: 'persist-failed', error: e.code ?? e.name });
           return;
         }
       }
@@ -291,24 +310,33 @@ export class SlackAdapter {
 
   /**
    * Messages after `oldest` (exclusive) in a channel, or in the thread `thread`, oldest first, in the shape of a live
-   * reply. At most 5 pages of 200. Bot messages and the bot's own are left out, as for a live event.
+   * reply. At most 5 pages of 200; past that it throws `history-truncated` with the messages read in `partial`
+   * (a channel is read newest first, so `partial` is its newest end and `edge` the oldest ts read; `latest` bounds a window). Bot messages and the bot's own are left out, as for a live event.
    */
-  async history({ channel, thread, oldest }) {
+  async history({ channel, thread, oldest, latest }) {
     if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
     const out = [];
     let cursor = '';
+    let edge = null; // the oldest ts read of a channel (newest first): what lies below it was not read
     for (let page = 0; page < HISTORY_PAGES; page++) {
       const res = await this.call(thread ? 'conversations.replies' : 'conversations.history', {
-        channel, ...(thread ? { ts: thread } : {}), ...(oldest ? { oldest } : {}), limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+        channel, ...(thread ? { ts: thread } : {}), ...(oldest ? { oldest } : {}), ...(latest ? { latest } : {}), limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
       });
       for (const m of res.messages || []) {
         const reply = historyReply(m, channel, thread, this.botUser);
         if (reply) out.push(reply);
       }
+      if (!thread) edge = res.messages?.at(-1)?.ts ?? edge;
       cursor = res.response_metadata?.next_cursor || '';
       if (!cursor) break;
     }
-    return out.sort(byTs);
+    out.sort((a, b) => compareSlackTs(a.ts, b.ts));
+    // Not the whole history: the caller gets the pages that were read in `partial` and decides what to do.
+    if (cursor) {
+      const message = 'history read hit the page limit';
+      throw Object.assign(new Error(message), { event: 'history-truncated', publicMessage: message, partial: out, edge });
+    }
+    return out;
   }
 
   // Visible to one user only; the bot token's chat:write scope covers it.

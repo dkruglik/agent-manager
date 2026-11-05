@@ -20,14 +20,14 @@ import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS
 import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
-  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice,
+  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice, chatCredentialValues,
 } from './config.js';
 import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice } from './model-catalog.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
-import { deliverToSession, readyAfterRevive, bootRevive } from './delivery-outcome.js';
+import { deliverToSession, readyAfterRevive, bootRevive, commitPendingPrompt } from './delivery-outcome.js';
 import * as store from './sessions.js';
 import * as groups from './groups.js';
 import * as order from './order.js';
@@ -875,13 +875,13 @@ async function deliverInner(session, { text, attachments }, from, { cancelled, s
   // needs a session id first, but typing into a half-booted TUI loses turns.
   const cli = cliById(session.cli);
   if (!session.everStarted && cli?.withPrompt && prelude.length === 0) {
-    store.update(session.id, {
-      pendingPrompt: prompt,
-      pendingImagePaths: session.cli === 'codex'
+    commitPendingPrompt(store, session, {
+      prompt,
+      imagePaths: session.cli === 'codex'
         ? attachments.filter((attachment) => attachment.kind === 'image').map((image) => image.path)
         : undefined,
+      onCommitted,
     });
-    onCommitted?.();
     return ensureRunning(store.get(session.id) || session);
   }
   if (runId && runIdOf(session.id) !== runId) throw new ApiError(409, 'input-not-ready', 'session was stopped or restarted before this could be delivered');
@@ -4015,6 +4015,7 @@ api.post('/api/move', (req, res) => {
 const messengers = createMessengers({
   dataDir: DATA_DIR,
   config: MESSENGERS,
+  getKnownCredentialValues: () => chatCredentialValues(injectedEnvKeys()),
   scopeExists: (scope) => !!(scope.type === 'group' ? groups.get(scope.id) : store.get(scope.id)),
   host: {
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
@@ -4028,6 +4029,7 @@ const messengers = createMessengers({
     // The assistant messages after a cursor, for a `transcript` binding (transcript-since.js).
     since: (s, cursor) => since(s, cursor),
     link: (s) => (MESSENGERS.publicUrl ? `${MESSENGERS.publicUrl}/#session=${encodeURIComponent(s.id)}` : null),
+    runId: (s) => runIdOf(s.id),
     async requests(s) {
       if (!sessionRuntime.shared(s)) return [];
       const { client } = await codexInput.attach(s.id);
@@ -4043,13 +4045,14 @@ const messengers = createMessengers({
     // ready prompt): the chat drain sends nothing before it, so it never races the continue message.
     ready: (s, { signal } = {}) => readyAfterRevive(s, {
       result: (id) => runstate.reviveResult(id), detector: hasPromptDetector, running: isRunning, promptReady,
+      log: (entry) => messengers.log(entry),
     }, { signal }),
     // Classified instead of thrown: see delivery-outcome.js and docs/messengers.md.
     deliver: (s, { text, requestId, signal }) => deliverToSession(store.get(s.id) || s, { text, requestId }, {
       shared: (session) => sessionRuntime.shared(session),
       remote: (session) => isRemote(session.cli),
       limit: remote.MAX_TEXT,
-      log: console.error,
+      log: (msg) => messengers.log(typeof msg === 'string' ? { event: 'delivery-error', message: msg } : msg),
       touch: touchInput,
       sendCodex: (session, message) => {
         if (signal?.aborted) throw lockedError(); // the messenger's lock scope: a lock landed before the call
@@ -4260,7 +4263,7 @@ refreshEnvSkill();
 // history, and with large migrated transcripts that memory/CPU spike could
 // destabilize a fresh container. The Usage page fetches per-provider on open
 // (skeletons + stale-while-revalidate), so nothing is lost but the boot risk.
-setTimeout(() => { traceDigests().catch(() => {}); }, 4000);
+setTimeout(() => { traceDigests().catch((e) => console.warn('[boot] traceDigests prefetch failed:', e?.message)); }, 4000);
 
 // Bucket backup: ask every few minutes whether one is due, and if so launch a
 // Job to do it on the Hub (docs/bucket-backup.md). Costs nothing when off or
@@ -4291,7 +4294,7 @@ setTimeout(() => {
         // The Overview reply box's path: privacy-lock aware, submit confirmed.
         send: (s, text, { runId, signal }) => deliver(s, { text }, 'Agent Manager', { signal, runId }),
         scope: lockScope,
-      }).catch((e) => console.error('[revive]', e && e.message)),
+      }).catch((e) => console.error('[revive]', e?.code ?? e?.name)),
     });
     done.then(() => runstate.startRunstateWatch());
   });
