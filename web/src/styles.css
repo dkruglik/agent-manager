@@ -259,10 +259,11 @@ body {
 }
 /* Second picker row: everything you can make that is not one of the agents. */
 .quick-clis-2 { margin-top: 4px; }
-/* A real grid cell, not a margin: it holds a column so the CLI that wrapped off
-   row one stays separated from the session types on the same 6-column rhythm,
-   and the separation does not move when remote/shell/files are absent. */
-.quick-gap { pointer-events: none; }
+/* The first session type after the CLIs that wrapped off row one gets a divider
+   in the 4px gutter to its left. It is drawn, not a cell: a cell would take a
+   column of the 6-track grid and push the last tile onto a row of its own. */
+.quick-session-start { position: relative; }
+.quick-session-start::before { content: ""; position: absolute; top: 0; bottom: 0; left: -2.5px; width: 1px; background: var(--border-strong); }
 /* A field switched off because it means nothing for this type says so in its
    own box, rather than going grey and leaving you to guess. */
 .fp-current .fp-why { color: var(--muted); font-style: italic; }
