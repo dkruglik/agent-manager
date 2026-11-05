@@ -1,5 +1,5 @@
 // How a chat prompt's delivery attempt is classified, per runtime
-// (plans/slack_history.md "Per-runtime delivery"). Pure: no server, no pane.
+// (docs/messengers.md, "Delivery per runtime"). Pure: no server, no pane.
 //
 // Run with: node test/delivery-outcome.test.mjs
 import assert from 'node:assert/strict';

@@ -22,13 +22,17 @@ export function createAmend(ctx, h) {
   const known = (adapter, channel, requestId) => rows.has(requestId)
     || h.isDelivered(ctx, idRow(adapter, channel, requestId)) || h.isSubmitted(ctx, idRow(adapter, channel, requestId));
 
-  function replace(row, session, body) {
+  // Memory follows the disk: editTs moves only once the rewritten file is written.
+  function replace(row, session, body, editTs) {
     const text = h.frozenText(ctx, row.adapter, row.channel, session, row.user, body, row.requestId);
-    try { h.rewriteRow(ctx.dir, { ...row, text, body }); } catch (e) { throw persistError(e); }
-    Object.assign(row, { text, body });
+    const next = { text, body, ...(editTs ? { editTs } : {}) };
+    try { h.rewriteRow(ctx.dir, { ...row, ...next }); } catch (e) { throw persistError(e); }
+    Object.assign(row, next);
     log({ event: 'edited', requestId: row.requestId, session: session.id });
     return { edited: session.id };
   }
+
+  const stale = (row, editTs) => !!(row.editTs && editTs && laterTs(editTs, row.editTs) !== editTs);
 
   function edit({ binding, session, r, body, via }) {
     const ignore = (reason) => {
@@ -42,16 +46,15 @@ export function createAmend(ctx, h) {
     if (!known(binding.adapter, r.channel, id)) return ignore('unknown-message');
     if (editable(row)) {
       if (row.sessionId !== session.id) return ignore('session-changed');
-      if (r.edit.editTs) row.editTs = r.edit.editTs;
-      return replace(row, session, body);
+      if (stale(row, r.edit.editTs)) return ignore('stale-edit');
+      return replace(row, session, body, r.edit.editTs);
     }
     // A second edit of the same message replaces the edit that is still waiting instead of queueing another.
     const waiting = [...rows.values()].find((x) => x.adapter === binding.adapter && x.channel === r.channel && x.editOf === r.edit.ts);
     if (waiting && ctx.active.has(waiting.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
     if (waiting && editable(waiting) && waiting.sessionId === session.id) {
-      if (waiting.editTs && r.edit.editTs && laterTs(r.edit.editTs, waiting.editTs) !== r.edit.editTs) return ignore('stale-edit');
-      waiting.editTs = r.edit.editTs;
-      return replace(waiting, session, EDIT_HEAD + body);
+      if (stale(waiting, r.edit.editTs)) return ignore('stale-edit');
+      return replace(waiting, session, EDIT_HEAD + body, r.edit.editTs);
     }
     const requestId = editRequestIdFor(binding.adapter, r.channel, r.edit.ts, r.edit.editTs);
     return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts, editTs: r.edit.editTs } });

@@ -15,7 +15,7 @@ const UUID = '11111111-2222-4333-8444-555555555555';
 const file = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'p', `${UUID}.jsonl`);
 fs.mkdirSync(path.dirname(file), { recursive: true });
 
-const { createSince, readAssistantMessages, traceRevisionOf } = await import('../src/transcript-since.js');
+const { createSince, readAssistantMessages, traceRevisionOf, CACHED_SESSIONS } = await import('../src/transcript-since.js');
 const { sourceKey } = await import('../src/output-id.js');
 
 const session = { id: 's1', cli: 'claude', sessionUuid: UUID, path: 's1' };
@@ -161,7 +161,7 @@ test('an updated message says whether it grew: extended text yes, a replacement 
   assert.equal((await make()({ id: 'g' }, base)).updated.grew, false, 'a fresh process never saw the cursor version');
 });
 
-test('with more than 16 sessions the one used last is kept and the least recently used is evicted', async () => {
+test('with more sessions than the cache holds the one used last is kept and the least recently used is evicted', async () => {
   const parsed = [];
   const lru = createSince({
     sourceOf: (s) => `src-${s.id}`,
@@ -169,12 +169,33 @@ test('with more than 16 sessions the one used last is kept and the least recentl
     readMessages: async (s) => { parsed.push(s.id); return { revision: '1', messages: [{ text: 'x', tools: [] }] }; },
   });
   const at = (i) => ({ id: `s${i}` });
-  for (let i = 0; i < 16; i++) await lru(at(i), null);
+  for (let i = 0; i < CACHED_SESSIONS; i++) await lru(at(i), null);
   await lru(at(0), null); // s0 is used again: now the newest
-  await lru(at(16), null); // the 17th session evicts s1, not s0
+  await lru(at(CACHED_SESSIONS), null); // one more session evicts s1, not s0
   parsed.length = 0;
   await lru(at(0), null);
   assert.deepEqual(parsed, [], 's0 is still cached');
   await lru(at(1), null);
   assert.deepEqual(parsed, ['s1'], 's1 was evicted and is read again');
+});
+
+test('20 mirrored sessions read in rotation are parsed once, and an edited tail still reads as grown', async () => {
+  const parsed = [];
+  const texts = new Map();
+  const rev = new Map();
+  const rot = createSince({
+    sourceOf: (s) => `src-${s.id}`,
+    revisionOf: async (s) => String(rev.get(s.id) || 1),
+    readMessages: async (s) => { parsed.push(s.id); return { revision: String(rev.get(s.id) || 1), messages: [{ text: texts.get(s.id) || 'start', tools: [] }] }; },
+  });
+  const all = Array.from({ length: 20 }, (_, i) => ({ id: `r${i}` }));
+  const cursors = new Map();
+  for (const s of all) cursors.set(s.id, (await rot(s, null)).end);
+  for (let round = 0; round < 3; round++) for (const s of all) await rot(s, cursors.get(s.id));
+  assert.equal(parsed.length, 20, 'one parse per session, none on later rounds');
+  texts.set('r0', 'start and more');
+  rev.set('r0', 2);
+  for (const s of all.slice(1)) await rot(s, cursors.get(s.id)); // the rest of the rotation
+  const r = await rot(all[0], cursors.get('r0'));
+  assert.equal(r.updated.grew, true, 'the edit is still known to extend the old text');
 });

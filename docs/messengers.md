@@ -1,6 +1,6 @@
 # Messengers: Slack (and others) as a two-way channel
 
-**Status:** implemented as of 2026-11-04 — Slack adapter, typed answers for
+**Status:** implemented as of 2026-11-05 — Slack adapter, typed answers for
 shared Codex, Claude Code permission prompts and questions answered from chat
 (opt-in per binding), free-text prompts for every agent CLI, saved channels and
 users, the chat prompt outbox, and the opt-in `transcript` mirror of an agent's
@@ -401,7 +401,15 @@ The cursor is one record per adapter, channel and session in `messengers.json`
 `refs` are the Slack `ts` values of its parts. It is written after each message
 (or catch-up line) posted in a tick. A crash after a post but before that write
 **can repost that one message once**; earlier messages in the same tick are not
-sent again. The same record holds the id of the last
+sent again. A resumed `partial:` cursor continues only if the message still
+has the hash stored after the prefix (or grew); changed text is posted whole.
+The parsed-transcript cache holds 64 sessions and the tail-version memory
+(which tells an edit from a replacement) 1000, both least recently used, so a
+rotation through many mirrored sessions neither re-parses every tick nor posts
+an edited tail again. After the bridge stops, a tick in flight posts nothing
+more (the poster guard checks `stopped`, and again after the root round trip)
+and `stop()` waits for it. Logs carry `e.code ?? e.name`, never a message. The
+same record holds the id of the last
 `finished` card announced (`finished`), which replaced the old `seen` map.
 
 ### The `seen` migration
@@ -693,6 +701,16 @@ with the pages read in `err.partial`; backfill keeps those messages and logs `ba
 channels and threads are still read; then backfill throws so the next connect
 retries from the same watermarks. A backfill still running
 when Agent Manager stops writes no rows.
+
+After a long outage the history is handled oldest-first, one chunk per
+connect. A cut-off channel read (newest pages only) delivers nothing from
+those pages: the window below its oldest edge is read again, up to 4 rounds.
+If none fits, `backfill-gap` is logged and the mark stays. A rate limit stops
+all remaining sources and the bridge retries after `retryAfter` (30 s without
+one); `stop()` cancels that timer. A `message_changed` is an edit only when the
+text or file ids change (file_share and thread_broadcast edits included). A
+stale edit is ignored on pending rows too. A reply with no target
+(`no-target`) is settled only for allowed senders.
 
 ## Adding a messenger
 

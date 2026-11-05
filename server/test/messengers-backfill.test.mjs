@@ -166,9 +166,9 @@ test('skipped ids have their own cap: announcing them never evicts settled ids',
   assert.ok(!kept.includes('slack:C0:s0') && kept.includes(requestIdFor('slack', 'C0', '4990002.100000')));
 });
 
-test('a history read cut off at the page limit keeps the pages it read and logs a warning', async () => {
+test('a thread read (oldest first) cut off at the page limit keeps the pages it read and logs a warning', async () => {
   const t = rig({ marks: false });
-  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });
+  t.store.patchState({ channelMarks: { 'slack|C0': null }, threadMarks: { 'slack|C0|s1': '200.0' }, roots: { 'slack|C0|s1': [{ ts: '300.0', at: 1, count: 0 }] }, deliveredTs: { 'slack|C0': null } });
   t.answers.fn = () => { throw Object.assign(new Error('history read hit the page limit'), { event: 'history-truncated', partial: [m(NEW1), m(NEW2)] }); };
   const total = await backfill(t.ctx);
   assert.deepEqual(t.accepted.map((r) => r.ts), [NEW1, NEW2], 'what was read is delivered');

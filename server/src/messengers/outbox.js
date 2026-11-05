@@ -1,7 +1,8 @@
 import { addDeliveredId, addSubmittedId, compareSlackTs } from './delivery-state.js';
 import { checkDir, createRow, loadRows, persistError, removeRow, rewriteRow } from './outbox-files.js';
 import { createAmend } from './outbox-edits.js';
-import { errMeta, forgetSubmitted, idsKey, isDelivered, isSettled, isSubmitted, releaseDelivered, remember, settle, tryReleaseDelivered } from './outbox-ids.js';
+import { errMeta, finalize, idsKey, isDelivered, isSettled, isSubmitted, releaseDelivered, remember, settle, tryReleaseDelivered } from './outbox-ids.js';
+import { frozenText, PREAMBLE_HEAD } from './outbox-text.js';
 import { deferNotice, noteLock, say } from './outbox-lock.js';
 
 // The outbox between a chat message and the agent. A message is a row file
@@ -13,36 +14,9 @@ const LIFETIME_MS = 24 * 3600_000;
 // A row inside host.deliver is not expired at its day: its bytes may be going out. A send hung past this is.
 const SEND_GRACE_MS = 3600_000;
 const EXPIRED_TEXT = 'Not delivered — still waiting after 24h.';
-export const PREAMBLE_HEAD = 'Earlier messages from Slack (the conversation restarted since):';
+export { PREAMBLE_HEAD };
 
-const quoted = (text) => text.split('\n').map((l) => `> ${l}`).join('\n');
 const deliverErr = (e) => ({ error: e.code ?? e.name });
-
-// The stored texts of a session when its source changed since they were delivered, else ''.
-function preambleFor({ host, store, rows }, key, session, except) {
-  // A row already waiting carries it; a second copy would repeat the same lines (an edited row is not its own other copy).
-  const [adapter, channel] = key.split('|');
-  const hasPreambleQueued = [...rows.values()].some((r) => r.requestId !== except
-    && r.adapter === adapter && r.channel === channel && r.sessionId === session.id
-    && r.text.startsWith(PREAMBLE_HEAD));
-  if (hasPreambleQueued) return '';
-  const recent = store.state('recent', key);
-  if (!recent?.lastSrc || !recent.texts.length) return '';
-  if ((host.sourceKey?.(session) ?? '') === recent.lastSrc) return '';
-  return `${PREAMBLE_HEAD}\n${recent.texts.map(quoted).join('\n')}\n\n`;
-}
-
-// Several people may write to the session: say who this is, in a form that is not the `[Agent Manager:` notice.
-function senderPrefix(ctx, adapterId, channel, session, user) {
-  const writers = new Set(ctx.store.bindings()
-    .filter((b) => b.adapter === adapterId && b.target.channel === channel && ctx.threads.reaches(b, session.id))
-    .flatMap((b) => b.allowedUsers));
-  return writers.size > 1 ? `Slack user ${user.id}: ` : '';
-}
-
-// The bytes a row sends: preamble, sender prefix, body. `except` is the row being rewritten.
-const frozenText = (ctx, adapterId, channel, session, user, body, except) => preambleFor(ctx, `${adapterId}|${channel}|${session.id}`, session, except)
-  + senderPrefix(ctx, adapterId, channel, session, user) + body;
 
 /** Persists a row and returns once it is on disk. `{ queued }` or `{ ignored: 'duplicate' }`; a failed write throws. */
 function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
@@ -81,6 +55,7 @@ function unlink(ctx, id) {
 function drop(ctx, row, { settled = true } = {}) {
   ctx.rows.delete(row.requestId);
   if (settled && !settle(ctx, row)) return;
+  if (settled) finalize(ctx, row); // only after the settled id is written: a stale file must not be resent
   unlink(ctx, row.requestId);
 }
 
@@ -108,7 +83,6 @@ function saveSubmitted(ctx, row) {
 async function expire(ctx, row, locked) {
   const { state } = row;
   drop(ctx, row);
-  if (state === 'submitted') forgetSubmitted(ctx, row);
   ctx.log({ event: 'expired', requestId: row.requestId, state });
   if (state !== 'pending') return;
   // Under a lock the line would reveal the lock's timing: it waits for the unlock, like the lock notices.
@@ -171,8 +145,11 @@ async function attempt(ctx, row, session) {
       ctx.log({ event: 'deliver-failed', requestId: row.requestId, session: row.sessionId, ...deliverErr(e) });
       out = { state: 'pending', reason: 'error' };
     }
-    if (out?.state === 'submitted') owe(ctx, row);
-    else if (out?.state !== 'delivered') tryReleaseDelivered(ctx, row);
+    if (out?.state === 'submitted') {
+      owe(ctx, row);
+      // The row expired or was dropped mid-send: its submitted id would leak. (A failed settle is finalized by upkeep.)
+      if (!ctx.rows.has(row.requestId) && !ctx.unsettled.has(row.requestId)) finalize(ctx, row);
+    } else if (out?.state !== 'delivered') tryReleaseDelivered(ctx, row);
     return out;
   } finally { ctx.active.delete(row.requestId); scope.release(); }
 }
@@ -225,12 +202,12 @@ async function drainSession(ctx, list) {
 // Expiry and file upkeep never wait for a send, so a stuck session cannot keep a row past its day.
 async function upkeep(ctx) {
   const { locked } = ctx.host.lockState();
-  for (const row of [...ctx.unsettled.values()]) if (settle(ctx, row)) unlink(ctx, row.requestId);
+  for (const row of [...ctx.unsettled.values()]) if (settle(ctx, row)) { finalize(ctx, row); unlink(ctx, row.requestId); }
   for (const id of [...ctx.stuck]) unlink(ctx, id);
   for (const row of [...ctx.owing.values()]) owe(ctx, row);
   for (const id of [...ctx.unreleased]) {
     const row = ctx.rows.get(id);
-    if (row) tryReleaseDelivered(ctx, row);
+    if (row) tryReleaseDelivered(ctx, row); else ctx.unreleased.delete(id);
   }
   for (const row of [...ctx.rows.values()]) {
     if (!ctx.rows.has(row.requestId)) continue;
@@ -298,6 +275,9 @@ function restore(ctx, row) {
   if (row.state === 'submitted') { ctx.rows.set(row.requestId, row); return; }
   const gone = isDelivered(ctx, row) ? 'already-delivered' : isSettled(ctx, row) && 'already-settled';
   if (gone) {
+    // A pending row whose id is still in deliveredIds may be one whose claim release failed before the restart.
+    // It cannot be told from a crash mid-send, where the text may have reached the agent, so it is not resent
+    // and no "not delivered" notice is posted: that line could be false.
     unlink(ctx, row.requestId);
     ctx.log({ event: gone, requestId: row.requestId });
     return;

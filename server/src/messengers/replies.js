@@ -84,7 +84,7 @@ export class ReplyRouter {
   settle(adapterId, r) {
     if (!r.ts || r.edit || r.deleted || r.optionId) return;
     try { this.outbox.settle(adapterId, r.channel, requestIdFor(adapterId, r.channel, r.ts)); } catch (e) {
-      this.log({ event: 'settle-failed', adapter: adapterId, channel: r.channel, error: String(e.message).slice(0, 200) });
+      this.log({ event: 'settle-failed', adapter: adapterId, channel: r.channel, error: e.code ?? e.name });
     }
   }
 
@@ -138,7 +138,9 @@ export class ReplyRouter {
       return this.skipUnnamed(adapterId, r, bindings);
     }
     if (target.ignored) {
-      this.settle(adapterId, r); // never routed, so a backfill must not replay it
+      // Never routed, so a backfill must not announce it as missed. Only an allowed sender can be told of a miss:
+      // settling the chatter of everyone else would write per message and push real refusals out of the id cap.
+      if (bindings.some((b) => this.allowed(b, r.user))) this.settle(adapterId, r);
       return { ignored: target.ignored };
     }
     const { found, text } = target;

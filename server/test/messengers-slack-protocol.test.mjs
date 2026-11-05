@@ -264,6 +264,15 @@ test('history() with a thread reads conversations.replies and drops the root; pa
   assert.deepEqual(err.partial.map((r) => [r.ts, r.thread]), [['21.0', '20.0'], ['22.0', '20.0'], ['23.0', '20.0'], ['24.0', '20.0'], ['25.0', '20.0']]);
 });
 
+test('history() of a channel that is cut off names the oldest ts read, and passes a latest bound', async () => {
+  const page = (ts) => ({ messages: [{ type: 'message', user: 'U1', ts: `${ts + 1}.0`, text: 'x' }, { type: 'message', user: 'U1', ts: `${ts}.0`, text: 'y' }], response_metadata: { next_cursor: 'MORE' } });
+  const { adapter, calls } = historyAdapter([page(90), page(80), page(70), page(60), page(50)]);
+  const err = await adapter.history({ channel: 'C1', oldest: '10.0', latest: '99.0' }).catch((e) => e);
+  assert.equal(err.event, 'history-truncated');
+  assert.equal(err.edge, '50.0', 'the gap lies below the oldest message of the last page');
+  assert.equal(calls.find((c) => c.method === 'conversations.history').params.latest, '99.0');
+});
+
 test('history() that ends inside the page limit does not signal truncation', async () => {
   const { adapter } = historyAdapter([
     { messages: [{ type: 'message', user: 'U1', ts: '12.0', text: 'b' }], response_metadata: { next_cursor: 'C' } },

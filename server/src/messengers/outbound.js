@@ -31,7 +31,14 @@ export const cursorKey = (adapter, channel, sessionId) => `${adapter}|${channel}
  */
 export const createFilter = (getValues) => {
   const values = typeof getValues === 'function' ? getValues : () => knownSecretValues(getValues);
-  return (text) => createCredentialFilter(values())(text);
+  let key = null;
+  let filter = null;
+  return (text) => {
+    const list = values();
+    const joined = JSON.stringify(list);
+    if (joined !== key) { key = joined; filter = createCredentialFilter(list); }
+    return filter(text);
+  };
 };
 
 /** Runs `filter` on a finished card body. */
@@ -122,6 +129,7 @@ function makePoster(ctx, binding, session) {
   // A lock can land in the middle of a tick: it is looked at again before every Slack call.
   const guard = () => {
     const { locked, reason } = ctx.host.lockState();
+    if (ctx.stopped?.()) throw Object.assign(new Error('stopped'), { code: LOCKED });
     if (locked && reason !== 'checking') throw Object.assign(new Error('privacy lock'), { code: LOCKED });
   };
   return {
@@ -130,6 +138,7 @@ function makePoster(ctx, binding, session) {
     async send(text, extra = {}) {
       guard();
       const thread = await root();
+      guard();
       run.calls += 1;
       const ref = await adapter.post({ channel, thread }, { kind: 'transcript', body: text, ...extra });
       run.sent += 1;
@@ -167,7 +176,8 @@ async function applyEdit(ctx, poster, cursor, updated, progress, flush) {
   const id = { src: cursor.src, seq: updated.seq, hash: updated.hash };
   const parts = shown(ctx, updated);
   const refs = cursor.refs;
-  const resumed = cursor.hash.startsWith(PARTIAL);
+  // A resumed look needs the message the parts were cut from: if its text changed since, they no longer line up.
+  const resumed = cursor.hash.startsWith(PARTIAL) && (updated.grew || cursor.hash.slice(PARTIAL.length) === updated.hash);
   if (resumed && refs.length && !updated.grew) {
     if (!poster.fits(parts.length - refs.length)) return false;
     progress.now = idOf(id, await postParts(poster, parts, id, progress, refs));
@@ -250,7 +260,8 @@ export async function transcriptTick(ctx, binding, session) {
   const cursor = stored?.src ? stored : null;
   if (cursor && !ctx.settled(session)) return;
   const result = await ctx.host.since(session, cursor && { src: cursor.src, seq: cursor.seq, hash: cursor.hash });
-  if (!result) {
+  if (result) ctx.quiet?.delete(session.id);
+  else {
     const quiet = (ctx.quiet ??= new Set());
     if (!quiet.has(session.id)) {
       quiet.add(session.id);

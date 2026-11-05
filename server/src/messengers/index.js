@@ -46,7 +46,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
   const log = (entry) => {
     const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
     try { fs.appendFileSync(logFile, `${line}\n`); } catch (e) {
-      if (!appendWarned) console.error(`[messengers] cannot write ${logFile}: ${e.message}`);
+      if (!appendWarned) console.error(`[messengers] cannot write ${logFile}: ${e.code ?? e.name}`);
       appendWarned = true;
     }
     if (entry.error) console.error('[messengers]', line);
@@ -62,7 +62,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
 
   // Thread state stays while another binding in the channel still reaches the session.
   const forget = (binding) => {
-    try { bridge.threads.forget(binding); } catch (e) { log({ event: 'forget-failed', binding: binding.id, error: e.message }); }
+    try { bridge.threads.forget(binding); } catch (e) { log({ event: 'forget-failed', binding: binding.id, error: e.code ?? e.name }); }
   };
 
   // The operations behind /api/messengers; index.js registers the routes so

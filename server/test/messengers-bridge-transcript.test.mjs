@@ -11,7 +11,7 @@ test('a failed transcript read does not become the baseline', async () => {
   t.host.list[0].state = 'waiting';
   await t.tick();
   const failed = t.logs.find((e) => e.event === 'digest-failed');
-  assert.deepEqual([failed.session, failed.error], ['s1', 'transcript unreadable']);
+  assert.deepEqual([failed.session, failed.error], ['s1', 'Error'], 'the error name is logged, never its message');
   assert.equal(finishedMark(t.store, 'slack', 'C0', 's1'), null, 'still no baseline');
   t.host.digestImpl = async () => ({ id: 'a', text: 'old' });
   await t.tick(1000);

@@ -72,7 +72,10 @@ let waiters = new Map();
 let pending = new Set();
 let decided = false;
 
-function resetResults() { settled = new Map(); waiters = new Map(); pending = new Set(); decided = false; }
+function resetResults() {
+  for (const list of waiters.values()) for (const r of list) r('skipped');
+  settled = new Map(); waiters = new Map(); pending = new Set(); decided = false;
+}
 function settle(id, result) {
   if (settled.has(id)) return;
   settled.set(id, result);
@@ -127,7 +130,7 @@ export function init() {
     const j = JSON.parse(fs.readFileSync(RUNSTATE_FILE, 'utf8'));
     previous = j && typeof j === 'object' && j.sessions ? j : null;
   } catch (e) {
-    if (e.code !== 'ENOENT') console.warn(`[runstate] could not read ${RUNSTATE_FILE} (${e.message}); starting with no snapshot`);
+    if (e.code !== 'ENOENT') console.warn(`[runstate] could not read ${RUNSTATE_FILE} (${e.code ?? e.name}); starting with no snapshot`);
     previous = null;
   }
   // Hold the first write for a full cycle from here, whatever happens next. A
@@ -206,7 +209,7 @@ export function saveRunstate() {
     // Only once it's actually on disk: a FUSE write that threw must be retried
     // next cycle, not remembered as the state of the file.
     lastWritten = body;
-  } catch (e) { console.error('[runstate] save failed:', e?.message); }
+  } catch (e) { console.error('[runstate] save failed:', e?.code ?? e?.name); }
 }
 
 /**

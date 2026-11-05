@@ -42,7 +42,7 @@ test('a notice that cannot be posted is logged, not lost silently', async () => 
   const out = await t.bridge.handleReply('slack', press(1, 'd:accept', { id: 'U9', name: 'mallory' }));
   assert.deepEqual(out, { refused: 'user-not-allowed' });
   const failed = t.logs.find((e) => e.event === 'notice-failed');
-  assert.deepEqual([failed.adapter, failed.channel, failed.error], ['slack', 'C0', 'slack chat.postMessage: channel_not_found']);
+  assert.deepEqual([failed.adapter, failed.channel, failed.error], ['slack', 'C0', 'Error'], 'the error name is logged, not its message');
 });
 
 test('every refusal is logged once, without the message text', async () => {

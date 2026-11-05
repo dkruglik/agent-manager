@@ -1,6 +1,6 @@
 // `sendInput` marks an error `typed: true` once the first byte of the prompt
-// went to the terminal, and not before (plans/slack_history.md, "Per-runtime
-// delivery"). The chat outbox reads that flag: an error without it means
+// went to the terminal, and not before (docs/messengers.md, "Delivery per
+// runtime"). The chat outbox reads that flag: an error without it means
 // nothing was typed and the send may be tried again; one with it may already be
 // on the agent's input line, so it is never replayed.
 //
@@ -74,7 +74,7 @@ test('before the first write: no pane, and a line that already holds text', asyn
   assert.ok(await ready(s.id), 'the fake composer never became ready');
   runner.pasteInput(s.id, 'half typed');
   assert.ok(await until(() => fs.existsSync(received) && fs.readFileSync(received, 'utf8').includes('half typed')));
-  await sleep(400);
+  assert.ok(await painted(s.id, 'half typed'), 'the half-typed line never showed in the pane');
   const busy = await fails(runner.sendInput(s.id, 'second message'));
   assert.equal(busy.code, 'input-line-busy');
   assert.equal(busy.typed, undefined, 'nothing was typed, so a retry is safe');
@@ -98,7 +98,7 @@ test('OpenCode echo wait: a timeout and a stop never press Enter, so they are no
   runner.ensureRunning(t);
   assert.ok(await painted(t.id, '\u2503'));
   const pending = fails(runner.sendInput(t.id, 'stopped midway', { confirmEcho: true }));
-  await sleep(500);
+  assert.ok(await until(() => fs.readFileSync(received, 'utf8').includes('stopped midway')), 'the text never reached the box');
   runner.stop(t.id);
   const stopped = await pending;
   assert.equal(stopped.code, 'input-not-ready');
@@ -133,8 +133,10 @@ test('submit confirmation: not confirmed, not submitted and a stop are typed; a 
   runner.ensureRunning(u);
   assert.ok(await ready(u.id));
   fakeMode({ paintMs: 5000 });
+  const pastes = () => (fs.existsSync(path.join(FAKE_DIR, 'pastes')) ? fs.readFileSync(path.join(FAKE_DIR, 'pastes'), 'utf8').split('\n').filter(Boolean).length : 0);
+  const before = pastes();
   const pending = fails(runner.sendInput(u.id, 'stopped in\nconfirmation'));
-  await sleep(300);
+  assert.ok(await until(() => pastes() > before), 'the paste never reached the fake');
   runner.stop(u.id);
   const stopped = await pending;
   assert.equal(stopped.code, 'input-not-ready');

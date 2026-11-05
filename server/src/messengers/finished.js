@@ -17,7 +17,7 @@ export async function checkFinished(b, binding, s) {
   let d;
   try { d = await host.digest(s); } catch (e) {
     // Not a baseline: recording an empty one would replay an old answer later.
-    log({ event: 'digest-failed', session: s.id, error: e.message });
+    log({ event: 'digest-failed', session: s.id, error: e.code ?? e.name });
     return;
   }
   b.digestAt.set(k, now());

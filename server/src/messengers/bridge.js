@@ -61,6 +61,8 @@ export class MessengerBridge {
     this.draining = new Set(); // drains in flight; stop() waits for them
     this.stopped = false; // set by stop(): a backfill still running then writes no row
     this.ticking = false;
+    this.retries = new Set(); // backfill retries waiting out a rate limit; stop() clears them
+    this.running = null; // the tick in flight; stop() waits for it
     const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
     this.threads = createThreads({
       host, store, adapters, log, now, scope,
@@ -69,7 +71,7 @@ export class MessengerBridge {
     });
     // The old `seen` marks become outbound records before the first tick (outbound.js migrateSeen).
     migrateSeen(store);
-    this.outbound = { host, store, adapters, threads: this.threads, filter: this.filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now() };
+    this.outbound = { host, store, adapters, threads: this.threads, filter: this.filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now(), stopped: () => this.stopped };
     this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
       host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
@@ -115,7 +117,7 @@ export class MessengerBridge {
     if (!s.inputRequired) return [];
     let typed;
     try { typed = await this.host.requests(s); } catch (e) {
-      throw Object.assign(new Error(e.message), { event: 'requests-failed' });
+      throw Object.assign(new Error(String(e.code ?? e.name)), { event: 'requests-failed', code: e.code });
     }
     if (typed.length) return typed;
     const ir = s.inputRequired;
@@ -171,7 +173,7 @@ export class MessengerBridge {
     try {
       await this.adapters.get(p.adapter)?.update(p.ref, this.inputCardFor(binding, s, p.item, { partial: p.partial, resolved: { text } }));
     } catch (e) {
-      this.log({ event: 'update-failed', key: p.key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.message });
+      this.log({ event: 'update-failed', key: p.key, binding: p.bindingId, session: p.sessionId, adapter: p.adapter, error: e.code ?? e.name });
     }
   }
 
@@ -187,8 +189,13 @@ export class MessengerBridge {
     return settledFor >= this.settleMs && (!bounded || settledFor <= this.settleMs + this.lookForMs);
   }
 
-  async tick() {
-    if (this.ticking) return;
+  tick() {
+    if (this.ticking || this.stopped) return Promise.resolve();
+    this.running = this.runTick();
+    return this.running;
+  }
+
+  async runTick() {
     const lock = this.host.lockState();
     // A real lock holds every post. `checking` is not one for the transcript; cards still wait.
     if (lock.locked && lock.reason !== 'checking') return;
@@ -201,6 +208,7 @@ export class MessengerBridge {
         let failure = null;
         await this.threads.noteReach(binding.adapter, binding.target.channel, sessions);
         for (const s of this.sessionsFor(binding, sessions)) {
+          if (this.stopped) return;
           const e = await this.checkSession(binding, s, { cards: !lock.locked });
           if (e) failure = e;
         }
@@ -217,7 +225,7 @@ export class MessengerBridge {
       await transcriptTick(this.outbound, binding, s);
       return null;
     } catch (e) {
-      this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.message });
+      this.log({ event: e.event || 'tick-failed', binding: binding.id, session: s.id, error: e.code ?? e.name });
       return e;
     }
   }
@@ -262,7 +270,15 @@ export class MessengerBridge {
   backfill(id, adapter) {
     const accept = async (adapterId, r) => (this.stopped ? { ignored: 'stopped' } : this.handleReply(adapterId, r));
     return backfill({ adapterId: id, adapter, store: this.store, now: this.now, accept, log: (e) => this.log({ adapter: id, ...e }) })
-      .catch((e) => this.log({ adapter: id, event: 'backfill-failed', error: e.message, acceptFailed: !!e.acceptFailed }));
+      .catch((e) => {
+        this.log({ adapter: id, event: 'backfill-failed', error: e.code ?? e.name, acceptFailed: !!e.acceptFailed });
+        // A rate limit names its wait; the retry is dropped by stop().
+        if (e.code === 'rate-limited' && !this.stopped) {
+          const t = setTimeout(() => { this.retries.delete(t); this.backfill(id, adapter); }, (e.retryAfter || 30) * 1000);
+          t.unref?.();
+          this.retries.add(t);
+        }
+      });
   }
 
   start() {
@@ -285,8 +301,8 @@ export class MessengerBridge {
       });
     }
     this.timer = setInterval(() => {
-      this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.message }));
-      this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.message }));
+      this.tick().catch((e) => this.log({ event: 'tick-failed', error: e.code ?? e.name }));
+      this.drain().catch((e) => this.log({ event: 'drain-failed', error: e.code ?? e.name }));
     }, this.tickMs);
     this.timer.unref?.();
   }
@@ -295,9 +311,11 @@ export class MessengerBridge {
     this.stopped = true;
     clearInterval(this.timer);
     this.unwatchLock?.();
+    for (const t of this.retries) clearTimeout(t);
+    this.retries.clear();
     this.timer = null;
     this.hooks.settleAll('Agent Manager is stopping — answer in the terminal.');
-    await Promise.allSettled([...this.draining]);
+    await Promise.allSettled([...this.draining, this.running]); // a tick in flight posts nothing more: outbound checks `stopped`
     for (const a of this.adapters.values()) await a.stop?.();
   }
 }

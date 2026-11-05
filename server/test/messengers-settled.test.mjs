@@ -75,3 +75,12 @@ test('a row refused at delivery is settled: allowing the sender again does not b
   assert.deepEqual(t.files(), []);
   assert.equal(t.host.deliveries.length, 0);
 });
+
+test('chatter in a thread that belongs to no agent is settled only for an allowed sender', async () => {
+  const t = setup();
+  const ids = () => t.store.state('settledIds', 'slack|C0') ?? [];
+  assert.deepEqual(await t.send(msg('10.1', 'talk', { thread: '9.0', user: bob })), { ignored: 'no-target' });
+  assert.deepEqual(ids(), [], 'someone who is not allowed leaves no mark');
+  assert.deepEqual(await t.send(msg('10.2', 'talk', { thread: '9.0' })), { ignored: 'no-target' });
+  assert.equal(ids().length, 1, 'an allowed sender could be told it was missed, so it is settled');
+});

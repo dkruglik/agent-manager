@@ -18,7 +18,8 @@ export { traceRevisionOf };
 export const PARTIAL_HASH = 'partial:';
 
 const PAGE = 500;
-const CACHED_SESSIONS = 16;
+export const CACHED_SESSIONS = 64;     // parsed transcripts kept; a tick rotates through every mirrored session, so this must exceed that count
+const VERSIONS_SESSIONS = 1000; // sessions whose tail versions are remembered (a few small strings each)
 const VERSIONS_KEPT = 8; // tail messages remembered per session, to tell an edit from a replacement
 
 const textOf = (m) => m.blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n\n');
@@ -83,11 +84,13 @@ export function createSince({ revisionOf = traceRevisionOf, readMessages = readA
     const tail = all.at(-1);
     if (!tail) return;
     let kept = versions.get(session.id);
-    if (!kept || kept.src !== src) versions.set(session.id, kept = { src, tails: new Map() });
+    versions.delete(session.id); // re-inserted last: least recently used goes first
+    if (!kept || kept.src !== src) kept = { src, tails: new Map() };
     kept.tails.delete(tail.hash);
     kept.tails.set(tail.hash, { text: tail.text, tools: tail.tools });
     while (kept.tails.size > VERSIONS_KEPT) kept.tails.delete(kept.tails.keys().next().value);
-    while (versions.size > CACHED_SESSIONS) versions.delete(versions.keys().next().value);
+    versions.set(session.id, kept);
+    while (versions.size > VERSIONS_SESSIONS) versions.delete(versions.keys().next().value);
   }
 
   // Puts the entry last, so the first one in the map is the least recently used.
@@ -120,7 +123,9 @@ export function createSince({ revisionOf = traceRevisionOf, readMessages = readA
     const result = { end, messages: all.filter((m) => m.seq > cursor.seq), restarted: false };
     const at = all[cursor.seq - 1];
     if (at && at.hash !== cursor.hash) {
-      const before = versions.get(session.id)?.tails.get(cursor.hash.replace(PARTIAL_HASH, ''));
+      const kept = versions.get(session.id);
+      if (kept) { versions.delete(session.id); versions.set(session.id, kept); }
+      const before = kept?.tails.get(cursor.hash.replace(PARTIAL_HASH, ''));
       result.updated = { seq: at.seq, hash: at.hash, text: at.text, tools: at.tools, grew: !!before && extendsMessage(before, at) };
     }
     return result;

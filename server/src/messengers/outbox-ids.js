@@ -3,7 +3,7 @@ import { addDeliveredId, addSubmittedId } from './delivery-state.js';
 // The id sets in messengers.json that say what became of a chat message (deliveredIds, submittedIds,
 // settledIds), as the outbox reads and writes them. `ctx` is the outbox's context.
 
-export const errMeta = (e) => ({ error: e.code ?? e.name, ...(e.message ? { message: String(e.message).slice(0, 200) } : {}) });
+export const errMeta = (e) => ({ error: e.code ?? e.name });
 
 export const idsKey = (row) => `${row.adapter}|${row.channel}`;
 export const isDelivered = ({ store }, row) => !!store.state('deliveredIds', idsKey(row))?.includes(row.requestId);
@@ -43,6 +43,13 @@ export function forgetSubmitted(ctx, row) {
   } catch (e) { ctx.log({ event: 'submitted-forget-failed', requestId: row.requestId, ...errMeta(e) }); }
 }
 
+
+// A row that left without delivery and has its settled id: nothing about it is pending any more.
+export function finalize(ctx, row) {
+  ctx.unreleased.delete(row.requestId);
+  ctx.owing.delete(row.requestId);
+  if (isSubmitted(ctx, row)) forgetSubmitted(ctx, row);
+}
 
 export function releaseDelivered(ctx, row) {
   const key = idsKey(row);

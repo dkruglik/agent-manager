@@ -25,6 +25,29 @@ test('stop() waits for a drain in flight, and a drain after stop does nothing', 
   assert.equal(calls, 1, 'no drain starts once stopped');
 });
 
+test('stop() waits for the tick in flight, and that tick posts nothing after stop', async () => {
+  const t = setup({ events: ['transcript'] });
+  t.host.list[0].state = 'waiting';
+  t.host.sinceImpl = async () => ({ end: { src: 'srcA', seq: 1, hash: 'h1' }, messages: [], restarted: false });
+  await t.tick(); // baseline
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  t.host.sinceImpl = async () => {
+    await gate;
+    return { end: { src: 'srcA', seq: 2, hash: 'h2' }, messages: [{ src: 'srcA', seq: 2, hash: 'h2', text: 'LATE', tools: [] }], restarted: false };
+  };
+  const ticking = t.bridge.tick();
+  await new Promise((r) => setImmediate(r));
+  let stopped = false;
+  const stopping = t.bridge.stop().then(() => { stopped = true; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(stopped, false, 'stop is waiting for the tick');
+  release();
+  await stopping;
+  await ticking;
+  assert.deepEqual(t.slack.posts.filter((p) => p.card.body === 'LATE'), []);
+});
+
 test('a hung drain does not block the next one: drains are not coalesced', async () => {
   const { bridge } = setup();
   let calls = 0;
@@ -58,4 +81,37 @@ test('the credential filter is rebuilt per call: a secret set after boot is reda
   env.LATE = later;
   assert.equal(live.filter(`x ${later}`), 'x [redacted]');
   assert.equal(live.outbound.filter(`x ${later}`), 'x [redacted]', 'the transcript mirror uses the same filter');
+});
+
+function limited(retryAfter) {
+  const t = setup({ events: ['input-required'] });
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });
+  let reads = 0;
+  t.slack.history = async () => {
+    reads += 1;
+    if (reads === 1) throw Object.assign(new Error('slack says: too many requests for hunter2'), { code: 'rate-limited', retryAfter });
+    return [];
+  };
+  t.slack.postEphemeral = async () => {};
+  return { ...t, reads: () => reads };
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('a rate-limited backfill is tried again after retryAfter, and the log has the code only', async () => {
+  const t = limited(0.02);
+  await t.bridge.backfill('slack', t.slack);
+  assert.equal(t.reads(), 1);
+  const failed = t.logs.find((e) => e.event === 'backfill-failed');
+  assert.equal(failed.error, 'rate-limited');
+  await wait(150);
+  assert.equal(t.reads(), 2, 'read again once');
+  await t.bridge.stop();
+});
+
+test('stop() cancels a backfill retry that is waiting', async () => {
+  const t = limited(0.05);
+  await t.bridge.backfill('slack', t.slack);
+  await t.bridge.stop();
+  await wait(200);
+  assert.equal(t.reads(), 1, 'no retry after stop');
 });

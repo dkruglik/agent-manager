@@ -41,3 +41,47 @@ test('the filter takes its values from the caller on every call', () => {
   values.push(later);
   assert.equal(filter(`k ${later}`), 'k [redacted]');
 });
+
+test('a lock that lands during the root round trip stops the post before it goes out', async () => {
+  const t = await started(1);
+  t.say('a');
+  const post = t.slack.post.bind(t.slack);
+  t.slack.post = async (target, card) => {
+    const ref = await post(target, card);
+    if (!target.thread) t.state.lock = { locked: true, reason: 'public-space' }; // the root is the only top-level post
+    return ref;
+  };
+  await t.tick();
+  assert.deepEqual(t.bodies(), []);
+});
+
+test('nothing is posted once the bridge has stopped, even in a tick that was already running', async () => {
+  const t = await started(1);
+  t.say('a'); t.say('b');
+  let stopped = false;
+  t.ctx.stopped = () => stopped;
+  const post = t.slack.post.bind(t.slack);
+  t.slack.post = async (target, card) => {
+    const ref = await post(target, card);
+    if (card.body === 'a') stopped = true;
+    return ref;
+  };
+  await t.tick();
+  assert.deepEqual(t.bodies(), ['a']);
+  assert.equal(t.cursor().seq, 2, 'the cursor keeps what went out');
+});
+
+test('an unreadable transcript is logged again after it was read once in between', async () => {
+  const t = await started(1);
+  const since = t.ctx.host.since;
+  let unreadable = true;
+  t.ctx.host.since = async (s, c) => (unreadable ? null : since(s, c));
+  const unread = () => t.logs.filter((e) => e.event === 'transcript-unread').length;
+  await t.tick(); await t.tick();
+  assert.equal(unread(), 1, 'logged once while it stays unreadable');
+  unreadable = false;
+  await t.tick();
+  unreadable = true;
+  await t.tick();
+  assert.equal(unread(), 2);
+});

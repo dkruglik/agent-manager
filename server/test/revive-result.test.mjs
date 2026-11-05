@@ -78,6 +78,13 @@ try {
     assert.equal(await state(w), 'skipped');
     assert.equal(await state(runstate.reviveResult('later')), 'skipped');
   });
+  await check('a new round (init) resolves the waiters of the old one skipped instead of dropping them', async () => {
+    runstate.init();
+    const w = runstate.reviveResult('left-waiting');
+    assert.equal(await state(w), 'pending');
+    runstate.init();
+    assert.equal(await state(w), 'skipped');
+  });
   await check('no previous run: skipped for everyone', async () => {
     fs.rmSync(path.join(process.env.DATA_DIR, 'runstate.json'), { force: true });
     runstate.init();

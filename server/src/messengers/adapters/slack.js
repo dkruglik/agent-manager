@@ -308,20 +308,23 @@ export class SlackAdapter {
 
   /**
    * Messages after `oldest` (exclusive) in a channel, or in the thread `thread`, oldest first, in the shape of a live
-   * reply. At most 5 pages of 200; past that it throws `history-truncated` with the messages read in `partial`. Bot messages and the bot's own are left out, as for a live event.
+   * reply. At most 5 pages of 200; past that it throws `history-truncated` with the messages read in `partial`
+   * (a channel is read newest first, so `partial` is its newest end and `edge` the oldest ts read; `latest` bounds a window). Bot messages and the bot's own are left out, as for a live event.
    */
-  async history({ channel, thread, oldest }) {
+  async history({ channel, thread, oldest, latest }) {
     if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
     const out = [];
     let cursor = '';
+    let edge = null; // the oldest ts read of a channel (newest first): what lies below it was not read
     for (let page = 0; page < HISTORY_PAGES; page++) {
       const res = await this.call(thread ? 'conversations.replies' : 'conversations.history', {
-        channel, ...(thread ? { ts: thread } : {}), ...(oldest ? { oldest } : {}), limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+        channel, ...(thread ? { ts: thread } : {}), ...(oldest ? { oldest } : {}), ...(latest ? { latest } : {}), limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
       });
       for (const m of res.messages || []) {
         const reply = historyReply(m, channel, thread, this.botUser);
         if (reply) out.push(reply);
       }
+      if (!thread) edge = res.messages?.at(-1)?.ts ?? edge;
       cursor = res.response_metadata?.next_cursor || '';
       if (!cursor) break;
     }
@@ -329,7 +332,7 @@ export class SlackAdapter {
     // Not the whole history: the caller gets the pages that were read in `partial` and decides what to do.
     if (cursor) {
       const message = 'history read hit the page limit';
-      throw Object.assign(new Error(message), { event: 'history-truncated', publicMessage: message, partial: out });
+      throw Object.assign(new Error(message), { event: 'history-truncated', publicMessage: message, partial: out, edge });
     }
     return out;
   }

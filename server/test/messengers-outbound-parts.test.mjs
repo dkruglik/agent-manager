@@ -114,3 +114,16 @@ test('an edit that leaves fewer parts updates each remaining part and blanks the
   assert.equal(t.state.calls, refs.length, 'one call per ref posted before');
   assert.equal(t.cursor().refs.length, parts.length);
 });
+
+test('a split message whose text changed after a restart is not resumed from its old parts', async () => {
+  const t = await started(0);
+  t.say(THREE_PARTS);
+  t.state.failAt = new Set([2]);
+  await assert.rejects(t.tick(), /slack down/);
+  t.state.failAt = new Set();
+  const other = THREE_PARTS.replaceAll('line', 'LINE'); // same length, different text, not an extension
+  t.edit(0, other);
+  await t.tick();
+  assert.deepEqual(t.bodies().slice(1), splitText(other), 'the new text is posted whole, not from part 2');
+  assert.ok(!t.cursor().hash.startsWith(PARTIAL_HASH));
+});

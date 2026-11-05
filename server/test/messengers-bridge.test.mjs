@@ -50,13 +50,13 @@ test('a failed request lookup keeps typed cards open and posts nothing generic',
   await t.tick();
   assert.equal(t.slack.posts.length, 1);
   assert.equal(t.store.posted('b0|s1|req1').status, 'open');
-  t.host.requestsError = new Error('app-server down');
+  t.host.requestsError = Object.assign(new Error('app-server down'), { code: 'ECONNREFUSED' });
   await t.tick();
   assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'the typed card stays open');
   assert.equal(t.slack.posts.length, 1, 'no generic card was posted');
   assert.equal(t.slack.updates.length, 0);
   const failed = t.logs.find((e) => e.event === 'requests-failed');
-  assert.deepEqual([failed.session, failed.error], ['s1', 'app-server down']);
+  assert.deepEqual([failed.session, failed.error], ['s1', 'ECONNREFUSED']);
   await t.tick();
   assert.equal(t.store.posted('b0|s1|req1').status, 'open', 'still open once lookups work again');
 });
@@ -207,10 +207,11 @@ test('lastError shows only what an adapter marked public, never paths or network
   await t.tick();
   t.host.digestImpl = async () => ({ id: 'a:2', text: 'new answer' });
   t.host.list[0].state = 'waiting';
-  t.slack.post = async () => { throw new Error("EACCES: permission denied, open '/home/op/.am/data/messengers.json.tmp'"); };
+  t.slack.post = async () => { throw Object.assign(new Error("EACCES: permission denied, open '/home/op/.am/data/messengers.json.tmp'"), { code: 'EACCES' }); };
   await t.tick(1000);
   assert.equal(t.bridge.lastError('b0'), 'could not post — see the server log');
-  assert.match(t.logs.find((e) => e.event === 'tick-failed').error, /EACCES/, 'the full error is logged');
+  const logged = t.logs.find((e) => e.event === 'tick-failed');
+  assert.equal(logged.error, 'EACCES', 'the error code is logged, not its message (paths, text)');
 });
 
 test('a reply the operator already read in the web UI posts no finished card', async () => {

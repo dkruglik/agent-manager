@@ -35,11 +35,14 @@ function plain(m, channel, botUser, messageId) {
   return { channel, ts: m.ts, thread, user: { id: m.user }, messageId: messageId || `${channel}:${m.ts}`, text: bodyOf(m) };
 }
 
-// The user and the new text are on the nested message. An event that changes no text (a link unfurl) is not an edit.
+const fileIds = (m) => (m?.files ?? []).map((f) => f.id).join(',');
+
+// The user and the new text are on the nested message. An event that changes neither text nor files
+// (a link unfurl, upload processing) is not an edit. The nested subtype is judged by plain().
 function changed(e, botUser, id) {
   const m = e.message;
-  if (!m || m.subtype || fromBot(m, botUser)) return null;
-  if (fromMrkdwn(m.text) === fromMrkdwn(e.previous_message?.text) && !m.files?.length) return null;
+  if (!m || fromBot(m, botUser)) return null;
+  if (fromMrkdwn(m.text) === fromMrkdwn(e.previous_message?.text) && fileIds(m) === fileIds(e.previous_message)) return null;
   const reply = plain(m, e.channel, botUser, id);
   return reply && { ...reply, edit: { ts: m.ts, editTs: m.edited?.ts || e.event_ts } };
 }
