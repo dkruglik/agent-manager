@@ -227,13 +227,14 @@ body {
 .widget-actions { display: flex; gap: 8px; }
 .widget-actions .btn-primary { flex: 1; }
 
-/* quickstart: the harnesses, the group tile and the session types, one prompt, go */
-/* Six to a row, both rows on the same track size, so the picker fills the panel
+/* quickstart picker: two six-column grids. Row one is the first six harnesses.
+   Row two is any further harnesses, then the group tile, remote, shell and
+   files. Both rows use the same track size, so the picker fills the panel
    instead of trailing off mid-width. A grid rather than flex: row two has fewer
    buttons, and they must land on the same widths as row one rather than sizing
-   themselves. Row one is the first six harnesses; row two is any further ones,
-   then the group tile and the session types. No cell in the grid is empty: the
-   divider before the session types is drawn (see .quick-session-start). */
+   themselves. When row two has further harnesses, the group tile starts the
+   session types and a divider is drawn before it (see .quick-session-start);
+   the divider takes no track, so the row's unused tracks stay at its end. */
 .quick-clis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; align-items: center; }
 .quick-cli { width: 100%; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; padding: 0; opacity: 0.65; }
 .quick-cli:hover:not(:disabled) { opacity: 1; border-color: var(--border-strong); }
