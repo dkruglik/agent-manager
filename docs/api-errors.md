@@ -29,6 +29,7 @@ stack, upstream response or new secret-bearing diagnostic is logged here.
 | 404 | `not-found`, `api-not-found` | Missing item versus nonexistent API route |
 | 404 | `no-trace`, `unsupported-harness`, `trace-not-user-conversation` | Expected Reader availability, not a failed fetch substituted with empty content |
 | 409 | `conflict`, `not-archived`, `input-not-ready`, `invalid-workspace`, `remote-agent`, `cron-unavailable`, `backup-running`, `no-transcript` | Action cannot run in the current state; not permission to replay it |
+| 409 | `messenger-offline` | A messenger action needs a connected adapter; reconnecting is the operator's step, not a retry |
 | 409 | `file-changed` | Existing `mtime` preserved; browser also retains `tag`/`currentTag` when supplied by file-save endpoints |
 | 409 | `redaction-blocked` | Existing `hits` rule/count map preserved |
 | 409 | `conflict` on paused remote messages | Existing `stop` and `reason` retained, plus additive `error`/`code` |
@@ -90,6 +91,7 @@ and audit-filter work is not reimplemented here.
 | POST `trace/import`; GET `trace/bundles` | JSON | Bare repo or pasted dataset URL still supported; known domain codes kept. No safe re-import/transaction changes |
 | GET `trace/:id`, `…/location`, `files/:id/trace`; PUT `trace/:id/source` | JSON trace pages/windows/summary; selected source update | Trace modes mutually exclusive; safe nonnegative integer cursors, v1/v2; existing page/window-size clamps retained (500 turns / 8 MiB). Source kind enum, ref/target checks before storing |
 | POST `sessions/:id/archive`, `…/unarchive`, `…/stop`; DELETE `sessions/:id` | JSON commands | Existing archive/delete and `ifNeverStarted=1` rules unchanged; optional attachment cleanup remains isolated |
+| GET `messengers`; PUT `messengers/saved`; POST `messengers/bindings`; PUT/DELETE `messengers/bindings/:id`; POST `…/test`; POST `messengers/claude-hook` | JSON; creation 201 | Binding fields validated with `details[].field`; group/session scope must exist; PUT patches selected fields, adapter fixed. PUT saved replaces both of that adapter's lists. Adapter status reports `configured`/`connected` only, never tokens. Hook long-poll: answers within the bridge's decision timeout (120 s); `{output:null}` means no chat decision; `{output:null}` also for a non-Claude session; an unknown origin is `400 unknown-origin` (middleware), a bad body `400 invalid-input`, an unknown session `404 not-found`, and only the pane's live launch (runId) may ask (`409 conflict` otherwise). See [messengers](messengers.md) |
 | `/ws` | WebSocket terminal protocol | Not JSON wrapped; framing, origin admission and terminal lifecycle unchanged |
 | Other `/api` paths; static assets and SPA paths | API 404 JSON; ordinary static/SPA responses | API errors never fall through to an HTML application page; non-API failures remain Express/static concerns |
 

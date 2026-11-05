@@ -148,6 +148,7 @@ saved, see [state checkpoints](docs/agent-state-checkpoints.md) and
 | Manage shared skills | [Managed skills](docs/managed-skills.md) |
 | Run prompts on a schedule | [Scheduled prompts](docs/cron-jobs.md) |
 | Connect an agent on another machine | [Remote agents](docs/remote-agents.md) |
+| Answer agents from Slack | [Messengers](docs/messengers.md) |
 | Upload files and follow file links | [Uploads](docs/workspace-file-uploads.md) · [File previews](docs/file-links.md) |
 | Inspect session operations | [API log](docs/api-audit-log.md) |
 | Run the source or deploy a development Space | [Development guide](docs/development.md) |

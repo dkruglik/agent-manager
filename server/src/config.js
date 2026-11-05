@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execSync, execFile } from 'node:child_process';
+import { secretValues } from './secret-values.js';
 
 export const PORT = parseInt(process.env.PORT || '7860', 10);
 export function resolveBindHost(env = process.env) {
@@ -37,6 +38,33 @@ export const STATE_DIR = path.join(DATA_DIR, 'state');
 export const SKILLS_DIR = path.join(DATA_DIR, 'workspaces', 'skills');
 export const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 export const PUBLIC_DIR = process.env.PUBLIC_DIR || path.resolve(process.cwd(), '..', 'web', 'dist');
+
+// Messengers (docs/messengers.md). The tokens never leave the server: the API
+// reports only whether they are set. A malformed public URL would put broken
+// links into every card, so it stops startup instead.
+export function resolveMessengerConfig(env = process.env) {
+  const publicUrl = (env.AM_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (publicUrl && !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(publicUrl)) throw new Error('AM_PUBLIC_URL must be an http(s) URL');
+  // How long a finished card waits while the session stays in `waiting`, so a reply the
+  // operator is reading in the web UI is marked read before it is announced.
+  const rawDelay = (env.MESSENGER_FINISHED_DELAY_MS ?? '').trim();
+  const finishedDelayMs = rawDelay === '' ? 8000 : Number(rawDelay);
+  if (!/^\d*$/.test(rawDelay) || !Number.isInteger(finishedDelayMs) || finishedDelayMs < 0 || finishedDelayMs > 600000) {
+    throw new Error('MESSENGER_FINISHED_DELAY_MS must be an integer from 0 to 600000');
+  }
+  return { publicUrl, finishedDelayMs, slack: { botToken: env.SLACK_BOT_TOKEN || '', appToken: env.SLACK_APP_TOKEN || '' } };
+}
+export const MESSENGERS = resolveMessengerConfig();
+
+// Every secret the process holds that must never reach a chat (secret-values.js), given the CLI catalog.
+// docs/messengers.md: the credential filter of the `transcript` and `finished` posts is given these values.
+export const knownSecretValues = (env = process.env) => secretValues(CLIS, env);
+
+// What the chat credential filter is given: the secrets above plus the values of the variables the Space
+// injected (`injectedKeys`, the catalog shown in Settings), whatever they are named. Read on every call.
+export const chatCredentialValues = (injectedKeys, env = process.env) => [
+  ...knownSecretValues(env), ...injectedKeys.map((key) => env[key]).filter((v) => typeof v === 'string'),
+];
 
 // A CLI's presence on PATH doesn't change while the process runs, but
 // cliCatalog() (called on every /api/clis) probed every CLI each time — ~16

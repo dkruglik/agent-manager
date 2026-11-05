@@ -10,3 +10,6 @@ data/
 .env.local
 __pycache__/
 *.pyc
+
+# Local Slack secrets (SLACK_BOT_TOKEN, SLACK_APP_TOKEN). Never commit these.
+.secrets.env

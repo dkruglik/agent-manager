@@ -25,7 +25,7 @@
 //              turns it into `Step 2 of 2` — a confirmation over the same
 //              rows, the prompt still selected — and nothing else moves.
 //   stepTail — text after the step counter, e.g. " (esc to interrupt)".
-// Every Enter received is appended to $FAKE_DIR/enters, every submit to
+// Every paste received is appended to $FAKE_DIR/pastes (its length), every Enter received is appended to $FAKE_DIR/enters, every submit to
 // $FAKE_DIR/submitted (and, with the pane's AM_ID, to $FAKE_DIR/submitted-by).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,6 +61,7 @@ process.stdin.on('data', (chunk) => {
       const end = buf.indexOf('\x1b[201~');
       if (end < 0) { pasted += buf; buf = ''; break; }
       pasted += buf.slice(0, end); buf = buf.slice(end + 6); inPaste = false;
+      log('pastes', JSON.stringify(pasted.length));
       const m = mode();
       swallow = m.swallow || 0;
       dialog = m.dialog || false; stepTail = m.stepTail || '';

@@ -75,15 +75,41 @@ sends it one message:
 - The message uses the Overview reply box's delivery path (`deliver()` in
   `index.js`), so submit confirmation applies. It is sent once per boot, only to
   panes that boot started, and never to shells (their command is simply gone),
-  Files, Trace or remote panes. A failed delivery is logged and not retried.
+  Files, Trace or remote panes. A failed delivery is logged, as the error code
+  only (an `input-line-busy` message quotes the terminal), and not retried.
+  The same holds for every other revive log line: it names the error code or
+  name, never its message.
 - "Stopped before the restart" means stopped as of the last snapshot. A session
   stopped less than 30 s before the shutdown can still be revived and told.
+
+## The result per session
+
+Revive reports one settled result per session for the boot, so a caller never
+races the continue message: `runstate.reviveResult(sessionId)` resolves to
+
+- `sent`: the continue message was delivered.
+- `gave-up`: revive tried to send a continue message and did not (no empty prompt
+  within 120 seconds, a privacy lock landed, or delivery failed), **or** the
+  session was in the revive plan but not started because of the cap of 32.
+- `skipped`: nothing will be sent: `revive.continue` is off, revive is off or
+  had no previous run, the session was not in the revive plan, it is a shell or
+  a CLI without a prompt detector, or the operator started or archived it
+  before its slot.
+
+`gave-up` and `skipped` resolve as soon as they are known; they do not wait
+for the message. The Slack drain waits for this result, whatever it is, before it
+sends anything (for a CLI with a prompt detector whose pane is running it then
+also waits for an empty prompt, even after `gave-up`), and does not send the
+continue text itself (see
+[messengers.md](messengers.md), "After a restart"). `index.js` calls `reviveOnBoot`, or
+`reviveSkipAll()` when the Space is locked at boot, so no waiter hangs.
 
 Turn it off with the **Tell restarted agents to continue** switch, or
 `"revive": {"continue": false}` in `am-config.json`. Revived agents then wait
 for you, as before.
 
-Tests: `server/test/revive.test.mjs` (selection rules, who is told),
+Tests: `server/test/revive-result.test.mjs` (the three results, with injected
+clocks), `server/test/revive.test.mjs` (selection rules, who is told),
 `server/test/revive-continue.test.mjs` (two real boots with a fake TUI: each
 revived agent receives the message exactly once, by `AM_ID`; a shell and a
 session stopped before the restart receive nothing; nothing is sent with the

@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { WORKSPACES_DIR, DATA_DIR } from './config.js';
+import { liveTranscript } from './claude-continuation.js';
 import { sharedCodexRollout } from './codex-reader.js';
 import { agyConversationExists, agyConversationPath, captureAgyConversation } from './antigravity.js';
 
@@ -188,7 +189,13 @@ async function transcriptCwd(p) {
 }
 
 /**
- * Locate a Claude session's transcript.
+ * Locate a Claude session's live transcript (the one a reader should open).
+ *
+ * The pin names the START of a conversation, not its end: Claude seals a
+ * transcript with a `continued-in` line and carries on in another file. The
+ * newest pinned copy (by mtime; liveTranscript) is only the start of that
+ * chain, and the file returned is the last one of it. traces.js uses the same
+ * helper, so digests and the reader agree.
  *
  * Normally the filename IS the session id. Two things stop that being enough:
  *
@@ -208,17 +215,11 @@ export async function findTranscript(session, allSessions = []) {
   const files = await claudeTranscripts();
 
   // 1. By pinned id. `startsWith` rather than an exact name, matching the
-  //    `<uuid>*` glob runner.js uses for its own transcript check.
+  //    `<uuid>*` glob runner.js uses for its own transcript check. Follow
+  //    Claude's continued-in handoff so a sealed file is not the one we read.
   if (session.sessionUuid) {
-    let best = null;
-    for (const p of files) {
-      if (!path.basename(p).startsWith(session.sessionUuid)) continue;
-      try {
-        const st = await fsp.stat(p);
-        if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
-      } catch { /* raced away */ }
-    }
-    if (best) return best.p;
+    const live = await liveTranscript(session.sessionUuid, files);
+    if (live) return live;
   }
 
   // 2. By working directory, only if unambiguous.
