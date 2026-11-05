@@ -27,8 +27,9 @@ const result = await build({
   ` }, bundle: true, write: false, format: 'iife', loader: { '.css': 'empty' },
   define: { 'process.env.NODE_ENV': '"production"' },
 });
-const browser = await chromium.launch(chromiumLaunchOptions());
-try {
+
+// Opens the terminal on a phone viewport and fills the scrollback to 200 lines, following the end.
+async function openFixture(browser) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const css = ['src/styles.css', 'src/conversation.css', 'node_modules/@xterm/xterm/css/xterm.css']
     .map((file) => fs.readFileSync(path.join(web, file), 'utf8')).join('\n');
@@ -43,25 +44,66 @@ try {
     const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`).join('\r\n');
     window.socket.onmessage?.({ data: lines + '\r\n' });
   });
-  const view = page.locator('.xterm-viewport');
   await page.waitForFunction(() => {
     const v = document.querySelector('.xterm-viewport');
     return v && v.scrollHeight > v.clientHeight + 2;
   });
-  // Scroll up to the top of the scrollback.
-  await view.evaluate((el) => { el.scrollTop = 0; });
-  const gap = () => view.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
-  assert.ok(await gap() > 2, 'viewport is scrolled away from the bottom before tapping');
-  const bottom = page.locator('.term-keybar').getByRole('button', { name: 'bottom', exact: true });
-  assert.equal(await bottom.count(), 1, 'key bar has a "bottom" button');
-  const sentBefore = await page.evaluate(() => window.sent.length);
-  await bottom.click();
-  await page.waitForFunction(() => {
-    const el = document.querySelector('.xterm-viewport');
-    return el && el.scrollHeight - el.clientHeight - el.scrollTop <= 2;
-  });
-  assert.ok(await gap() <= 2, 'bottom button returns the viewport to the end of output');
-  assert.equal(await page.evaluate(() => window.sent.length), sentBefore, 'the key sends no bytes to the PTY');
-  assert.equal(await page.evaluate(() => document.activeElement?.className), 'xterm-helper-textarea', 'the terminal keeps focus');
+  return page;
+}
+
+const gapOf = (page) => page.locator('.xterm-viewport').evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+const bottomKey = (page) => page.locator('.term-keybar').getByRole('button', { name: 'bottom', exact: true });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const browser = await chromium.launch(chromiumLaunchOptions());
+try {
+  {
+    const page = await openFixture(browser);
+    const view = page.locator('.xterm-viewport');
+    // Scroll up to the top of the scrollback.
+    await view.evaluate((el) => { el.scrollTop = 0; });
+    assert.ok(await gapOf(page) > 2, 'viewport is scrolled away from the bottom before tapping');
+    const bottom = bottomKey(page);
+    assert.equal(await bottom.count(), 1, 'key bar has a "bottom" button');
+    const sentBefore = await page.evaluate(() => window.sent.length);
+    await bottom.click();
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.xterm-viewport');
+      return el && el.scrollHeight - el.clientHeight - el.scrollTop <= 2;
+    });
+    assert.ok(await gapOf(page) <= 2, 'bottom button returns the viewport to the end of output');
+    assert.equal(await page.evaluate(() => window.sent.length), sentBefore, 'the key sends no bytes to the PTY');
+    assert.equal(await page.evaluate(() => document.activeElement?.className), 'xterm-helper-textarea', 'the terminal keeps focus');
+    await page.close();
+  }
+  {
+    const page = await openFixture(browser);
+    // A flick upward through the scrollback (finger moves down), released while still moving.
+    await page.evaluate(async () => {
+      const host = document.querySelector('.term-host');
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      const fire = (type, y) => {
+        const touch = new Touch({ identifier: 1, target: host, clientX: 150, clientY: y });
+        host.dispatchEvent(new TouchEvent(type, {
+          touches: type === 'touchend' ? [] : [touch], targetTouches: type === 'touchend' ? [] : [touch],
+          changedTouches: [touch], bubbles: true, cancelable: true,
+        }));
+      };
+      fire('touchstart', 300);
+      for (let y = 340; y <= 620; y += 40) { await frame(); fire('touchmove', y); }
+      fire('touchend', 620);
+    });
+    const coastStart = await gapOf(page);
+    await sleep(120);
+    assert.ok(await gapOf(page) > coastStart + 2, 'the flick is still coasting away from the bottom before tapping');
+    // Anchor the viewport in history: a resize captures the scrolled position, as a keyboard or rotation would.
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    await bottomKey(page).click();
+    // The server's next grid arrives after the tap; it must not restore the old position.
+    await page.evaluate(() => window.socket.grid(true));
+    await sleep(300);
+    assert.ok(await gapOf(page) <= 2, 'after a coasting flick, bottom then a grid frame leaves the viewport at the end');
+    await page.close();
+  }
   console.log('mobile-terminal: bottom key returns the scrollback to the end passed');
 } finally { await browser.close(); }
