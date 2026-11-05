@@ -154,7 +154,14 @@ try {
     // to load the handler. Together with the model/effort wiring above, the merged
     // entry measured 813,579 characters (+174 over the 794 budget's own need):
     // raised to 795, ~0.5 kB of headroom.
-    assert.ok(entry.length <= 795 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 795 kB budget`);
+    // Merged with main (2026-11-05): both sides' changes together measure
+    // 814,682 characters (795.59 kB), inside the 796 kB budget below.
+    // Terminal shortcuts (2026-11-03): +1,063 for the key rules in
+    // lib/terminalKeys.ts, which the terminal's key handler needs on first
+    // paint. Raised to 795.
+    // iTerm2 Cmd/Option editing keys (2026-11-04): 814,078 -> 814,413 (+335),
+    // and 814,078 was 2 bytes under 795. Raised to 796.
+    assert.ok(entry.length <= 796 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 796 kB budget`);
     // One literal only that panel's module contains — a dynamic import that
     // merely wraps an unchanged graph would leave these in the entry.
     for (const [panel, marker] of [
