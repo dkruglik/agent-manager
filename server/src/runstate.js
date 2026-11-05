@@ -352,14 +352,14 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
 
   let digests = new Map();
   try { digests = await traceDigests(); } catch (e) {
-    console.warn(`[revive] trace digests unavailable (${e.message}); recency uses lastInputAt only`);
+    console.warn(`[revive] trace digests unavailable (${e?.code ?? e?.name}); recency uses lastInputAt only`);
   }
   // Shared work belongs to Codex. Do not recreate its terminal on AM boot.
   // Unreadable bindings stop Codex revival rather than risking a competing writer.
   let bound;
   try { bound = new Set(codexBindings.read().map((r) => r.amSessionId)); }
   catch (e) {
-    console.error('[revive] Codex bindings unavailable — skipping Codex revival:', e?.message);
+    console.error('[revive] Codex bindings unavailable — skipping Codex revival:', e?.code ?? e?.name);
     bound = new Set(listSessions().filter((s) => s.cli === 'codex').map((s) => s.id));
   }
   if (sharedCodexMode() && listSessions().some(s => s.cli === 'codex' && !bound.has(s.id)))
@@ -388,7 +388,7 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
     // turn must cancel its message too.
     const lock = carryOn && send && p.tell && scope ? scope() : null;
     const release = () => {
-      try { lock?.release(); } catch (e) { console.error('[revive] lock release failed:', e?.message); }
+      try { lock?.release(); } catch (e) { console.error('[revive] lock release failed:', e?.code ?? e?.name); }
     };
     const t = setTimeout(() => {
       const s = getSession(p.id);
@@ -402,7 +402,7 @@ async function reviveSessions({ enabled = true, days = 3, continue: carryOn = tr
         console.log(started
           ? `[revive] ${p.name} (${p.cli}) — ${p.why}`
           : `[revive] ${p.name} (${p.cli}) — skipped (already running)`);
-      } catch (e) { console.error(`[revive] ${p.name}:`, e && e.message); }  // nothing started: nothing to wait for
+      } catch (e) { console.error(`[revive] ${p.name}:`, e?.code ?? e?.name); }  // nothing started: nothing to wait for
       // Off the stagger: the next revival must not wait for this one's CLI.
       if (started && carryOn && send && p.tell) {
         tellOutcome(p.id, send, { runId: runIdOf(p.id), signal: lock?.signal || null, readyMs })

@@ -1,6 +1,7 @@
 import { addDeliveredId, addSubmittedId, compareSlackTs } from './delivery-state.js';
 import { checkDir, createRow, loadRows, persistError, removeRow, rewriteRow } from './outbox-files.js';
 import { createAmend } from './outbox-edits.js';
+import { errMeta, forgetSubmitted, idsKey, isDelivered, isSettled, isSubmitted, releaseDelivered, remember, settle, tryReleaseDelivered } from './outbox-ids.js';
 import { deferNotice, noteLock, say } from './outbox-lock.js';
 
 // The outbox between a chat message and the agent. A message is a row file
@@ -9,11 +10,12 @@ import { deferNotice, noteLock, say } from './outbox-lock.js';
 // it is written, so a retry sends the same bytes (docs/messengers.md, "Outbox").
 
 const LIFETIME_MS = 24 * 3600_000;
+// A row inside host.deliver is not expired at its day: its bytes may be going out. A send hung past this is.
+const SEND_GRACE_MS = 3600_000;
 const EXPIRED_TEXT = 'Not delivered — still waiting after 24h.';
 export const PREAMBLE_HEAD = 'Earlier messages from Slack (the conversation restarted since):';
 
 const quoted = (text) => text.split('\n').map((l) => `> ${l}`).join('\n');
-const errMeta = (e) => ({ error: e.code ?? e.name, ...(e.message ? { message: String(e.message).slice(0, 200) } : {}) });
 const deliverErr = (e) => ({ error: e.code ?? e.name });
 
 // The stored texts of a session when its source changed since they were delivered, else ''.
@@ -64,21 +66,6 @@ function accept(ctx, { requestId, binding, session, r, body, via, extra }) {
   return { queued: session.id };
 }
 
-const idsKey = (row) => `${row.adapter}|${row.channel}`;
-const isDelivered = ({ store }, row) => !!store.state('deliveredIds', idsKey(row))?.includes(row.requestId);
-const isSubmitted = ({ store }, row) => !!store.state('submittedIds', idsKey(row))?.includes(row.requestId);
-// Settled: refused, dropped or skipped without being delivered. Backfill must not bring it back (delivery-state.js).
-const isSettled = ({ store }, row) => !!store.state('settledIds', idsKey(row))?.includes(row.requestId);
-
-function remember(ctx, section, row) {
-  const key = idsKey(row);
-  const ids = ctx.store.state(section, key);
-  const next = section === 'submittedIds'
-    ? addSubmittedId(ids, row.requestId)
-    : addDeliveredId(ids, row.requestId);
-  ctx.store.patchState({ [section]: { [key]: next ?? null } });
-}
-
 // The file goes through here; a failure is remembered and upkeep tries again.
 function unlink(ctx, id) {
   try { removeRow(ctx.dir, id); ctx.stuck.delete(id); } catch (e) {
@@ -89,13 +76,11 @@ function unlink(ctx, id) {
 
 // A row that leaves without being delivered is recorded as settled before its file goes, so a file that
 // cannot be deleted is dropped (not sent) at the next start. A delivered row has its id in deliveredIds.
+// If the settle write fails the file stays: deleting it would lose the row, and a restart would send what was
+// refused. Upkeep retries the write, then deletes the file (`unsettled`).
 function drop(ctx, row, { settled = true } = {}) {
   ctx.rows.delete(row.requestId);
-  if (settled) {
-    try { remember(ctx, 'settledIds', row); } catch (e) {
-      ctx.log({ event: 'settle-failed', requestId: row.requestId, ...errMeta(e) });
-    }
-  }
+  if (settled && !settle(ctx, row)) return;
   unlink(ctx, row.requestId);
 }
 
@@ -123,6 +108,7 @@ function saveSubmitted(ctx, row) {
 async function expire(ctx, row, locked) {
   const { state } = row;
   drop(ctx, row);
+  if (state === 'submitted') forgetSubmitted(ctx, row);
   ctx.log({ event: 'expired', requestId: row.requestId, state });
   if (state !== 'pending') return;
   // Under a lock the line would reveal the lock's timing: it waits for the unlock, like the lock notices.
@@ -137,12 +123,6 @@ function refusalOf(ctx, row, session) {
   if (!reached) return ['not-in-channel', 'the agent is no longer connected to this channel'];
   if (!binding?.allowedUsers.includes(row.user.id)) return ['user-not-allowed', 'you are no longer allowed to message this agent'];
   return null;
-}
-
-function releaseDelivered(ctx, row) {
-  const key = idsKey(row);
-  const ids = (ctx.store.state('deliveredIds', key) || []).filter((id) => id !== row.requestId);
-  ctx.store.patchState({ deliveredIds: { [key]: ids.length ? ids : null } });
 }
 
 const runOf = (ctx, session) => ctx.host.runId?.(session) ?? null;
@@ -192,13 +172,13 @@ async function attempt(ctx, row, session) {
       out = { state: 'pending', reason: 'error' };
     }
     if (out?.state === 'submitted') owe(ctx, row);
-    else if (out?.state !== 'delivered') releaseDelivered(ctx, row);
+    else if (out?.state !== 'delivered') tryReleaseDelivered(ctx, row);
     return out;
   } finally { ctx.active.delete(row.requestId); scope.release(); }
 }
 
 async function send(ctx, row) {
-  if (isDelivered(ctx, row)) {
+  if (isDelivered(ctx, row) && !ctx.unreleased.has(row.requestId)) {
     drop(ctx, row);
     ctx.log({ event: 'already-delivered', requestId: row.requestId });
     return true;
@@ -245,11 +225,17 @@ async function drainSession(ctx, list) {
 // Expiry and file upkeep never wait for a send, so a stuck session cannot keep a row past its day.
 async function upkeep(ctx) {
   const { locked } = ctx.host.lockState();
+  for (const row of [...ctx.unsettled.values()]) if (settle(ctx, row)) unlink(ctx, row.requestId);
   for (const id of [...ctx.stuck]) unlink(ctx, id);
   for (const row of [...ctx.owing.values()]) owe(ctx, row);
+  for (const id of [...ctx.unreleased]) {
+    const row = ctx.rows.get(id);
+    if (row) tryReleaseDelivered(ctx, row);
+  }
   for (const row of [...ctx.rows.values()]) {
     if (!ctx.rows.has(row.requestId)) continue;
-    if (ctx.now() - row.createdAt > LIFETIME_MS) await expire(ctx, row, locked);
+    const limit = LIFETIME_MS + (ctx.active.has(row.requestId) ? SEND_GRACE_MS : 0);
+    if (ctx.now() - row.createdAt > limit) await expire(ctx, row, locked);
     else if (row.stale) saveSubmitted(ctx, row);
   }
 }
@@ -324,7 +310,7 @@ export function createOutbox({ host, store, adapters, threads, dir, log, now = (
   const ctx = {
     host, store, adapters, threads, dir, log, now, rows: new Map(), sending: new Set(), active: new Set(),
     ready: new Map(), unsafe: false, loadFailed: false, realLock: false, noticeLater: new Map(),
-    stuck: new Set(), owing: new Map(),
+    stuck: new Set(), owing: new Map(), unreleased: new Set(), unsettled: new Map(),
   };
   const loaded = loadOrFail(ctx);
   if (ctx.unsafe) log({ event: 'outbox-unsafe' });

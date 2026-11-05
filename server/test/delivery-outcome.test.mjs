@@ -156,10 +156,10 @@ test('readyAfterRevive: waits for a ready prompt when the CLI has a detector and
   assert.equal(io.polls, 4);
 });
 
-test('readyAfterRevive: gave-up does not wait for the prompt', async () => {
-  const io = readyIo({ result: 'gave-up', readyAfter: 99 });
+test('readyAfterRevive: gave-up still waits for an empty prompt when the pane is running', async () => {
+  const io = readyIo({ result: 'gave-up', readyAfter: 2 });
   assert.equal(await readyAfterRevive({ id: 's1', cli: 'claude' }, io), 'gave-up');
-  assert.equal(io.polls, 0);
+  assert.ok(io.polls >= 1);
 });
 
 test('readyAfterRevive: a CLI without a prompt detector, or a pane that is not running, does not wait', async () => {

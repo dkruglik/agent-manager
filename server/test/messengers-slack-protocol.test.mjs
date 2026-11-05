@@ -255,12 +255,21 @@ test('history() with a thread reads conversations.replies and drops the root; pa
     { messages: [{ type: 'message', user: 'U1', ts: '20.0', text: 'root', thread_ts: '20.0', reply_count: 6 }, ...more('21.0').messages], response_metadata: { next_cursor: 'MORE' } },
     more('22.0'), more('23.0'), more('24.0'), more('25.0'), more('26.0'),
   ]);
-  const got = await adapter.history({ channel: 'C1', thread: '20.0', oldest: '19.0' });
+  const err = await adapter.history({ channel: 'C1', thread: '20.0', oldest: '19.0' }).catch((e) => e);
   const reads = calls.filter((c) => c.method.startsWith('conversations'));
   assert.equal(reads.length, 5, 'at most five pages');
   assert.deepEqual(reads[0].params, { channel: 'C1', ts: '20.0', oldest: '19.0', limit: '200' });
   assert.equal(reads[0].method, 'conversations.replies');
-  assert.deepEqual(got.map((r) => [r.ts, r.thread]), [['21.0', '20.0'], ['22.0', '20.0'], ['23.0', '20.0'], ['24.0', '20.0'], ['25.0', '20.0']]);
+  assert.equal(err.event, 'history-truncated', 'a cut-off read is signalled, not returned as if complete');
+  assert.deepEqual(err.partial.map((r) => [r.ts, r.thread]), [['21.0', '20.0'], ['22.0', '20.0'], ['23.0', '20.0'], ['24.0', '20.0'], ['25.0', '20.0']]);
+});
+
+test('history() that ends inside the page limit does not signal truncation', async () => {
+  const { adapter } = historyAdapter([
+    { messages: [{ type: 'message', user: 'U1', ts: '12.0', text: 'b' }], response_metadata: { next_cursor: 'C' } },
+    { messages: [{ type: 'message', user: 'U1', ts: '13.0', text: 'c' }], response_metadata: { next_cursor: '' } },
+  ]);
+  assert.equal((await adapter.history({ channel: 'C1', oldest: '10.0' })).length, 2);
 });
 
 // Connect signal: one per real connect, none for Slack's hourly refresh.

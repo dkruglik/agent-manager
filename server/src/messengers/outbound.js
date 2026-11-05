@@ -8,14 +8,15 @@ import { PARTIAL_HASH as PARTIAL } from '../transcript-since.js';
 //   { host: { since, link, lockState }, store, adapters, threads, filter, settled, log, now }
 //
 // The cursor is one record per adapter, channel and session: the last message posted and its Slack ts
-// values (`refs`). It is written once per tick, after the posts it covers returned, so a crash can post
-// the last message twice, never skip one.
+// values (`refs`). It is written after each posted message (or batch line) in a tick, so a crash can
+// repost at most the message in flight, never an earlier one in the same tick.
 
 export const MAX_NEW = 5;       // new messages posted per tick and session; older ones collapse into a line
 export const MAX_CALLS = 12;    // Slack calls per tick and session, so one backlog cannot stall every channel
 const PART_MAX = 2900;          // one section holds 3000 characters, counted after Slack's escaping
 const PARTS_MAX = 8;            // parts of one message; the rest is cut with a note
 const TOOLS_SHOWN = 6;
+const LOCKED = 'privacy-locked';
 const EMPTY = { src: '', seq: 0, hash: '', refs: [] };
 
 /** A binding that has `transcript` gets no `finished` card: the mirror already shows the answer. */
@@ -23,8 +24,15 @@ export const postsFinished = (binding) => binding.events.includes('finished') &&
 
 export const cursorKey = (adapter, channel, sessionId) => `${adapter}|${channel}|${sessionId}`;
 
-/** The credential filter for transcript text and finished-card bodies (config.js knownSecretValues). */
-export const createFilter = (env = process.env) => createCredentialFilter(knownSecretValues(env));
+/**
+ * The credential filter for transcript text, input cards and finished-card bodies. `getValues` returns the
+ * secret values to redact; it runs on every call, so a secret set after boot is covered. The caller wires it
+ * (src/index.js); this module reads no environment. An env object is accepted for tests and is read as is.
+ */
+export const createFilter = (getValues) => {
+  const values = typeof getValues === 'function' ? getValues : () => knownSecretValues(getValues);
+  return (text) => createCredentialFilter(values())(text);
+};
 
 /** Runs `filter` on a finished card body. */
 export const filterFinishedCard = (filter, card) => (typeof card.body === 'string' ? { ...card, body: filter(card.body) } : card);
@@ -106,15 +114,21 @@ const shown = (ctx, m) => partsOf(ctx.filter(lineOf(m)));
 function makePoster(ctx, binding, session) {
   const channel = binding.target.channel;
   const adapter = ctx.adapters.get(binding.adapter);
-  const run = { calls: 0, sent: 0, rootTs: null };
+  const run = { calls: 0, sent: 0, counted: 0, rootTs: null };
   const root = async () => {
     if (!run.rootTs) { run.calls += 1; run.rootTs = await ctx.threads.ensureRoot(binding.adapter, channel, session); }
     return run.rootTs;
+  };
+  // A lock can land in the middle of a tick: it is looked at again before every Slack call.
+  const guard = () => {
+    const { locked, reason } = ctx.host.lockState();
+    if (locked && reason !== 'checking') throw Object.assign(new Error('privacy lock'), { code: LOCKED });
   };
   return {
     run,
     fits: (n) => run.calls + n + (run.rootTs ? 0 : 1) <= MAX_CALLS,
     async send(text, extra = {}) {
+      guard();
       const thread = await root();
       run.calls += 1;
       const ref = await adapter.post({ channel, thread }, { kind: 'transcript', body: text, ...extra });
@@ -122,6 +136,7 @@ function makePoster(ctx, binding, session) {
       return ref.ts;
     },
     async replace(ts, text) {
+      guard();
       run.calls += 1;
       await adapter.update({ channel, ts }, { kind: 'transcript', body: text });
     },
@@ -148,46 +163,58 @@ async function postParts(poster, parts, id, progress, refs = []) {
 // parts it did not have are posted. A shorter one rewrites every part it has left and blanks the others.
 // Any other change (a compaction put another message at this seq) is a new message. Returns false when
 // the call budget of this tick does not cover it, so the look repeats on the next tick.
-async function applyEdit(ctx, poster, cursor, updated, progress) {
+async function applyEdit(ctx, poster, cursor, updated, progress, flush) {
   const id = { src: cursor.src, seq: updated.seq, hash: updated.hash };
   const parts = shown(ctx, updated);
   const refs = cursor.refs;
   const resumed = cursor.hash.startsWith(PARTIAL);
+  if (resumed && refs.length && !updated.grew) {
+    if (!poster.fits(parts.length - refs.length)) return false;
+    progress.now = idOf(id, await postParts(poster, parts, id, progress, refs));
+    await flush?.(progress.now);
+    return true;
+  }
   if (!refs.length || !updated.grew) {
     if (!poster.fits(parts.length)) return false;
     progress.now = idOf(id, await postParts(poster, parts, id, progress));
+    await flush?.(progress.now);
     return true;
   }
   if (parts.length < refs.length) {
     if (!poster.fits(refs.length)) return false;
     for (let i = 0; i < refs.length; i++) await poster.replace(refs[i], i < parts.length ? parts[i] : STUB);
     progress.now = idOf(id, refs.slice(0, parts.length));
+    await flush?.(progress.now);
     return true;
   }
   if (!poster.fits((resumed ? 0 : 1) + parts.length - refs.length)) return false;
   if (!resumed) await poster.replace(refs.at(-1), parts[refs.length - 1]);
   progress.now = idOf(id, await postParts(poster, parts, id, progress, refs));
+  await flush?.(progress.now);
   return true;
 }
 
 // Posts what the since() result calls for, in order. `progress` always names the last thing fully posted.
-async function mirror(ctx, poster, binding, link, result, cursor, progress) {
+async function mirror(ctx, poster, binding, link, result, cursor, progress, flush) {
   if (result.restarted) {
     await poster.send('Conversation restarted.');
     progress.now = idOf(result.end, []);
+    await flush?.(progress.now);
     return;
   }
-  if (result.updated && !(await applyEdit(ctx, poster, cursor, result.updated, progress))) return;
+  if (result.updated && !(await applyEdit(ctx, poster, cursor, result.updated, progress, flush))) return;
   const fresh = result.messages;
   const skipped = Math.max(0, fresh.length - MAX_NEW);
   if (skipped) {
     await poster.send(`${skipped} earlier message${skipped > 1 ? 's' : ''} — open in Agent Manager.`, { link });
     progress.now = idOf(fresh[skipped - 1], []);
+    await flush?.(progress.now);
   }
   for (const m of fresh.slice(skipped)) {
     const parts = shown(ctx, m);
     if (!poster.fits(parts.length)) return;
     progress.now = idOf(m, await postParts(poster, parts, m, progress));
+    await flush?.(progress.now);
   }
 }
 
@@ -199,10 +226,12 @@ function commit(ctx, binding, session, stored, poster, next) {
   return threads.exclusive(binding.adapter, channel, session.id, () => {
     if (!threads.stillReached(binding.adapter, channel, session.id)) return;
     const patch = { outbound: { [key]: { ...next, ...(stored && typeof stored.finished === 'string' ? { finished: stored.finished } : {}) } } };
-    if (poster.run.sent && poster.run.rootTs) {
-      patch.roots = { [key]: threads.bump(store.state('roots', key) || [], poster.run.rootTs, now(), poster.run.sent) };
+    const fresh = poster.run.sent - poster.run.counted; // only the posts no earlier commit of this tick counted
+    if (fresh && poster.run.rootTs) {
+      patch.roots = { [key]: threads.bump(store.state('roots', key) || [], poster.run.rootTs, now(), fresh) };
     }
     store.patchState(patch);
+    poster.run.counted = poster.run.sent;
   });
 }
 
@@ -231,13 +260,19 @@ export async function transcriptTick(ctx, binding, session) {
   }
   const poster = makePoster(ctx, binding, session);
   const progress = { now: cursor || idOf(result.end, []) };
+  let committed = null;
+  const flush = async (next) => {
+    if (!same(next, cursor) || poster.run.sent) await commit(ctx, binding, session, stored, poster, next);
+    committed = next;
+  };
   let mirrorError = null;
   if (cursor) {
-    try { await mirror(ctx, poster, binding, ctx.host.link(session), result, cursor, progress); } catch (e) { mirrorError = e; }
+    try { await mirror(ctx, poster, binding, ctx.host.link(session), result, cursor, progress, flush); } catch (e) { mirrorError = e; }
   }
   let commitError = null;
   try {
-    if (!same(progress.now, cursor) || poster.run.sent) await commit(ctx, binding, session, stored, poster, progress.now);
+    if (progress.now !== committed && (!same(progress.now, cursor) || poster.run.sent)) await commit(ctx, binding, session, stored, poster, progress.now);
   } catch (e) { commitError = e; }
+  if (mirrorError?.code === LOCKED) mirrorError = null; // the progress made before the lock is stored; the rest waits
   if (commitError || mirrorError) throw commitError || mirrorError;
 }

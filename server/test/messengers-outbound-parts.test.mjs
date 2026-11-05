@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { PARTIAL_HASH } from '../src/transcript-since.js';
 import { splitText } from '../src/messengers/outbound.js';
 import { started } from './messengers-outbound-fixtures.mjs';
 
@@ -62,6 +63,22 @@ test('a failure halfway through a split message does not re-post the parts alrea
   assert.equal(t.cursor().refs.length, parts.length);
   await t.tick();
   assert.equal(t.bodies().length, parts.length, 'nothing more after the retry');
+});
+
+test('a restart in the middle of a split message posts only the remaining parts', async () => {
+  const t = await started(0);
+  const parts = splitText(THREE_PARTS);
+  t.say(THREE_PARTS);
+  t.state.failAt = new Set([2]); // the root is post 0; part 1 goes out, part 2 fails
+  await assert.rejects(t.tick(), /slack down/);
+  assert.ok(t.cursor().hash.startsWith(PARTIAL_HASH), 'the cursor is marked partial');
+  assert.equal(t.cursor().refs.length, 1);
+  t.state.failAt = new Set();
+  const before = t.posts.length;
+  await t.tick();
+  assert.equal(t.posts.length - before, parts.length - 1, 'only the parts that were missing');
+  assert.deepEqual(t.bodies(), parts);
+  assert.ok(!t.cursor().hash.startsWith(PARTIAL_HASH));
 });
 
 test('a message that failed halfway and then grew is continued from the next part', async () => {

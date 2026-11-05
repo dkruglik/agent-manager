@@ -161,3 +161,29 @@ test('a card that cannot be closed after a delivered answer is logged, not repor
 
 // A channel that reaches several agents: only a named agent gets the message; an
 // unaddressed one is skipped without a reply in the channel (logged only).
+
+test('a message whose handling threw can be redelivered: it is not remembered as handled', async () => {
+  const t = setup();
+  const { outbox } = t.bridge.replies;
+  const real = outbox.accept.bind(outbox);
+  let fail = true;
+  outbox.accept = async (...a) => { if (fail) throw Object.assign(new Error('outbox write failed'), { persist: true }); return real(...a); };
+  const r = text(7, 'alpha: hello');
+  await assert.rejects(() => t.bridge.handleReply('slack', r), /outbox write failed/);
+  fail = false;
+  const again = await t.bridge.handleReply('slack', r);
+  assert.notDeepEqual(again, { ignored: 'duplicate' }, 'the retry runs instead of being acked as a duplicate');
+  assert.deepEqual(await t.bridge.handleReply('slack', r), { ignored: 'duplicate' }, 'a handled message is still a duplicate');
+});
+
+test('a throw before the prompt path (routing) also leaves the message retryable', async () => {
+  const t = setup();
+  const { threads } = t.bridge.replies;
+  const real = threads.route.bind(threads);
+  let fail = true;
+  threads.route = (...a) => { if (fail) throw new Error('state unreadable'); return real(...a); };
+  const r = text(8, 'alpha: hello');
+  await assert.rejects(() => t.bridge.handleReply('slack', r), /state unreadable/);
+  fail = false;
+  assert.notDeepEqual(await t.bridge.handleReply('slack', r), { ignored: 'duplicate' });
+});

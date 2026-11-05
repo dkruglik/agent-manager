@@ -153,15 +153,16 @@ test('a failure after some posts keeps the cursor at the last one posted', async
   assert.deepEqual(t.bodies(), ['one', 'two']);
 });
 
-test('one cursor commit per tick, however many messages go out', async () => {
+test('the cursor is committed after each message, not once per tick', async () => {
   const t = await started(1);
-  const commits = [];
+  const seqs = [];
   const patch = t.store.patchState.bind(t.store);
-  t.store.patchState = (p) => { commits.push(Object.keys(p)); return patch(p); };
+  t.store.patchState = (p) => { if (p.outbound) seqs.push(Object.values(p.outbound)[0].seq); return patch(p); };
   t.say('a'); t.say('b'); t.say('c');
   await t.tick();
-  assert.equal(commits.filter((k) => k.includes('outbound')).length, 1);
+  assert.deepEqual(seqs, [2, 3, 4]);
   assert.equal(t.bodies().length, 3);
+  assert.equal(t.store.state('roots', KEY).at(-1).count, 3, 'each post is counted once, not again at the final commit');
 });
 
 test('a tool-only turn posts one line naming the tools', async () => {

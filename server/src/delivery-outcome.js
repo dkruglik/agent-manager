@@ -127,7 +127,7 @@ const READY_POLL_MS = 200;
  */
 export async function readyAfterRevive(session, io, { signal = null, readyMs = READY_MS } = {}) {
   const result = await io.result(session.id);
-  if (result === 'gave-up' || !io.detector(session.cli) || !io.running(session.id)) return result;
+  if (!io.detector(session.cli) || !io.running(session.id)) return result;
   const now = io.now || Date.now;
   const sleep = io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const deadline = now() + readyMs;

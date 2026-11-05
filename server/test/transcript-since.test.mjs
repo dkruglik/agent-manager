@@ -160,3 +160,21 @@ test('an updated message says whether it grew: extended text yes, a replacement 
   assert.equal((await since({ id: 'g' }, base)).updated.grew, false, 'not an extension of the one the cursor saw');
   assert.equal((await make()({ id: 'g' }, base)).updated.grew, false, 'a fresh process never saw the cursor version');
 });
+
+test('with more than 16 sessions the one used last is kept and the least recently used is evicted', async () => {
+  const parsed = [];
+  const lru = createSince({
+    sourceOf: (s) => `src-${s.id}`,
+    revisionOf: async () => '1',
+    readMessages: async (s) => { parsed.push(s.id); return { revision: '1', messages: [{ text: 'x', tools: [] }] }; },
+  });
+  const at = (i) => ({ id: `s${i}` });
+  for (let i = 0; i < 16; i++) await lru(at(i), null);
+  await lru(at(0), null); // s0 is used again: now the newest
+  await lru(at(16), null); // the 17th session evicts s1, not s0
+  parsed.length = 0;
+  await lru(at(0), null);
+  assert.deepEqual(parsed, [], 's0 is still cached');
+  await lru(at(1), null);
+  assert.deepEqual(parsed, ['s1'], 's1 was evicted and is read again');
+});

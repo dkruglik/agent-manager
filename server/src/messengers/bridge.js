@@ -48,16 +48,17 @@ const inputKey = (binding, s, item) => `${binding.id}|${s.id}|${item.key}`;
 export class MessengerBridge {
   constructor({
     host, store, adapters, now = () => Date.now(), log = () => {}, dataDir = path.dirname(store.file),
-    settleMs = 8000, filter = createFilter(), digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
+    settleMs = 8000, filter = null, getKnownCredentialValues = () => [], digestEveryMs = 5000, tickMs = 2000, lookForMs = 60_000,
     decisionTimeoutMs = 120_000, setTimer = setTimeout, clearTimer = clearTimeout,
   }) {
-    Object.assign(this, { filter, host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
+    Object.assign(this, { filter: filter || createFilter(getKnownCredentialValues), host, store, adapters, now, log, settleMs, digestEveryMs, tickMs, lookForMs, decisionTimeoutMs, setTimer, clearTimer });
     this.hooks = new HookDecisions(this);
     this.waitingSince = new Map(); // sessionId → when it settled into waiting
     this.digestAt = new Map();     // `${bindingId}|${sessionId}` → last transcript read
     this.statuses = new Map();     // adapterId → {connected, error}
     this.failing = new Map();      // bindingId → {count, error, retryAt} while its posts keep failing
     this.timer = null;
+    this.draining = new Set(); // drains in flight; stop() waits for them
     this.stopped = false; // set by stop(): a backfill still running then writes no row
     this.ticking = false;
     const scope = (binding, sessions) => this.sessionsFor(binding, sessions);
@@ -68,7 +69,7 @@ export class MessengerBridge {
     });
     // The old `seen` marks become outbound records before the first tick (outbound.js migrateSeen).
     migrateSeen(store);
-    this.outbound = { host, store, adapters, threads: this.threads, filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now() };
+    this.outbound = { host, store, adapters, threads: this.threads, filter: this.filter, settled: (s) => this.settled(s, { bounded: false }), log, now: () => this.now() };
     this.outbox = createOutbox({ host, store, adapters, threads: this.threads, dir: path.join(dataDir, 'messenger-outbox'), log, now });
     this.replies = new ReplyRouter({
       host, store, adapters, log, scope, threads: this.threads, outbox: this.outbox,
@@ -89,8 +90,17 @@ export class MessengerBridge {
     return { id: s.id, name: s.name, cli: s.cli, group: this.host.groupOf(s.id)?.name || null };
   }
 
+  // Question text and option labels come from the agent, so both go through the credential filter.
+  filteredQuestion(q) {
+    const label = (o) => (typeof o === 'string' ? this.filter(o) : { ...o, label: this.filter(o.label) });
+    return { ...q, text: this.filter(q.text), ...(Array.isArray(q.options) ? { options: q.options.map(label) } : {}) };
+  }
+
   inputCardFor(binding, s, item, extra = {}) {
-    const shown = item.details ? { ...item, details: this.filter(item.details) } : item;
+    let shown = item.details ? { ...item, details: this.filter(item.details) } : item;
+    if (shown.questions?.length) {
+      shown = { ...shown, questions: shown.questions.map((q) => this.filteredQuestion(q)) };
+    }
     return inputCard({ agent: this.agent(s), link: this.host.link(s), item: shown, approvals: binding.approvals, ...extra });
   }
 
@@ -226,8 +236,16 @@ export class MessengerBridge {
   /** What Settings shows for a binding whose posts or lookups are failing, else null. */
   lastError(bindingId) { return this.failing.get(bindingId)?.error ?? null; }
 
-  /** Delivers the waiting chat prompts (outbox.js); tests call it directly. */
-  drain() { return this.outbox.drain(); }
+  /**
+   * Delivers the waiting chat prompts (outbox.js); tests call it directly. Calls are not coalesced: one hung
+   * send must not stop later drains from running upkeep and expiry (the outbox skips sessions it is already sending to).
+   */
+  drain() {
+    if (this.stopped) return Promise.resolve();
+    const run = this.outbox.drain().finally(() => this.draining.delete(run));
+    this.draining.add(run);
+    return run;
+  }
 
   handleReply(adapterId, r) { return this.replies.handle(adapterId, r); }
   handleCommand(adapterId, c) { return this.replies.command(adapterId, c); }
@@ -279,6 +297,7 @@ export class MessengerBridge {
     this.unwatchLock?.();
     this.timer = null;
     this.hooks.settleAll('Agent Manager is stopping — answer in the terminal.');
+    await Promise.allSettled([...this.draining]);
     for (const a of this.adapters.values()) await a.stop?.();
   }
 }

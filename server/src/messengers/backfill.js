@@ -20,7 +20,7 @@ function threadsOf(store, ck) {
 
 // Whether the message already got in or was dealt with: delivered, submitted, or settled (refused, dropped,
 // or announced as skipped). A live event and a history copy have different message ids, but the same request id.
-const handled = (store, ck, id) => ['deliveredIds', 'submittedIds', 'settledIds'].some((s) => store.state(s, ck)?.includes(id));
+const handled = (store, ck, id) => ['deliveredIds', 'submittedIds', 'settledIds', 'skippedIds'].some((s) => store.state(s, ck)?.includes(id));
 
 // A skipped message counts as missed only for someone a binding allows and only when it never got in.
 function missed(store, bindings, ck, id, r) {
@@ -30,8 +30,8 @@ function missed(store, bindings, ck, id, r) {
 // Remembers the messages a notice was sent for, so the next reconnect does not announce them again.
 function settleSkipped(ctx, ck, ids) {
   try {
-    const kept = ids.reduce((all, id) => addDeliveredId(all, id), ctx.store.state('settledIds', ck));
-    ctx.store.patchState({ settledIds: { [ck]: kept } });
+    const kept = ids.reduce((all, id) => addDeliveredId(all, id), ctx.store.state('skippedIds', ck));
+    ctx.store.patchState({ skippedIds: { [ck]: kept } });
   } catch (e) {
     ctx.log({ event: 'settle-failed', channel: ck, error: String(e.message).slice(0, 200) });
   }
@@ -53,6 +53,11 @@ async function notify({ adapter, log }, channel, skipped) {
 
 async function fetchMessages({ adapter, log }, args) {
   try { return await adapter.history(args); } catch (e) {
+    // The pages already read are kept and handled; the rest is read from the new watermark on a later connect.
+    if (e.event === 'history-truncated' && Array.isArray(e.partial)) {
+      log({ event: 'backfill-truncated', channel: args.channel, ...(args.thread ? { thread: args.thread } : {}), kept: e.partial.length });
+      return e.partial;
+    }
     log({ event: 'backfill-failed', channel: args.channel, ...(args.thread ? { thread: args.thread } : {}), error: e.message });
     return null;
   }

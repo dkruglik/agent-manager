@@ -25,6 +25,33 @@ function breakStore(t, section) {
   return () => { t.store.patchState = real; };
 }
 
+test('a pending outcome whose delivered-id release fails is retried and still delivers once', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'pending', reason: 'busy' });
+  const real = t.store.patchState.bind(t.store);
+  let claimed = false;
+  t.store.patchState = (patch) => {
+    if (claimed && patch.deliveredIds) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+    return real(patch);
+  };
+  t.host.deliver = async (...a) => {
+    claimed = true;
+    return { state: 'pending', reason: 'busy' };
+  };
+  await t.send(msg('10.1', 'hello'));
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.length, 0);
+  t.store.patchState = real;
+  t.host.outcome = () => ({ state: 'delivered' });
+  t.host.deliver = async (s, { text, requestId }) => {
+    t.host.deliveries.push({ id: s.id, text, requestId });
+    return { state: 'delivered' };
+  };
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.length, 1);
+  assert.deepEqual(t.files(), []);
+});
+
 test('a delivered-id write that fails after the send neither sends again nor loses the delivery record', async () => {
   const t = setup();
   const fix = breakStore(t, 'deliveredIds');
@@ -77,6 +104,48 @@ test('a row dropped without being delivered stays dropped when its file could no
   } finally { mock.restoreAll(); }
   await t.bridge.drain();
   assert.deepEqual(t.files(), [], 'the delete is retried');
+});
+
+test('a failed settle write plus a failed file delete keeps the row on disk, unsent, until both are retried', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'pending', reason: 'busy' });
+  await t.send(msg('10.1', 'hello'));
+  const real = t.store.patchState.bind(t.store);
+  t.store.patchState = (patch) => {
+    if ('settledIds' in patch) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+    return real(patch);
+  };
+  mock.method(fs, 'unlinkSync', (p, ...rest) => {
+    if (String(p).endsWith(`${idOf('10.1')}.json`)) throw Object.assign(new Error('injected'), { code: 'EIO' });
+    return fs.unlinkSync.mock.original(p, ...rest);
+  });
+  try {
+    assert.deepEqual(await t.send(deleted('10.1')), { dropped: 1 });
+    t.host.outcome = () => ({ state: 'delivered' });
+    await t.bridge.drain();
+    await t.bridge.drain();
+    assert.equal(t.host.deliveries.length, 0, 'a dropped row is not sent while its bookkeeping is failing');
+    assert.equal(t.files().length, 1, 'the row is not lost');
+    assert.equal(t.logs.filter((e) => e.event === 'settle-failed').length, 1, 'logged once, not on every retry');
+  } finally { mock.restoreAll(); }
+  t.store.patchState = real;
+  await t.bridge.drain();
+  assert.deepEqual(t.files(), [], 'settle and delete are retried and finish');
+  assert.ok(t.store.state('settledIds', 'slack|C0').includes(idOf('10.1')));
+  assert.equal(t.host.deliveries.length, 0);
+});
+
+test('submittedIds does not grow without bound: an expired submitted row moves to the capped settled ids', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'submitted', reason: 'typed' });
+  await t.send(msg('10.1', 'hello'));
+  await t.bridge.drain();
+  assert.ok(t.store.state('submittedIds', 'slack|C0').includes(idOf('10.1')));
+  t.clock.t += DAY + 1;
+  await t.bridge.drain();
+  assert.ok(!t.store.state('submittedIds', 'slack|C0'), 'no submitted id outlives its row');
+  assert.ok(t.store.state('settledIds', 'slack|C0').includes(idOf('10.1')), 'still handled for backfill and accept');
+  assert.deepEqual(await t.send(msg('10.1', 'hello')), { ignored: 'duplicate' });
 });
 
 test('an edit while the row waits for ready replaces the text; a delete drops the row', async () => {

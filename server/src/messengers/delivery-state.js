@@ -19,10 +19,12 @@ export const TEXT_MAX = 2048; // a stored Slack text is cut here
 //   submittedIds `adapter|channel`         → request ids whose text may have reached the agent (not evicted on add)
 //   settledIds   `adapter|channel`         → request ids refused, dropped or skipped without delivery (capped like
 //                deliveredIds); backfill and accept treat them as handled
+//   skippedIds   `adapter|channel`         → request ids a "not delivered" notice went out for (own cap, so they
+//                never push settled ids out)
 //   reach        `adapter|channel`         → how many agents the channel reached last time
 //   outbound     `adapter|channel|session` → { src, seq, hash, refs, finished? }: the last transcript message
 //                posted (refs are its Slack ts values) and the last finished card's id
-export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'deliveredIds', 'submittedIds', 'settledIds', 'reach', 'outbound'];
+export const SECTIONS = ['roots', 'threadMarks', 'channelMarks', 'deliveredTs', 'recent', 'deliveredIds', 'submittedIds', 'settledIds', 'skippedIds', 'reach', 'outbound'];
 export const REFS_MAX = 20;
 
 export const cutText = (s) => String(s ?? '').slice(0, TEXT_MAX);
@@ -59,6 +61,7 @@ const KEEP = {
   },
   deliveredIds: keepIds,
   settledIds: keepIds,
+  skippedIds: keepIds,
   submittedIds: (v) => {
     const kept = list(v).filter(str);
     return kept.length ? kept : undefined;

@@ -90,14 +90,16 @@ export function createSince({ revisionOf = traceRevisionOf, readMessages = readA
     while (versions.size > CACHED_SESSIONS) versions.delete(versions.keys().next().value);
   }
 
+  // Puts the entry last, so the first one in the map is the least recently used.
+  const use = (id, entry) => { cache.delete(id); cache.set(id, entry); return entry; };
+
   async function load(session, revision) {
     const hit = cache.get(session.id);
-    if (hit && hit.revision === revision) return hit.all;
+    if (hit && hit.revision === revision) return use(session.id, hit).all;
     if (!flights.has(session.id)) {
       const run = readMessages(session).then((read) => {
         const all = withIds(sourceOf(session), read.messages);
-        cache.delete(session.id);
-        cache.set(session.id, { revision: read.revision, all });
+        use(session.id, { revision: read.revision, all });
         remember(session, sourceOf(session), all);
         while (cache.size > CACHED_SESSIONS) cache.delete(cache.keys().next().value);
         return all;

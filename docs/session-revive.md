@@ -78,6 +78,8 @@ sends it one message:
   panes that boot started, and never to shells (their command is simply gone),
   Files, Trace or remote panes. A failed delivery is logged, as the error code
   only (an `input-line-busy` message quotes the terminal), and not retried.
+  The same holds for every other revive log line: it names the error code or
+  name, never its message.
 - "Stopped before the restart" means stopped as of the last snapshot. A session
   stopped less than 30 s before the shutdown can still be revived and told.
 
@@ -96,8 +98,10 @@ races the continue message: `runstate.reviveResult(sessionId)` resolves to
   before its slot.
 
 `gave-up` and `skipped` resolve as soon as they are known; they do not wait
-for the message. The Slack drain waits for this result before it sends
-anything, and does not send the continue text itself (see
+for the message. The Slack drain waits for this result, whatever it is, before it
+sends anything (for a CLI with a prompt detector whose pane is running it then
+also waits for an empty prompt, even after `gave-up`), and does not send the
+continue text itself (see
 [messengers.md](messengers.md), "After a restart"). `index.js` calls `reviveOnBoot`, or
 `reviveSkipAll()` when the Space is locked at boot, so no waiter hangs.
 

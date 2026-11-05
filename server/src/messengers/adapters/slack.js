@@ -308,7 +308,7 @@ export class SlackAdapter {
 
   /**
    * Messages after `oldest` (exclusive) in a channel, or in the thread `thread`, oldest first, in the shape of a live
-   * reply. At most 5 pages of 200. Bot messages and the bot's own are left out, as for a live event.
+   * reply. At most 5 pages of 200; past that it throws `history-truncated` with the messages read in `partial`. Bot messages and the bot's own are left out, as for a live event.
    */
   async history({ channel, thread, oldest }) {
     if (!this.botUser) this.botUser = (await this.call('auth.test', {})).user_id;
@@ -325,7 +325,13 @@ export class SlackAdapter {
       cursor = res.response_metadata?.next_cursor || '';
       if (!cursor) break;
     }
-    return out.sort((a, b) => compareSlackTs(a.ts, b.ts));
+    out.sort((a, b) => compareSlackTs(a.ts, b.ts));
+    // Not the whole history: the caller gets the pages that were read in `partial` and decides what to do.
+    if (cursor) {
+      const message = 'history read hit the page limit';
+      throw Object.assign(new Error(message), { event: 'history-truncated', publicMessage: message, partial: out });
+    }
+    return out;
   }
 
   // Visible to one user only; the bot token's chat:write scope covers it.

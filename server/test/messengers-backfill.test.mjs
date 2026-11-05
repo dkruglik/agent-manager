@@ -146,6 +146,38 @@ test('a failed fetch is not an empty history: the rest is read, then backfill th
   assert.ok(!JSON.stringify(t.logs).includes('text 4999'));
 });
 
+test('skipped ids have their own cap: announcing them never evicts settled ids', async () => {
+  const t = rig({ marks: false });
+  const settled = Array.from({ length: 500 }, (_, i) => `slack:C0:${i}`);
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' }, settledIds: { 'slack|C0': settled } });
+  t.answers.fn = () => [m(OLD), m(OLD2)];
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1);
+  assert.deepEqual(t.store.state('settledIds', 'slack|C0'), settled, 'settled ids are untouched');
+  assert.equal(t.store.state('skippedIds', 'slack|C0').length, 2);
+  await backfill(t.ctx);
+  assert.equal(t.ephemerals.length, 1, 'not announced again on the next connect');
+  const full = Array.from({ length: 500 }, (_, i) => `slack:C0:s${i}`);
+  t.store.patchState({ skippedIds: { 'slack|C0': full } });
+  t.answers.fn = () => [m('4990002.100000')];
+  await backfill(t.ctx);
+  const kept = t.store.state('skippedIds', 'slack|C0');
+  assert.equal(kept.length, 500, 'capped on its own');
+  assert.ok(!kept.includes('slack:C0:s0') && kept.includes(requestIdFor('slack', 'C0', '4990002.100000')));
+});
+
+test('a history read cut off at the page limit keeps the pages it read and logs a warning', async () => {
+  const t = rig({ marks: false });
+  t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });
+  t.answers.fn = () => { throw Object.assign(new Error('history read hit the page limit'), { event: 'history-truncated', partial: [m(NEW1), m(NEW2)] }); };
+  const total = await backfill(t.ctx);
+  assert.deepEqual(t.accepted.map((r) => r.ts), [NEW1, NEW2], 'what was read is delivered');
+  assert.equal(total.accepted, 2);
+  assert.ok(t.logs.some((e) => e.event === 'backfill-truncated' && e.kept === 2));
+  assert.ok(!t.logs.some((e) => e.event === 'backfill-failed'));
+  assert.ok(!JSON.stringify(t.logs).includes('text 4999'));
+});
+
 test('a failed accept is not a successful backfill: backfill throws so the next connect retries', async () => {
   const t = rig({ marks: false });
   t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });

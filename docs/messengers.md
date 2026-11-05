@@ -110,9 +110,10 @@ never message text. The rules are in `server/src/delivery-outcome.js`.
   an existing `sending` receipt also produces) or `codex-request-conflict`;
   `typeAndSubmit` marked the error `typed` because the first byte already went
   to the terminal (a `pty.write` that threw is not a byte: the flag is set after
-  the write returns), including `input-not-ready` after that byte,
-  `input-not-confirmed` and `input-not-submitted`; the remote's `append`
-  threw.
+  the write returns), including `input-not-confirmed` and `input-not-submitted`;
+  the remote's `append` threw. OpenCode's echo wait never presses Enter: when it
+  fails (`input-not-ready`, timeout or stop) it clears the line with Ctrl+U and
+  drops the flag, so that failure is **pending**, not submitted.
 
 A Slack prompt to a remote agent longer than the remote message limit
 (32 KB) is cut and ends with a line `[truncated: the Slack message was longer
@@ -162,7 +163,7 @@ a top-level message into the agent's root and advances the watermarks, the
 delivered top-level `ts` set and the agent's last 3 texts. The id was claimed
 before the send, so a crash or a failed delete cannot send the text again.
 A row that becomes `submitted` is recorded in a `submittedIds` set right after
-the send (never evicted; losing an id could replay a prompt), so it stays
+the send (not evicted while its row lives; losing an id could replay a prompt), so it stays
 `submitted` after a restart even if rewriting its file failed; the rewrite is
 retried on later ticks. If the `submittedIds` write itself fails, it is
 retried on every tick (`submitted-record-failed`, logged once), and the
@@ -187,7 +188,9 @@ and writes nothing. A file that cannot be deleted does not resurrect the row:
 the id is already settled, so the next start drops the file
 (`already-settled`), and the delete is retried on every tick
 (`row-delete-failed`, logged once). A message refused before any row exists
-(not allowed, no agent named, locked) is settled the same way.
+(not allowed, no agent named, locked, or `no-target`) is settled the same way.
+A failed settle keeps the file and tracks it in `ctx.unsettled`; each tick's
+upkeep retries the settle, then the unlink.
 
 Before each send the sender and scope are checked again. If the sender is no
 longer allowed, or no binding in the channel reaches the agent any more, the
@@ -196,7 +199,10 @@ log records `refused`. A `pending` row older than 24 hours is deleted and its
 thread gets "Not delivered — still waiting after 24h." (held back while the
 privacy lock is on or `checking`, and posted on unlock, once per thread); a
 `submitted` row older
-than 24 hours is deleted with one `expired` log line and nothing is posted. A
+than 24 hours is deleted with one `expired` log line and nothing is posted; its
+id then leaves `submittedIds` and moves to the capped `settledIds`. A row still
+being sent (`ctx.active`) expires after 24 hours plus a 1-hour grace
+(`SEND_GRACE_MS`). A
 reply under a top-level message that is still waiting routes to its agent.
 Removing a binding deletes an agent's rows only when no other binding in the
 channel still reaches it.
@@ -318,6 +324,9 @@ sees.
 - Text past Slack's block limit is **split** into successive thread messages
   (the limit is counted after Slack's escaping, and a split prefers a newline).
   A message of more than 8 parts is cut with a final "… N more characters" line.
+- The cursor is written **after each message** (or collapse or restart line)
+  posted in a tick, not once per tick; the root's message count is bumped by the
+  posts since the last write only.
 - If the last posted message grows (same position, new text), its **last part is
   edited in place** with `chat.update` and the parts it did not have are posted.
   Earlier parts and older messages are never rewritten. A restart or collapse
@@ -330,14 +339,17 @@ sees.
   updated in order, the extra ones are changed to "(edited — see above)", and
   the edit counts toward the call budget.
 - A failure halfway through a message of several parts keeps the parts already
-  posted: the cursor holds their `ts` values under a `partial:` hash, and the
-  next tick continues with the next part instead of posting the message again.
+  posted: the cursor holds their `ts` values under a `partial:` hash after every
+  part, and the next tick (also after a restart) posts only the parts still
+  missing, instead of the message again.
 - A turn that only called tools posts one line, "Used tools: Bash, Edit".
 - When the conversation changes (a different transcript, or the transcript is
   shorter than the cursor) it posts one line, "Conversation restarted.", stores the
   new end, and continues from there. A compaction inside the same Claude file is
   not detected as a restart unless the message count drops.
 - **Nothing is posted under a real privacy lock, and the cursor does not move.**
+  The lock is checked again before every Slack call, so one that lands in the
+  middle of a tick stops the rest of it; the cursor keeps what already went out.
   The messages are posted after unlock (under the 5-message cap), however long the
   lock lasted. The startup `checking` state is not a lock for this purpose: the
   mirror posts during it, while cards (`input-required`, `finished`) wait until
@@ -354,16 +366,19 @@ sees.
 ### Credential filter
 
 Every text posted by `transcript`, the body of every `finished` card, and the
-`details` field of every input/approval card, goes
-through `createCredentialFilter` (`audit-credentials.js`) with the values this
+`details` field, the question text and the option labels of every input/approval
+card, goes through `createCredentialFilter` (`audit-credentials.js`) with the values this
 process holds, read in `config.js` (`knownSecretValues`): `SLACK_BOT_TOKEN`,
 `SLACK_APP_TOKEN`, `HF_TOKEN` (also `HUGGING_FACE_HUB_TOKEN`, `HF_API_TOKEN`),
 `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, every provider
 key the CLI catalog lists (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `NOUS_API_KEY`, `AI_GATEWAY_API_KEY`),
 and the value of any other environment variable whose name ends in `TOKEN`,
-`API_KEY`, `SECRET` or `PASSWORD` (case-insensitive).
-They are read once when the bridge starts; values shorter than 8 characters are
+`SECRET`, `PASSWORD`, `PASSWD` or `APIKEY`, or in `KEY` as a word of its own
+(`OPENAI_KEY`, `AWS_SECRET_ACCESS_KEY`; not `KEYBOARD`), case-insensitive.
+The values are read again on every call (`getKnownCredentialValues`, wired in
+`index.js` from the same list plus the injected variables Settings shows), so a
+secret set after boot is redacted too. Values shorter than 8 characters are
 ignored. The filter replaces a value with `[redacted]`, and the text is filtered
 before it is split or clipped (a `finished` card is clipped to 2800 characters),
 so a secret cannot straddle two parts or the clip.
@@ -383,9 +398,10 @@ current transcript (`src`).
 
 The cursor is one record per adapter, channel and session in `messengers.json`
 (`outbound`): `{ src, seq, hash, refs }`, for the last posted message only, where
-`refs` are the Slack `ts` values of its parts. It is written once per tick, after
-the posts returned. A crash between a post and that write **can repost the last
-message once**; that is accepted. The same record holds the id of the last
+`refs` are the Slack `ts` values of its parts. It is written after each message
+(or catch-up line) posted in a tick. A crash after a post but before that write
+**can repost that one message once**; earlier messages in the same tick are not
+sent again. The same record holds the id of the last
 `finished` card announced (`finished`), which replaced the old `seen` map.
 
 ### The `seen` migration
@@ -576,7 +592,8 @@ per channel (50 at most, oldest dropped, each pointing at its agent), the
 channel's last agent count, the delivered request ids per channel (500 at most,
 oldest dropped), the settled request ids per channel (`settledIds`, same cap:
 messages refused, dropped, expired, deleted or announced as skipped without
-being delivered), and per agent the last 3 delivered texts with the
+being delivered), `skippedIds` (500 at most) for the backfill ids announced as
+skipped, kept apart from `settledIds`, and per agent the last 3 delivered texts with the
 `lastSrc` they were delivered under. **These texts are Slack user content kept
 in `messengers.json`**, each cut at 2 KB (2048 characters). A file from an
 older version, without these keys, loads as empty state; malformed entries are
@@ -633,7 +650,9 @@ event id.
   The edit takes effect while the row waits for the agent's `ready`: the text is
   read when the send starts, and only a send already inside the host has its
   bytes. A second edit of the same message replaces the edit row that is still
-  waiting instead of queueing another.
+  waiting instead of queueing another. An edit whose `editTs` is not later than
+  the one the waiting row already carries is ignored (`stale-edit`), so an
+  older edit delivered late cannot overwrite a newer text.
 - A delete (`message_deleted`) drops a `pending` row, which is then never
   sent, including one still waiting for `ready`. If the message was already
   `submitted` or delivered the row stays and its thread gets one line: "The
@@ -653,7 +672,9 @@ adapter's `history`: the channel from its watermark for top-level messages,
 and, from the agent's thread watermark, each root still in the roots list and
 each delivered top-level `ts`. `oldest` is exclusive, so the watermark message
 is not fetched again; a read is at most 5 pages of 200. A channel or thread
-without a watermark is not read.
+without a watermark is not read. **Known gap:** there is no per-thread
+watermark for replies in bot threads, so replies that arrive there during
+downtime are not fetched.
 
 A human message older than 1 hour is not delivered. Each user it affects gets
 one ephemeral notice per channel ("N messages you sent while Agent Manager was
@@ -666,7 +687,9 @@ A message that was refused while the Space was locked is settled too: after the
 unlock it is neither delivered nor answered a second time. A second pass over
 the same history therefore sends nothing twice, and raw
 history is never copied into an agent any other way. A failed history read is
-logged (`backfill-failed`) and is not treated as an empty history. Other
+logged (`backfill-failed`) and is not treated as an empty history. A history
+that hits the 5-page limit is truncated: the adapter throws `history-truncated`
+with the pages read in `err.partial`; backfill keeps those messages and logs `backfill-truncated` (a count only) as a warning. Other
 channels and threads are still read; then backfill throws so the next connect
 retries from the same watermarks. A backfill still running
 when Agent Manager stops writes no rows.

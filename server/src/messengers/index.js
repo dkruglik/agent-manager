@@ -39,7 +39,7 @@ export const ADAPTERS = {
 
 const notFound = () => new ApiError(404, 'not-found', 'Binding not found.');
 
-export function createMessengers({ host, dataDir, config, scopeExists = () => true }) {
+export function createMessengers({ host, dataDir, config, scopeExists = () => true, getKnownCredentialValues = () => [] }) {
   const store = new BindingStore(path.join(dataDir, 'messengers.json'));
   const logFile = path.join(dataDir, 'messengers.log.jsonl');
   let appendWarned = false;
@@ -52,7 +52,7 @@ export function createMessengers({ host, dataDir, config, scopeExists = () => tr
     if (entry.error) console.error('[messengers]', line);
   };
   const adapters = new Map(Object.entries(ADAPTERS).map(([id, make]) => [id, make(config[id] || {})]));
-  const bridge = new MessengerBridge({ host, store, adapters, log, dataDir, settleMs: config.finishedDelayMs });
+  const bridge = new MessengerBridge({ host, store, adapters, log, dataDir, settleMs: config.finishedDelayMs, getKnownCredentialValues });
   const ids = [...adapters.keys()];
   const existing = (id) => {
     const b = store.binding(id);

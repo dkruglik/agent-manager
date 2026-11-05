@@ -20,7 +20,7 @@ import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS
 import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
-  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice,
+  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice, knownSecretValues,
 } from './config.js';
 import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice } from './model-catalog.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
@@ -4014,6 +4014,7 @@ api.post('/api/move', (req, res) => {
 const messengers = createMessengers({
   dataDir: DATA_DIR,
   config: MESSENGERS,
+  getKnownCredentialValues: () => [...knownSecretValues(process.env), ...injectedEnvKeys().map((key) => process.env[key])],
   scopeExists: (scope) => !!(scope.type === 'group' ? groups.get(scope.id) : store.get(scope.id)),
   host: {
     sessions: () => sessionsWithState().filter((s) => !s.archivedAt && promptable(s)),
@@ -4292,7 +4293,7 @@ setTimeout(() => {
         // The Overview reply box's path: privacy-lock aware, submit confirmed.
         send: (s, text, { runId, signal }) => deliver(s, { text }, 'Agent Manager', { signal, runId }),
         scope: lockScope,
-      }).catch((e) => console.error('[revive]', e && e.message)),
+      }).catch((e) => console.error('[revive]', e?.code ?? e?.name)),
     });
     done.then(() => runstate.startRunstateWatch());
   });

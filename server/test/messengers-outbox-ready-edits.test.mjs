@@ -34,12 +34,14 @@ test('the first send of a session waits for host.ready; later rows do not wait a
   assert.deepEqual(t.host.readyCalls, ['s1'], 'asked once per session');
 });
 
-test('a gave-up result sends without waiting; the outbox never sends the continue text itself', async () => {
+test('a gave-up revive result still waits for host.ready before the first send', async () => {
   const t = setup();
-  t.host.readyImpl = async () => 'gave-up';
+  let polls = 0;
+  t.host.readyImpl = async () => { polls += 1; return 'gave-up'; };
   await t.send(msg('10.1', 'one'));
   await t.bridge.drain();
   assert.deepEqual(t.host.deliveries.map((d) => d.text), ['one']);
+  assert.ok(polls >= 1);
   assert.ok(!t.host.deliveries.some((d) => d.text.startsWith('[Agent Manager:')));
 });
 
@@ -138,6 +140,22 @@ test('an edit of a submitted message writes a new row and leaves the submitted f
   await t.bridge.drain();
   assert.equal(t.host.deliveries.at(-1).text, `${EDIT_HEAD}new text`);
   assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+});
+
+test('an older edit arriving after a newer one is ignored as stale', async () => {
+  const t = setup();
+  t.host.outcome = () => ({ state: 'submitted', reason: 'input-not-confirmed' });
+  await t.send(msg('10.1', 'old text'));
+  await t.bridge.drain();
+  await t.send(edited('10.1', '12.0', 'newer'));
+  const newer = t.files().map((f) => fs.readFileSync(path.join(t.dir, f), 'utf8')).sort();
+  assert.deepEqual(await t.send(edited('10.1', '11.0', 'older')), { ignored: 'stale-edit' });
+  assert.deepEqual(t.files().map((f) => fs.readFileSync(path.join(t.dir, f), 'utf8')).sort(), newer, 'the newer edit is untouched');
+  assert.deepEqual(await t.send(edited('10.1', '13.0', 'newest')), { edited: 's1' }, 'a later edit still replaces it');
+  assert.equal(t.files().length, 2, 'the waiting edit row was replaced, not queued again');
+  t.host.outcome = () => ({ state: 'delivered' });
+  await t.bridge.drain();
+  assert.equal(t.host.deliveries.at(-1).text, `${EDIT_HEAD}newest`);
 });
 
 test('an edit of a message that was never accepted is ignored with a log line', async () => {

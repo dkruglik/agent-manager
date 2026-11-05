@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MessengerBridge } from '../src/messengers/bridge.js';
 import { BindingStore } from '../src/messengers/store.js';
+import { knownSecretValues } from '../src/config.js';
 
 // Shared by the messengers-bridge suites: a recording adapter, a scripted host, and a bridge on one binding.
 // Not a suite itself.
@@ -49,6 +50,7 @@ export function setup({ events = ['input-required', 'finished'] } = {}) {
   const bridge = new MessengerBridge({
     host, store, adapters: new Map([['slack', slack]]), now: () => clock, log: (e) => logs.push(e),
     tickMs: 1e9, settleMs: 0, digestEveryMs: 0,
+    getKnownCredentialValues: () => knownSecretValues(process.env), // as src/index.js wires it, read on every call
   });
   store.putBinding({
     id: 'b0', adapter: 'slack', target: { channel: 'C0' }, scope: { type: 'group', id: 'g1' },

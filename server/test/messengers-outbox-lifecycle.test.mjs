@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { requestIdFor } from '../src/messengers/replies.js';
 import { createRow } from '../src/messengers/outbox-files.js';
-import { DAY, bob, setup, msg } from './messengers-outbox-fixtures.mjs';
+import { DAY, HOUR, bob, setup, msg } from './messengers-outbox-fixtures.mjs';
 
 // The outbox: delivery outcomes, restarts, permissions and ordering.
 
@@ -188,7 +188,10 @@ test('a stuck session does not stop the others, and its expiry still runs', asyn
   assert.equal(t.host.deliveries.filter((d) => d.id === 's1').length, 1, 'a session already sending is skipped');
   t.clock.t += DAY + 1;
   await t.bridge.drain();
-  assert.deepEqual(t.files(), []);
+  assert.equal(t.files().length, 1, 'a row inside deliver is not expired at its day: its bytes may be going out');
+  t.clock.t += HOUR;
+  await t.bridge.drain();
+  assert.deepEqual(t.files(), [], 'a send hung past the grace hour is expired');
   assert.ok(t.posts.some((p) => p.card.body === 'Not delivered — still waiting after 24h.'));
   assert.ok(stuck);
 });

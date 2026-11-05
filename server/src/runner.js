@@ -2787,6 +2787,51 @@ async function typeAndSubmit(host, id, text, opts = {}) {
   }
 }
 
+/**
+ * OpenCode's echo wait: types the prompt and waits until the TUI paints it back. Enter is never pressed
+ * here, so a failure means nothing was submitted.
+ */
+async function typeUntilEchoed(host, id, text, payload, wrote) {
+  try {
+    const expected = text.replace(/\s+/g, ' ').trim();
+    const probe = expected.slice(-Math.min(48, expected.length));
+    const deadline = Date.now() + INPUT_ECHO_TIMEOUT_MS;
+    let attempt = 0;
+    let echoed = false;
+    while (Date.now() < deadline && !echoed) {
+      if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
+      if (attempt++) {
+        host.pty.write('\x15'); // clear any attempt accepted too late to paint
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const beforeOutput = host.outputSeq;
+      let beforeScreen = '';
+      try { beforeScreen = host.vt.getVisibleText(); } catch {}
+      host.pty.write(payload);
+      wrote.any = true; // after the write: one that threw typed nothing
+      const attemptDeadline = Math.min(deadline, Date.now() + 1200);
+      while (Date.now() < attemptDeadline) {
+        if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
+        let screen = '';
+        try { screen = host.vt.getVisibleText(); } catch {}
+        echoed = host.outputSeq > beforeOutput && screen !== beforeScreen
+          && screen.replace(/\s+/g, ' ').includes(probe);
+        if (echoed) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
+    host.inputEchoed = true;
+  } catch (error) {
+    // Enter was never pressed on this path, so nothing was submitted. Clear the line (the keys reach the
+    // pane in order, so this also removes an attempt the TUI paints late) and report it as untyped:
+    // the chat outbox then keeps the row pending instead of dropping a prompt that never went out.
+    try { host.pty.write('\x15'); } catch {}
+    wrote.any = false;
+    throw error;
+  }
+}
+
 async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, wrote) {
   // Typing a prompt onto a line that already holds something submits both as
   // one message. Clearing the line first would destroy what the operator
@@ -2823,35 +2868,7 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
     // input handler is installed. Probe with the real composer text, but do
     // not press Enter until the TUI has painted that text back. Retrying only
     // the unsubmitted composer is safe; Ctrl+U clears a late/partial attempt.
-    const expected = text.replace(/\s+/g, ' ').trim();
-    const probe = expected.slice(-Math.min(48, expected.length));
-    const deadline = Date.now() + INPUT_ECHO_TIMEOUT_MS;
-    let attempt = 0;
-    let echoed = false;
-    while (Date.now() < deadline && !echoed) {
-      if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
-      if (attempt++) {
-        host.pty.write('\x15'); // clear any attempt accepted too late to paint
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const beforeOutput = host.outputSeq;
-      let beforeScreen = '';
-      try { beforeScreen = host.vt.getVisibleText(); } catch {}
-      host.pty.write(payload);
-      wrote.any = true; // after the write: one that threw typed nothing
-      const attemptDeadline = Math.min(deadline, Date.now() + 1200);
-      while (Date.now() < attemptDeadline) {
-        if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
-        let screen = '';
-        try { screen = host.vt.getVisibleText(); } catch {}
-        echoed = host.outputSeq > beforeOutput && screen !== beforeScreen
-          && screen.replace(/\s+/g, ' ').includes(probe);
-        if (echoed) break;
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-    if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
-    host.inputEchoed = true;
+    await typeUntilEchoed(host, id, text, payload, wrote);
   } else {
     host.pty.write(payload);
     wrote.any = true;

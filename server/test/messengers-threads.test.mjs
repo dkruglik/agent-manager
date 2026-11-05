@@ -226,3 +226,10 @@ test('the channel gets one notice when it goes from one agent to several, and a 
   assert.equal(t.store.state('reach', 'slack|C0'), 2);
 });
 
+
+test('a message that routes to no agent is settled, so a backfill does not replay it', async () => {
+  const t = setup();
+  const r = inThread('9.9', '10.2', 'alpha: hello');
+  assert.deepEqual(await t.send(r), { ignored: 'no-target' });
+  assert.ok(t.store.state('settledIds', 'slack|C0').includes(requestIdFor('slack', 'C0', '10.2')));
+});

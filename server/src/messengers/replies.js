@@ -119,6 +119,15 @@ export class ReplyRouter {
 
   async run(adapterId, r) {
     if (this.duplicate(r.messageId)) return { ignored: 'duplicate' };
+    try {
+      return await this.runBody(adapterId, r);
+    } catch (e) {
+      if (r.messageId) this.handled = this.handled.filter((id) => id !== r.messageId);
+      throw e;
+    }
+  }
+
+  async runBody(adapterId, r) {
     if (r.deleted) return this.outbox.deleted({ adapterId, r });
     const bindings = this.channelBindings(adapterId, r.channel);
     if (!bindings.length) return { ignored: 'unbound-channel' };
@@ -128,7 +137,10 @@ export class ReplyRouter {
       this.settle(adapterId, r);
       return this.skipUnnamed(adapterId, r, bindings);
     }
-    if (target.ignored) return { ignored: target.ignored };
+    if (target.ignored) {
+      this.settle(adapterId, r); // never routed, so a backfill must not replay it
+      return { ignored: target.ignored };
+    }
     const { found, text } = target;
     const posted = found?.[1];
     const answering = !r.edit && posted?.kind === 'input' && (posted.status === 'open' || !!r.optionId);

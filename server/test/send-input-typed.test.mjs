@@ -82,7 +82,7 @@ test('before the first write: no pane, and a line that already holds text', asyn
   runner.stop(s.id);
 });
 
-test('OpenCode echo wait: a timeout and a stop, both after the first write, are typed', async () => {
+test('OpenCode echo wait: a timeout and a stop never press Enter, so they are not typed; the line is cleared', async () => {
   as('opencode', 'silent');
   const s = make('opencode');
   runner.ensureRunning(s);
@@ -90,7 +90,8 @@ test('OpenCode echo wait: a timeout and a stop, both after the first write, are 
   const timedOut = await fails(runner.sendInput(s.id, 'into the void', { confirmEcho: true }));
   assert.equal(timedOut.code, 'input-not-ready');
   assert.match(timedOut.message, /did not acknowledge/);
-  assert.equal(timedOut.typed, true);
+  assert.equal(timedOut.typed, undefined, 'Enter was never pressed: the send is still pending');
+  assert.ok(await until(() => fs.readFileSync(received, 'utf8').endsWith('\x15')), 'the unsent text was cleared with Ctrl+U');
   runner.stop(s.id);
 
   const t = make('opencode');
@@ -102,7 +103,7 @@ test('OpenCode echo wait: a timeout and a stop, both after the first write, are 
   const stopped = await pending;
   assert.equal(stopped.code, 'input-not-ready');
   assert.match(stopped.message, /stopped while waiting/);
-  assert.equal(stopped.typed, true);
+  assert.equal(stopped.typed, undefined);
 });
 
 test('submit confirmation: not confirmed, not submitted and a stop are typed; a good send is not an error', async () => {

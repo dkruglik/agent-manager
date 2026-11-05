@@ -204,6 +204,26 @@ test('a restart during a real lock loses the notice: the rows are already gone',
   await again.stop();
 });
 
+test('a row on disk at start is dropped, not sent, when the Space is already locked at start', async () => {
+  const t = setup();
+  t.bridge.start();
+  await t.send(msg('10.1', 'one'));
+  await t.bridge.stop();
+  assert.equal(t.files().length, 1, 'the row survives the stop');
+  t.host.setLock(REAL);
+  const again = t.make({ fresh: true });
+  assert.equal(t.files().length, 1, 'still on disk before the new bridge starts');
+  again.start();
+  assert.deepEqual(t.files(), [], 'dropped at start, not held');
+  await again.drain();
+  assert.equal(t.host.deliveries.length, 0, 'nothing is sent while locked');
+  t.host.setLock(OPEN);
+  await again.drain();
+  assert.equal(t.host.deliveries.length, 0, 'and nothing after the unlock either');
+  assert.equal(lockedLines(t).length, 1, 'the sender is told once the lock is lifted');
+  await again.stop();
+});
+
 test('a send in flight that ends submitted when the lock lands does not post "Not delivered (locked)"', async () => {
   const t = setup();
   t.bridge.start();

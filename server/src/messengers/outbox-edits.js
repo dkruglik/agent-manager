@@ -1,4 +1,5 @@
 import { postNotice } from './cards.js';
+import { laterTs } from './delivery-state.js';
 import { persistError } from './outbox-files.js';
 import { editRequestIdFor, requestIdFor } from './replies.js';
 
@@ -39,13 +40,21 @@ export function createAmend(ctx, h) {
     // The send already has its bytes. Leave the event unacked so Slack retries once the send finishes.
     if (row && ctx.active.has(row.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
     if (!known(binding.adapter, r.channel, id)) return ignore('unknown-message');
-    if (editable(row)) return row.sessionId === session.id ? replace(row, session, body) : ignore('session-changed');
+    if (editable(row)) {
+      if (row.sessionId !== session.id) return ignore('session-changed');
+      if (r.edit.editTs) row.editTs = r.edit.editTs;
+      return replace(row, session, body);
+    }
     // A second edit of the same message replaces the edit that is still waiting instead of queueing another.
     const waiting = [...rows.values()].find((x) => x.adapter === binding.adapter && x.channel === r.channel && x.editOf === r.edit.ts);
     if (waiting && ctx.active.has(waiting.requestId)) throw Object.assign(new Error('the message is still being delivered'), { persist: true });
-    if (waiting && editable(waiting) && waiting.sessionId === session.id) return replace(waiting, session, EDIT_HEAD + body);
+    if (waiting && editable(waiting) && waiting.sessionId === session.id) {
+      if (waiting.editTs && r.edit.editTs && laterTs(r.edit.editTs, waiting.editTs) !== r.edit.editTs) return ignore('stale-edit');
+      waiting.editTs = r.edit.editTs;
+      return replace(waiting, session, EDIT_HEAD + body);
+    }
     const requestId = editRequestIdFor(binding.adapter, r.channel, r.edit.ts, r.edit.editTs);
-    return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts } });
+    return h.accept(ctx, { requestId, binding, session, r, body: EDIT_HEAD + body, via, extra: { editOf: r.edit.ts, editTs: r.edit.editTs } });
   }
 
   // The thread for a line about a message: its own, else the session's current root, else the channel.
