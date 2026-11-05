@@ -83,6 +83,14 @@ test('the credential filter is rebuilt per call: a secret set after boot is reda
   assert.equal(live.outbound.filter(`x ${later}`), 'x [redacted]', 'the transcript mirror uses the same filter');
 });
 
+test('a value the Space injected is redacted whatever its name, through the production wiring', () => {
+  const env = { DEPLOY_DSN: 'postgres://op:injected-value-1234@db/x', PLAIN_NAME: 'not-a-secret-value' };
+  const { bridge } = setup({ injectedKeys: ['DEPLOY_DSN'], env });
+  assert.equal(bridge.filter(`url ${env.DEPLOY_DSN}`), 'url [redacted]');
+  assert.equal(bridge.outbound.filter(`url ${env.DEPLOY_DSN}`), 'url [redacted]');
+  assert.equal(bridge.filter(`v ${env.PLAIN_NAME}`), `v ${env.PLAIN_NAME}`, 'a variable that was not injected is kept');
+});
+
 function limited(retryAfter) {
   const t = setup({ events: ['input-required'] });
   t.store.patchState({ channelMarks: { 'slack|C0': '100.0' } });

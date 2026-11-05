@@ -104,7 +104,7 @@ async function notifyUnnamed({ adapters, log, now, told }, adapterId, r) {
   if (now() - (told.get(k) ?? -Infinity) < NOTICE_EVERY_MS) return;
   told.set(k, now());
   try { await adapters.get(adapterId).postEphemeral({ channel: r.channel, user: r.user.id, text: NOT_DELIVERED }); } catch (e) {
-    log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.message });
+    log({ event: 'notice-failed', adapter: adapterId, channel: r.channel, error: e.code ?? e.name });
   }
 }
 
@@ -124,13 +124,13 @@ async function noteReach(ctx, adapterId, channel, sessions) {
         await adapters.get(adapterId).post({ channel, thread: null }, noticeCard(NAME_NEEDED));
       } catch (e) {
         ctx.reachTried.set(key, now());
-        log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
+        log({ event: 'notice-failed', adapter: adapterId, channel, error: e.code ?? e.name });
         return;
       }
     }
     store.patchState({ reach: { [key]: count } });
   } catch (e) {
-    log({ event: 'notice-failed', adapter: adapterId, channel, error: e.message });
+    log({ event: 'notice-failed', adapter: adapterId, channel, error: e.code ?? e.name });
   }
 }
 
@@ -183,7 +183,7 @@ async function quote(ctx, adapterId, session, r, text, roots) {
     await adapter.post({ channel: r.channel, thread: rootTs }, { kind: 'quote', mrkdwn: quoteOf(r.user, text) });
     list = bump(list, rootTs, now());
   } catch (e) {
-    log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.message });
+    log({ event: 'thread-failed', adapter: adapterId, channel: r.channel, session: session.id, error: e.code ?? e.name });
   }
   return list;
 }

@@ -331,3 +331,10 @@ test('onConnect fires when a refresh reconnect failed before it succeeded', asyn
   assert.equal(r.connects(), 2);
   await r.adapter.stop();
 });
+
+test('a failed Slack call carries Slack\'s error string as its code, for code-only logs', async () => {
+  const answers = [{ status: 200, json: async () => ({ ok: false, error: 'not_in_channel' }) }, { status: 502, json: async () => { throw new SyntaxError('html'); } }];
+  const adapter = new SlackAdapter({ botToken: 'test-bot-token-value', appToken: 'test-app-token-value', fetchImpl: async () => answers.shift(), setTimer: () => {} });
+  await assert.rejects(adapter.call('chat.postMessage', {}), (e) => e.code === 'not_in_channel' && /not_in_channel/.test(e.publicMessage));
+  await assert.rejects(adapter.call('chat.postMessage', {}), (e) => e.code === 'bad-response');
+});

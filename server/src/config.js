@@ -60,6 +60,12 @@ export const MESSENGERS = resolveMessengerConfig();
 // docs/messengers.md: the credential filter of the `transcript` and `finished` posts is given these values.
 export const knownSecretValues = (env = process.env) => secretValues(CLIS, env);
 
+// What the chat credential filter is given: the secrets above plus the values of the variables the Space
+// injected (`injectedKeys`, the catalog shown in Settings), whatever they are named. Read on every call.
+export const chatCredentialValues = (injectedKeys, env = process.env) => [
+  ...knownSecretValues(env), ...injectedKeys.map((key) => env[key]).filter((v) => typeof v === 'string'),
+];
+
 // A CLI's presence on PATH doesn't change while the process runs, but
 // cliCatalog() (called on every /api/clis) probed every CLI each time — ~16
 // synchronous `command -v` subprocess spawns per request, blocking the event

@@ -8,11 +8,12 @@ import { typed, user, setup, press, text } from './messengers-replies-fixtures.m
 
 test('internal error text stays out of chat; user-facing errors are shown', async () => {
   const t = setup();
-  t.host.answer = async () => { throw new Error('ECONNREFUSED /home/op/.codex/app-server.sock'); };
+  t.host.answer = async () => { throw Object.assign(new Error('ECONNREFUSED /home/op/.codex/app-server.sock'), { code: 'ECONNREFUSED' }); };
   const out = await t.bridge.handleReply('slack', press(1));
   assert.ok(out.error);
   assert.equal(t.posts.at(-1).card.body, '⚠️ Could not deliver that — see the server log.');
-  assert.equal(t.logs.find((e) => e.event === 'reply-failed').error, 'ECONNREFUSED /home/op/.codex/app-server.sock', 'the full error is logged');
+  assert.equal(t.logs.find((e) => e.event === 'reply-failed').error, 'ECONNREFUSED', 'the code is logged (rule 13)');
+  assert.ok(!JSON.stringify(t.logs).includes('/home/op'), 'not the message, which can quote terminal text');
 
   // A prompt is delivered by the drain after the ack: its errors are held for retry and logged, never shown in chat.
   t.host.prompt = async () => { throw new ApiError(409, 'busy', 'disk full at /home/op/.am/data'); };
@@ -150,11 +151,11 @@ test('an answer in flight is claimed in memory only, and a failed answer leaves 
 
 test('a card that cannot be closed after a delivered answer is logged, not reported as undelivered', async () => {
   const t = setup();
-  t.bridge.replies.cards.close = async () => { throw new Error('EACCES messengers.json'); };
+  t.bridge.replies.cards.close = async () => { throw Object.assign(new Error('EACCES messengers.json'), { code: 'EACCES' }); };
   const out = await t.bridge.handleReply('slack', press(1));
   assert.deepEqual(out, { answered: 'req1' });
   assert.equal(t.host.answers.length, 1);
-  assert.equal(t.logs.find((e) => e.event === 'close-failed')?.error, 'EACCES messengers.json');
+  assert.equal(t.logs.find((e) => e.event === 'close-failed')?.error, 'EACCES');
   assert.ok(!t.posts.some((p) => /Could not deliver/.test(p.card.body)), 'the user is not told it failed');
   assert.ok(!t.logs.some((e) => e.event === 'reply-failed'));
 });

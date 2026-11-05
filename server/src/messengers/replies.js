@@ -167,7 +167,7 @@ export class ReplyRouter {
       }
       this.log({
         event: 'reply-failed', binding: binding.id, session: session.id,
-        ...(e.requestId ? { requestId: e.requestId } : {}), error: e.message,
+        ...(e.requestId ? { requestId: e.requestId } : {}), error: e.code ?? e.name,
       });
       // Only errors written for the operator are shown (a 4xx ApiError, like the API's error envelope);
       // anything else may carry paths or internals.
@@ -248,7 +248,7 @@ export class ReplyRouter {
     this.log({ event: 'answered', binding: binding.id, session: session.id, key: p.item.key, user: r.user.id });
     // The answer was delivered: a card that cannot be closed is a log line, not a failed reply.
     try { await this.cards.close(k, { ...p, partial: outcome.answers || p.partial }, session, outcome.text); } catch (e) {
-      this.log({ event: 'close-failed', binding: binding.id, session: session.id, key: p.item.key, error: e.message });
+      this.log({ event: 'close-failed', binding: binding.id, session: session.id, key: p.item.key, error: e.code ?? e.name });
     }
     return { answered: p.item.key };
   }

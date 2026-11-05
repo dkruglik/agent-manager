@@ -187,9 +187,9 @@ test('with two agents an unaddressed message gets one ephemeral notice per user 
 
 test('a notice that cannot be sent is logged and does not break the refusal', async () => {
   const t = setup({ sessions: ['s1', 's2'] });
-  t.slack.postEphemeral = async () => { throw new Error('slack chat.postEphemeral: not_in_channel'); };
+  t.slack.postEphemeral = async () => { throw Object.assign(new Error('slack chat.postEphemeral: not_in_channel'), { code: 'not_in_channel' }); };
   assert.deepEqual(await t.send(msg('10.1', 'hi')), { refused: 'no-agent-named' });
-  assert.equal(t.logs.find((e) => e.event === 'notice-failed').error, 'slack chat.postEphemeral: not_in_channel');
+  assert.equal(t.logs.find((e) => e.event === 'notice-failed').error, 'not_in_channel');
 });
 
 test('a group binding of one takes an unaddressed message; a session binding does too', async () => {
