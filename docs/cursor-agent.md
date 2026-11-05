@@ -115,6 +115,10 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
   `~/.config/cursor` is copied into the durable tree, its databases through
   SQLite's backup. The original is then kept as `*.pre-agent-state`. Expect the
   first boot to copy the whole existing tree (about 300 MB here) to the bucket.
+- **Logo.** The CLI package ships no icon file. The new-agent list uses
+  `web/public/logos/cursor.png` (the Cursor cube), inverted on the dark theme
+  the same way as the shell mark. If that file is missing, the tile falls back
+  to the shell icon.
 
 ## Not done yet
 
@@ -127,7 +131,6 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
   (`ESC[?25l`) and draws its own, so the typed text cannot be read back that
   way (`sameComposer` calls the empty and the typed capture identical). No
   pasted-text placeholder has been captured either.
-- **Logo.** The CLI package ships no icon file, so the UI uses the shell icon.
 - **Not checked:** an image build and first boot (Docker was not available),
   whether the CLI updates itself, and whether `login` with `NO_OPEN_BROWSER`
   completes from a Space.
