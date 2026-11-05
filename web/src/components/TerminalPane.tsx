@@ -1641,6 +1641,11 @@ export default function TerminalPane({
               onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKeyRef.current(seq); focusTerm(); }}
             >{label}</button>
           ))}
+          {/* Scrolls the xterm buffer, not the PTY: no bytes are sent. */}
+          <button
+            className="tk-btn"
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); termRef.current?.scrollToBottom(); focusTerm(); }}
+          >bottom</button>
           {/* Unlike the key buttons this must NOT preventDefault: the clipboard
               read needs a real click gesture. stopPropagation keeps the bar's
               own preventDefault (which preserves terminal focus) off this one. */}
