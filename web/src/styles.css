@@ -227,13 +227,13 @@ body {
 .widget-actions { display: flex; gap: 8px; }
 .widget-actions .btn-primary { flex: 1; }
 
-/* quickstart: one row of harnesses (+ the group tile), one prompt, go */
-/* Sized so every tile fits on ONE row at the sidebar's width; wrap stays as a
-   fallback for a narrower viewport rather than overflowing. */
+/* quickstart: the harnesses, the group tile and the session types, one prompt, go */
 /* Six to a row, both rows on the same track size, so the picker fills the panel
    instead of trailing off mid-width. A grid rather than flex: row two has fewer
    buttons, and they must land on the same widths as row one rather than sizing
-   themselves. A seventh harness wraps onto a new line of the same grid. */
+   themselves. Row one is the first six harnesses; row two is any further ones,
+   then the group tile and the session types. No cell in the grid is empty: the
+   divider before the session types is drawn (see .quick-session-start). */
 .quick-clis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; align-items: center; }
 .quick-cli { width: 100%; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; padding: 0; opacity: 0.65; }
 .quick-cli:hover:not(:disabled) { opacity: 1; border-color: var(--border-strong); }
