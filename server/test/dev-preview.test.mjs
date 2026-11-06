@@ -46,6 +46,8 @@ const MAIN = {
   'entrypoint.sh': '#!/bin/sh\n',
   'codex-requirements.toml': '# req\n',
   'gemini-system-defaults.json': '{}\n',
+  'scripts/cli-allowlist.sh': '# allowlist\n',
+  'am-install-clis': '# none\n',
 };
 
 function makeOrigin(name, mainFiles) {

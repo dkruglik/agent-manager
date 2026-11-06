@@ -56,7 +56,8 @@ the adapter's restore fails and leaves the live tree as it is. For the listing,
 count as a complete listing, as rsync exit 24 does for the tree copy.
 
 The image pins the agent itself: `/opt/cursor-agent/<version>` (checksum-verified
-in the Dockerfile; a mismatch fails the build, and so does a matching tarball
+by `am_install_cursor` in `scripts/cli-allowlist.sh`, which the Dockerfile runs;
+a mismatch fails the build, and so does a matching tarball
 that does not unpack or run `--version`; a failed download leaves the image
 without the agent), linked as `cursor-agent` and
 `agent` in `/usr/local/bin`. Because `~/.local/bin` (a hand install, durable

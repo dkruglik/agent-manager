@@ -98,11 +98,16 @@ Transcript lines are `{"role": "user" | "assistant", "message": {"content":
 
 ## Image and state
 
-- **Install.** The `Dockerfile` installs cursor-agent 2026.10.22-27dcf5f from
-  `downloads.cursor.com` into `/opt/cursor-agent/<version>`. Cursor publishes no
-  checksum, so the SHA-256 pins the tarball as downloaded on 2026-11-03. A
-  mismatch fails the build, and so does a matching tarball that does not unpack
-  or run `--version`. A failed download leaves the image without the agent. `entrypoint.sh` writes `cursor-agent` and `agent`
+- **Install.** The image installs cursor-agent 2026.10.22-27dcf5f from
+  `downloads.cursor.com` into `/opt/cursor-agent/<version>`. The pin and the
+  install steps are `am_install_cursor` in `scripts/cli-allowlist.sh` (the
+  Dockerfile calls it, and so does `scripts/install-local-clis.sh` when cursor
+  is selected). Cursor publishes no checksum, so the SHA-256 pins the tarball
+  as downloaded on 2026-11-03. A mismatch fails the build, and so does a
+  matching tarball that does not unpack or run `--version`. A failed download
+  leaves the image without the agent. An install allowlist that does not name
+  `cursor` skips the step, so the binary is not in the image
+  ([development](development.md#configuration)). `entrypoint.sh` writes `cursor-agent` and `agent`
   wrappers in `$AM_LOCAL/bin`, which comes before `~/.local/bin` on PATH, so
   the pin wins over a hand install in the durable HOME. The hand install is
   left in place. The wrappers also keep Node's compile cache on local disk.

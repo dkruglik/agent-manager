@@ -1,0 +1,40 @@
+# Agent CLIs to install.
+#
+# Read by scripts/install-local-clis.sh when you pass no CLI names, and by the
+# Docker image build (the Dockerfile copies this file). One id per line, or
+# several separated by commas or spaces. Blank lines and anything after `#`
+# are ignored.
+#
+# Leave every id commented out to install the historical default set:
+#   local script — claude, codex, gemini, opencode, openclaw
+#   Docker image — those five, plus cursor, hermes, fx and antigravity
+#
+# Uncomment a subset to install only those. Claude and Codex stay required
+# when they are selected: a failed install stops the local run and fails the
+# image build. Every other CLI stays best-effort, so a vendor CDN being down
+# does not fail the build. Omitting claude or codex skips them; it does not
+# fail the run.
+#
+# AM_INSTALL_CLIS overrides this file when it is set and not empty
+# (`AM_INSTALL_CLIS=claude,cursor ./scripts/install-local-clis.sh`, or
+# `docker build --build-arg AM_INSTALL_CLIS=claude,cursor`). A Space variable
+# of the same name is injected at runtime, after the image exists, so it
+# cannot skip an install — commit this file (or pass the build arg) and
+# rebuild. Ids are the catalog ids. `agy` and `cursor-agent` are accepted
+# aliases.
+#
+# Example: Claude Code and Cursor only, and nothing else (Codex, Hermes,
+# OpenClaw, fx, Antigravity, Gemini, opencode):
+#
+# claude
+# cursor
+
+# claude
+# codex
+# gemini
+# opencode
+# openclaw
+# cursor
+# hermes
+# fx
+# antigravity

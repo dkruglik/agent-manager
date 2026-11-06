@@ -66,8 +66,11 @@ const installedPlugin = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'plug
 assert.equal(fs.readFileSync(installedPlugin, 'utf8'), fs.readFileSync(path.join(scripts, 'am-opencode-repin.js'), 'utf8'));
 
 const installer = path.join(scripts, 'install-local-clis.sh');
+const allowlist = path.join(scripts, 'cli-allowlist.sh');
 assert.notEqual(fs.statSync(installer).mode & 0o111, 0, 'CLI installer is executable');
+assert.notEqual(fs.statSync(allowlist).mode & 0o111, 0, 'allowlist parser is executable');
 assert.equal(spawnSync('sh', ['-n', installer]).status, 0, 'CLI installer parses as POSIX shell');
+assert.equal(spawnSync('sh', ['-n', allowlist]).status, 0, 'allowlist parser parses as POSIX shell');
 
 // Required versus optional, the Dockerfile's own split. A fake npm stands in
 // for the registry: the real openclaw package refuses to install on the Node
@@ -75,9 +78,12 @@ assert.equal(spawnSync('sh', ['-n', installer]).status, 0, 'CLI installer parses
 // no-argument run could not finish on a supported runtime.
 const fakeBin = path.join(tmp, 'fakebin');
 fs.mkdirSync(fakeBin, { recursive: true });
+const npmLog = path.join(tmp, 'npm.log');
+const curlLog = path.join(tmp, 'curl.log');
 const writeFakeNpm = (failing) => {
   fs.writeFileSync(path.join(fakeBin, 'npm'), [
     '#!/bin/sh',
+    `printf '%s\\n' "$*" >> '${npmLog}'`,
     'for a in "$@"; do',
     `  case "$a" in ${failing}*) echo "preinstall: unsupported Node" >&2; exit 1 ;; esac`,
     'done',
@@ -97,21 +103,160 @@ const writeFakeNpm = (failing) => {
     'exit 0',
   ].join('\n'), { mode: 0o755 });
 };
-const runInstaller = (args = []) => spawnSync('sh', [installer, ...args], {
-  encoding: 'utf8',
-  env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, NPM_CONFIG_PREFIX: path.join(tmp, 'prefix') },
-});
+// A download that fails. The default run must not reach it: cursor, fx and
+// antigravity are opt-in, not part of the historical local set.
+fs.writeFileSync(path.join(fakeBin, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${curlLog}'\nexit 1\n`, { mode: 0o755 });
+const runInstaller = (args = [], extra = {}) => {
+  fs.writeFileSync(npmLog, '');
+  fs.writeFileSync(curlLog, '');
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    NPM_CONFIG_PREFIX: path.join(tmp, 'prefix'),
+  };
+  delete env.AM_INSTALL_CLIS;
+  delete env.AM_INSTALL_CLIS_FILE;
+  return spawnSync('sh', [installer, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
+};
+const plan = (profile, extra = {}) => {
+  const env = { ...process.env };
+  delete env.AM_INSTALL_CLIS;
+  delete env.AM_INSTALL_CLIS_FILE;
+  return spawnSync('sh', [allowlist, 'plan', profile], { encoding: 'utf8', env: { ...env, ...extra } });
+};
+const planOf = (result) => Object.fromEntries(result.stdout.trim().split('\n').filter(Boolean).map((line) => {
+  const [id, action, need] = line.split(' ');
+  return [id, `${action} ${need}`];
+}));
 
 writeFakeNpm('openclaw');
 const optionalFails = runInstaller();
 assert.equal(optionalFails.status, 0,
-  `an optional CLI failing must not fail the recommended run:\n${optionalFails.stderr}`);
+  `an optional CLI failing must not fail the recommended run:\n${optionalFails.stderr}\n${optionalFails.stdout}`);
 assert.match(optionalFails.stdout, /Not installed: openclaw/, 'and the run says which one it skipped');
+assert.equal(fs.readFileSync(curlLog, 'utf8'), '', 'the default local run does not fetch cursor, fx or antigravity');
 
 writeFakeNpm('@anthropic-ai/claude-code');
 const requiredFails = runInstaller();
 assert.equal(requiredFails.status, 1, 'a CLI the manager needs still stops the run');
 assert.match(requiredFails.stderr, /claude did not install/);
+
+// The committed file is comments only, so both profiles keep today's set.
+const localDefault = plan('local');
+assert.equal(localDefault.status, 0, localDefault.stderr);
+assert.deepEqual(planOf(localDefault), {
+  claude: 'install required', codex: 'install required', gemini: 'install optional',
+  opencode: 'install optional', openclaw: 'install optional',
+  cursor: 'skip optional', hermes: 'skip optional', fx: 'skip optional', antigravity: 'skip optional',
+});
+const imageDefault = plan('docker');
+assert.equal(imageDefault.status, 0, imageDefault.stderr);
+for (const id of Object.keys(planOf(localDefault))) {
+  assert.equal(planOf(imageDefault)[id].startsWith('install '), true, `${id} is in the image's historical set`);
+}
+
+const listed = path.join(tmp, 'am-install-clis');
+fs.writeFileSync(listed, '# Claude Code and Cursor only\nclaude\ncursor-agent\n# codex stays out\n');
+const fromFile = plan('docker', { AM_INSTALL_CLIS: '', AM_INSTALL_CLIS_FILE: listed });
+assert.equal(fromFile.status, 0, fromFile.stderr);
+assert.equal(planOf(fromFile).claude, 'install required');
+assert.equal(planOf(fromFile).cursor, 'install optional');
+assert.equal(planOf(fromFile).codex, 'skip required', 'a required CLI left off the allowlist is skipped');
+assert.equal(planOf(fromFile).hermes, 'skip optional');
+assert.equal(planOf(fromFile).openclaw, 'skip optional');
+assert.equal(planOf(fromFile).antigravity, 'skip optional');
+
+const commented = path.join(tmp, 'commented');
+fs.writeFileSync(commented, '# claude\n\n# cursor\n');
+const blanks = plan('local', { AM_INSTALL_CLIS: '   \n', AM_INSTALL_CLIS_FILE: commented });
+assert.deepEqual(planOf(blanks), planOf(localDefault), 'an empty variable and a comments-only file keep the default');
+
+const envWins = plan('docker', { AM_INSTALL_CLIS: 'opencode, agy', AM_INSTALL_CLIS_FILE: listed });
+assert.equal(envWins.status, 0, envWins.stderr);
+assert.equal(planOf(envWins).opencode, 'install optional');
+assert.equal(planOf(envWins).antigravity, 'install optional', 'agy is the antigravity alias');
+assert.equal(planOf(envWins).claude, 'skip required', 'a non-empty AM_INSTALL_CLIS replaces the file');
+
+const unknown = plan('local', { AM_INSTALL_CLIS: 'claude,not-a-cli' });
+assert.equal(unknown.status, 2);
+assert.match(unknown.stderr, /unknown CLI 'not-a-cli'/);
+
+const oneShot = runInstaller(['--plan', 'cursor', 'claude']);
+assert.equal(oneShot.status, 0, oneShot.stderr);
+assert.equal(planOf(oneShot).claude, 'install required');
+assert.equal(planOf(oneShot).cursor, 'install optional');
+assert.equal(planOf(oneShot).codex, 'skip required', 'command-line ids replace the allowlist for that run');
+assert.equal(fs.readFileSync(npmLog, 'utf8'), '', '--plan installs nothing');
+
+writeFakeNpm('does-not-match');
+const argsWin = runInstaller(['opencode'], { AM_INSTALL_CLIS: 'claude' });
+assert.equal(argsWin.status, 0, argsWin.stderr);
+assert.match(fs.readFileSync(npmLog, 'utf8'), /opencode-ai/);
+assert.doesNotMatch(fs.readFileSync(npmLog, 'utf8'), /claude-code/);
+
+writeFakeNpm('@anthropic-ai/claude-code');
+const excludedRequired = runInstaller([], { AM_INSTALL_CLIS: 'opencode' });
+assert.equal(excludedRequired.status, 0, 'omitting claude does not fail the run when claude would not have installed');
+assert.doesNotMatch(fs.readFileSync(npmLog, 'utf8'), /claude-code/);
+assert.match(excludedRequired.stdout, /Skipped \(not on the install allowlist\):.*\bclaude\b/);
+const stillRequired = runInstaller([], { AM_INSTALL_CLIS: 'claude,opencode' });
+assert.equal(stillRequired.status, 1, 'claude stays required when the allowlist selects it');
+assert.match(stillRequired.stderr, /claude did not install/);
+
+writeFakeNpm('openclaw');
+const onlyOptional = runInstaller([], { AM_INSTALL_CLIS: 'openclaw' });
+assert.equal(onlyOptional.status, 0, onlyOptional.stderr);
+assert.match(onlyOptional.stdout, /Not installed: openclaw/);
+assert.match(onlyOptional.stdout, /Skipped \(not on the install allowlist\):/);
+
+const rejected = runInstaller(['nope']);
+assert.equal(rejected.status, 2);
+assert.match(rejected.stderr, /unknown CLI 'nope'/);
+assert.equal(fs.readFileSync(npmLog, 'utf8'), '', 'an unknown id fails before any install');
+
+// A selected cursor whose download fails is best-effort. A tarball that does
+// not match the pin still fails the run, same as the image build.
+const cursorSoft = runInstaller([], { AM_INSTALL_CLIS: 'cursor' });
+assert.equal(cursorSoft.status, 0, `${cursorSoft.stderr}\n${cursorSoft.stdout}`);
+assert.match(cursorSoft.stdout, /Not installed: cursor/);
+if (process.platform === 'linux' && process.arch === 'x64') {
+  assert.match(fs.readFileSync(curlLog, 'utf8'), /cursor/, 'a selected cursor is fetched');
+  const curlBin = path.join(tmp, 'curlbin');
+  fs.mkdirSync(curlBin);
+  fs.writeFileSync(path.join(curlBin, 'curl'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { printf x > "$2"; exit 0; }; shift; done\nexit 1\n', { mode: 0o755 });
+  const cursorHard = runInstaller([], {
+    AM_INSTALL_CLIS: 'cursor',
+    PATH: `${curlBin}:${process.env.PATH}`,
+    CURSOR_SHA256: '0'.repeat(64),
+  });
+  assert.equal(cursorHard.status, 1, `${cursorHard.stderr}\n${cursorHard.stdout}`);
+  assert.match(cursorHard.stderr, /does not match the pinned SHA-256/);
+} else {
+  assert.match(cursorSoft.stderr, /linux\/x64 only/);
+  assert.equal(fs.readFileSync(curlLog, 'utf8'), '', 'a non-linux/x64 host does not download the pinned tarball');
+}
+
+for (const id of ['claude', 'codex', 'gemini', 'opencode', 'openclaw', 'cursor', 'hermes', 'fx', 'antigravity']) {
+  assert.match(dockerfile, new RegExp(`am_cli_install ${id} 1`), `${id} is gated in the image`);
+}
+// Each RUN is a new shell, so a gate that forgot to load the allowlist would
+// install that CLI even when the file says not to.
+for (const chunk of dockerfile.split(/^RUN /m).slice(1)) {
+  if (chunk.includes('am_cli_install ')) {
+    assert.match(chunk, /am_cli_allowlist_load/, 'an install step reloads the allowlist in its own shell');
+  }
+}
+assert.match(dockerfile, /am_install_cursor/);
+assert.match(dockerfile, /am_install_fx/);
+assert.match(dockerfile, /am_install_agy/);
+assert.match(dockerfile, /am_install_hermes/);
+assert.match(dockerfile, /am_link_hermes/);
+assert.match(dockerfile, /SKIPPED/, 'the image inventory can say a CLI was left off the allowlist');
+assert.doesNotMatch(dockerfile, /npm install -g @anthropic-ai\/claude-code@latest @openai\/codex@latest/);
+const allowlistText = fs.readFileSync(allowlist, 'utf8');
+assert.match(allowlistText, /@anthropic-ai\/claude-code@latest/);
+assert.match(allowlistText, /85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294/);
+assert.match(allowlistText, /2026\.10\.22-27dcf5f/);
 
 // ---- the other app-owned paths, from the same spaced checkout ----
 const spacedShare = await import(pathToFileURL(path.join(spacedRoot, 'server', 'src', 'share.js')));
