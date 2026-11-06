@@ -22,6 +22,7 @@
 //  - opencode: `opencode models` — only providers that have credentials
 //  - antigravity: `agy models` — TSV `id<TAB>label`, asked over the network,
 //              with the same key provider as a launch
+//  - cursor  : `cursor-agent models` — `id - label` lines after a header
 //  - hermes  : its own provider model cache (~/.hermes/provider_models_cache.json)
 // openclaw and fx take no model at launch, so they get no list.
 import fs from 'node:fs';
@@ -121,6 +122,23 @@ export function parseAgyModels(stdout) {
     .map(([id, label]) => ({ id: id.trim(), label: label.trim() || undefined }));
 }
 
+/**
+ * `cursor-agent models`: a "Available models" header, then `id - label` lines.
+ * `auto` is the CLI's default, which an empty choice already is, so it is not
+ * offered. Labels may end in zero-width spaces.
+ */
+export function parseCursorModels(text) {
+  const seen = new Set();
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    const m = /^(\S+) - (.*)$/.exec(line.replace(/[\u200b-\u200d\ufeff]/g, '').trim());
+    if (!m || m[1] === 'auto' || !LAUNCH_MODEL.test(m[1]) || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push({ id: m[1], label: m[2].trim() || undefined });
+  }
+  return out;
+}
+
 /** Hermes' cache: { <provider>: { models: [id | {id}] } } → `<provider>/<id>`. */
 export function parseHermesCache(json) {
   const out = [];
@@ -180,6 +198,7 @@ const SOURCES = {
   },
   opencode: async () => ({ models: parseOpencodeModels(await runList('opencode models')), source: 'opencode models' }),
   antigravity: async () => ({ models: parseAgyModels(await runList(agyCommand('models'))), source: 'agy models' }),
+  cursor: async () => ({ models: parseCursorModels(await runList('cursor-agent models')), source: 'cursor-agent models' }),
   hermes: async () => {
     const file = path.join(process.env.HOME || os.homedir(), '.hermes', 'provider_models_cache.json');
     return { models: parseHermesCache(JSON.parse(fs.readFileSync(file, 'utf8'))), source: '~/.hermes/provider_models_cache.json' };

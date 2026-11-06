@@ -227,13 +227,14 @@ body {
 .widget-actions { display: flex; gap: 8px; }
 .widget-actions .btn-primary { flex: 1; }
 
-/* quickstart: one row of harnesses (+ the group tile), one prompt, go */
-/* Sized so every tile fits on ONE row at the sidebar's width; wrap stays as a
-   fallback for a narrower viewport rather than overflowing. */
-/* Six to a row, both rows on the same track size, so the picker fills the panel
+/* quickstart picker: two six-column grids. Row one is the first six harnesses.
+   Row two is any further harnesses, then the group tile, remote, shell and
+   files. Both rows use the same track size, so the picker fills the panel
    instead of trailing off mid-width. A grid rather than flex: row two has fewer
    buttons, and they must land on the same widths as row one rather than sizing
-   themselves. A seventh harness wraps onto a new line of the same grid. */
+   themselves. When row two has further harnesses, the group tile starts the
+   session types and a divider is drawn before it (see .quick-session-start);
+   the divider takes no track, so the row's unused tracks stay at its end. */
 .quick-clis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; align-items: center; }
 .quick-cli { width: 100%; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; padding: 0; opacity: 0.65; }
 .quick-cli:hover:not(:disabled) { opacity: 1; border-color: var(--border-strong); }
@@ -259,10 +260,11 @@ body {
 }
 /* Second picker row: everything you can make that is not one of the agents. */
 .quick-clis-2 { margin-top: 4px; }
-/* A real grid cell, not a margin: it holds a column so the CLI that wrapped off
-   row one stays separated from the session types on the same 6-column rhythm,
-   and the separation does not move when remote/shell/files are absent. */
-.quick-gap { pointer-events: none; }
+/* The first session type after the CLIs that wrapped off row one gets a divider
+   in the 4px gutter to its left. It is drawn, not a cell: a cell would take a
+   column of the 6-track grid and push the last tile onto a row of its own. */
+.quick-session-start { position: relative; }
+.quick-session-start::before { content: ""; position: absolute; top: 0; bottom: 0; left: -2.5px; width: 1px; background: var(--border-strong); }
 /* A field switched off because it means nothing for this type says so in its
    own box, rather than going grey and leaving you to guess. */
 .fp-current .fp-why { color: var(--muted); font-style: italic; }

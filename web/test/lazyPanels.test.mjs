@@ -146,7 +146,16 @@ try {
     // 793, ~0.1 kB over this branch's needs, as tight as the raise above.
     // After merging #227 (2026-10-30): main 811,065, this branch 812,081
     // (+1,016, unchanged), 49 over 793. Raised to 794.
-    //
+    // Messenger deep links (2026-10-29, docs/messengers.md): a Slack card opens
+    // its agent through `#session=<id>`. main measured 810,967 here, this branch
+    // 811,141 (+174), all of it the App.tsx hook that loads lib/sessionLink.ts
+    // when the hash names a session; the handler and the messenger API helpers
+    // are in their own chunks. The hook cannot be lazy, since it decides whether
+    // to load the handler. Together with the model/effort wiring above, the merged
+    // entry measured 813,579 characters (+174 over the 794 budget's own need):
+    // raised to 795, ~0.5 kB of headroom.
+    // Merged with main (2026-11-05): both sides' changes together measure
+    // 814,682 characters (795.59 kB), inside the 796 kB budget below.
     // Terminal shortcuts (2026-11-03): +1,063 for the key rules in
     // lib/terminalKeys.ts, which the terminal's key handler needs on first
     // paint. Raised to 795.

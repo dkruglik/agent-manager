@@ -52,6 +52,12 @@ export function init() {
 /** Has the one-time rollout baseline been taken? */
 export function initialized() { return state.initialized; }
 
+/** Does `mark` name exactly the newest reply `latest`? Same transcript
+ *  generation, position and content; a cursor further along is not a match. */
+export function covers(mark, latest) {
+  return !!mark && !!latest && mark.src === latest.src && mark.seq === latest.seq && mark.hash === latest.hash;
+}
+
 export function get(id) { return state.marks[id] || null; }
 
 export function all() { return { ...state.marks }; }

@@ -248,6 +248,8 @@ export default function TerminalPane({
   // Reachable from the mode switch: a flick can still be coasting through the
   // terminal's scrollback when the reader covers it.
   const stopGlideRef = useRef<() => void>(() => {});
+  // The bottom key: ends any coasting flick and any scroll anchor, then jumps.
+  const jumpToBottomRef = useRef<() => void>(() => {});
   const reconnectRef = useRef<(restart?: boolean) => void>(() => {});
   const controllerRef = useRef(false);
   const previousZoomRef = useRef(zoom);
@@ -1123,6 +1125,7 @@ export default function TerminalPane({
     };
     const stopGlide = () => { if (glideFrame) { cancelAnimationFrame(glideFrame); glideFrame = 0; } };
     stopGlideRef.current = stopGlide;
+    jumpToBottomRef.current = () => { stopGlide(); userScroll(); term.scrollToBottom(); };
     // Reader mode covers this frame with its own scroller. These listeners sit
     // on .term-host in CAPTURE and preventDefault, so without this guard every
     // drag over the conversation was eaten here and spent on the hidden
@@ -1649,6 +1652,11 @@ export default function TerminalPane({
               onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKeyRef.current(seq); focusTerm(); }}
             >{label}</button>
           ))}
+          {/* Scrolls the xterm buffer, not the PTY: no bytes are sent. */}
+          <button
+            className="tk-btn"
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); jumpToBottomRef.current(); focusTerm(); }}
+          >bottom</button>
           {/* Unlike the key buttons this must NOT preventDefault: the clipboard
               read needs a real click gesture. stopPropagation keeps the bar's
               own preventDefault (which preserves terminal focus) off this one. */}

@@ -41,6 +41,8 @@ const env = {
   FX_DURABLE: path.join(data, 'state/fx'),
   ANTIGRAVITY_LIVE: path.join(local, 'antigravity-home'),
   ANTIGRAVITY_DURABLE: path.join(data, 'state/antigravity'),
+  CURSOR_LIVE: path.join(local, 'cursor-home'),
+  CURSOR_DURABLE: path.join(data, 'state/cursor'),
 };
 
 let failures = 0;
@@ -52,8 +54,8 @@ const put = (file, body) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, body);
 };
-const run = (mode, options = {}) => execFileSync('sh', [script, mode], {
-  env, encoding: 'utf8', stdio: options.stdio || 'pipe',
+const run = (mode, options = {}) => execFileSync('sh', [script, mode, ...(options.args || [])], {
+  env: { ...env, ...(options.env || {}) }, encoding: 'utf8', stdio: options.stdio || 'pipe',
 });
 const sql = (db, statement) => execFileSync('sqlite3', [db, statement], { encoding: 'utf8' }).trim();
 const waitFor = (child, marker) => new Promise((resolve, reject) => {
@@ -213,6 +215,290 @@ try {
   check('Antigravity conversation restores from its checkpoint after a fresh container',
     sql(path.join(agy, agyConvRel), 'SELECT count(*) FROM steps;') === '2'
       && fs.existsSync(path.join(agy, 'cache/onboarding.json')));
+
+  // Cursor CLI: ~/.cursor and ~/.config/cursor are linked into one local tree
+  // (dot-cursor/, config/). Each chat is a WAL-mode store.db; the committed
+  // row lives only in the WAL while cursor-agent holds it open. Transcripts
+  // are plain files. The worker's live socket, its log and the 1 MB statsig
+  // cache stay local, and a socket in the tree must not fail the run.
+  const cur = path.join(env.CURSOR_LIVE, 'dot-cursor');
+  const curDurable = path.join(env.CURSOR_DURABLE, 'dot-cursor');
+  const curDbRel = 'chats/5d41402abc4b2a76b9719d911017c592/6f0c1a2e-0000-4000-8000-000000000001/store.db';
+  const curTranscriptRel = 'projects/work-repo/agent-transcripts/6f0c1a2e/6f0c1a2e.jsonl';
+  const bindSocket = (file) => execFileSync('python3', ['-I', '-c',
+    'import socket,sys;s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1])', file]);
+  const findJunk = (dir) => execFileSync('find', [dir, '-name', '*-wal', '-o', '-name', '*-shm',
+    '-o', '-name', '*.sock', '-o', '-name', 'worker.log', '-o', '-name', 'statsig-cache.json'], { encoding: 'utf8' }).trim();
+  put(path.join(cur, curTranscriptRel), '{"role":"user"}\n');
+  put(path.join(cur, 'cli-config.json'), '{"version":1}\n');
+  put(path.join(env.CURSOR_LIVE, 'config/auth.json'), '{"accessToken":"fixture"}\n');
+  put(path.join(cur, 'projects/work-repo/worker.log'), 'noise');
+  put(path.join(cur, 'statsig-cache.json'), '{"cache":true}');
+  const curSock = path.join(cur, 'projects/work-repo/worker.sock');
+  bindSocket(curSock);
+  check('Cursor fixture has a live unix socket', fs.lstatSync(curSock).isSocket());
+  fs.mkdirSync(path.dirname(path.join(cur, curDbRel)), { recursive: true });
+  const curWriter = spawn('sqlite3', [path.join(cur, curDbRel)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  curWriter.stdin.write('PRAGMA journal_mode=WAL;\n');
+  curWriter.stdin.write('PRAGMA wal_autocheckpoint=0;\n');
+  curWriter.stdin.write('CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT);\n');
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('composer said hi');\n");
+  curWriter.stdin.write('.print cur-ready\n');
+  await waitFor(curWriter, 'cur-ready');
+  check('Cursor fixture keeps the committed row in the WAL',
+    fs.existsSync(path.join(cur, `${curDbRel}-wal`)) && fs.statSync(path.join(cur, `${curDbRel}-wal`)).size > 0);
+  let curRunOk = true;
+  try { run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } }); } catch { curRunOk = false; }
+  check('Cursor checkpoint does not fail because of the live socket', curRunOk);
+  const curCheckpoint = path.join(curDurable, curDbRel);
+  check('Cursor chat checkpoints as a valid database',
+    fs.existsSync(curCheckpoint) && sql(curCheckpoint, 'PRAGMA quick_check;') === 'ok');
+  check('Cursor checkpoint includes the row still in the WAL',
+    fs.existsSync(curCheckpoint) && sql(curCheckpoint, 'SELECT body FROM blobs;') === 'composer said hi');
+  check('Cursor transcript, config and sign-in checkpoint',
+    fs.existsSync(path.join(curDurable, curTranscriptRel))
+      && fs.readFileSync(path.join(curDurable, curTranscriptRel), 'utf8') === '{"role":"user"}\n'
+      && fs.existsSync(path.join(curDurable, 'cli-config.json'))
+      && fs.existsSync(path.join(env.CURSOR_DURABLE, 'config/auth.json')));
+  const curJunk = findJunk(env.CURSOR_DURABLE);
+  check('Cursor durable tree has no WAL/SHM, socket, worker log or statsig cache', curJunk === '', curJunk);
+  // Throttle: a changed database is copied at most once per interval, so a
+  // chat being written to is not re-copied every tick ...
+  const touchWal = (offsetMs) => {
+    const t = new Date(Date.now() + offsetMs);
+    fs.utimesSync(path.join(cur, `${curDbRel}-wal`), t, t);
+  };
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('second turn');\n");
+  curWriter.stdin.write('.print cur-second\n');
+  await waitFor(curWriter, 'cur-second');
+  touchWal(5000);
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } });
+  check('Cursor database changed inside the interval is not re-copied',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '1');
+  // ... and is still picked up on a later pass once the interval allows it.
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '0' } });
+  check('Cursor database changed inside the interval is copied on a later pass',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '2');
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('third turn');\n");
+  curWriter.stdin.write('.print cur-third\n');
+  await waitFor(curWriter, 'cur-third');
+  touchWal(10000);
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '0' } });
+  check('Cursor database is copied again with the throttle off',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '3');
+  // The final checkpoint ignores the interval, so an ungraceful stop loses at
+  // most CURSOR_DB_MIN_INTERVAL of a hot chat, and a graceful one nothing.
+  curWriter.stdin.write("INSERT INTO blobs(body) VALUES ('fourth turn');\n");
+  curWriter.stdin.write('.print cur-fourth\n');
+  await waitFor(curWriter, 'cur-fourth');
+  touchWal(15000);
+  run('checkpoint', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } });
+  check('Cursor checkpoint defers a database changed inside the interval',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '3');
+  run('checkpoint-final', { env: { CURSOR_DB_MIN_INTERVAL: '100000' } });
+  check('Cursor checkpoint-final publishes a database changed inside the interval',
+    sql(curCheckpoint, 'SELECT count(*) FROM blobs;') === '4');
+  curWriter.kill('SIGKILL');
+  fs.rmSync(env.CURSOR_LIVE, { recursive: true, force: true });
+  run('restore');
+  check('Cursor chat restores from its checkpoint after a fresh container',
+    fs.existsSync(path.join(cur, curDbRel))
+      && sql(path.join(cur, curDbRel), 'PRAGMA quick_check;') === 'ok'
+      && sql(path.join(cur, curDbRel), 'SELECT count(*) FROM blobs;') === '4');
+  check('Cursor transcript and sign-in restore',
+    fs.existsSync(path.join(cur, curTranscriptRel)) && fs.existsSync(path.join(env.CURSOR_LIVE, 'config/auth.json')));
+
+  // Hot restart: $AM_LOCAL survives and a live database may hold a commit only
+  // in its WAL, so its main file is OLDER than the last durable `.backup`. A
+  // valid live database must stay as it is (same inode, WAL row intact); an
+  // invalid one is moved aside and its checkpoint comes back in its place.
+  const liveDb = path.join(cur, curDbRel);
+  const hotWriter = spawn('sqlite3', [liveDb], { stdio: ['pipe', 'pipe', 'pipe'] });
+  hotWriter.stdin.write('PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n');
+  hotWriter.stdin.write("INSERT INTO blobs(body) VALUES ('wal-only turn');\n.print hot-ready\n");
+  await waitFor(hotWriter, 'hot-ready');
+  const newer = new Date(Date.now() + 20000);
+  fs.utimesSync(path.join(curDurable, curDbRel), newer, newer);
+  const inodeBefore = fs.statSync(liveDb).ino;
+  // As at boot: the entrypoint sets this, and a leftover handle only warns.
+  const boot = { env: { AGENT_STATE_FROM_ENTRYPOINT: '1' } };
+  run('restore', boot);
+  check('Cursor hot restart keeps a valid live database (not replaced)', fs.statSync(liveDb).ino === inodeBefore);
+  check('Cursor hot restart keeps the row that only the live WAL holds',
+    sql(liveDb, 'SELECT count(*) FROM blobs;') === '5');
+  hotWriter.kill('SIGKILL');
+  fs.writeFileSync(liveDb, 'not a database, but newer than the checkpoint\n');
+  fs.rmSync(`${liveDb}-wal`, { force: true });
+  fs.rmSync(`${liveDb}-shm`, { force: true });
+  run('restore', boot);
+  check('Cursor hot restart replaces an invalid live database from its checkpoint',
+    sql(liveDb, 'PRAGMA quick_check;') === 'ok' && sql(liveDb, 'SELECT count(*) FROM blobs;') === '4');
+  const asideRoot = path.join(local, 'agent-state-invalid');
+  const aside = fs.existsSync(asideRoot)
+    ? execFileSync('find', [asideRoot, '-name', 'store.db', '-path', '*cursor*'], { encoding: 'utf8' }).trim() : '';
+  check('Cursor hot restart moves the invalid live database aside', aside !== '', aside);
+
+  const legacyHome = path.join(root, 'legacy-home');
+  const legacyCurForListing = path.join(root, 'legacy-listing/.cursor');
+  put(path.join(legacyCurForListing, 'cli-config.json'), '{}\n');
+  put(path.join(legacyCurForListing, 'chats/a/b/store.db'), 'x');
+  // A failing database listing must not look like an empty one: the stamp stays
+  // where it was (the databases are listed again next pass) and the migration
+  // fails, so the entrypoint keeps the original directory. `find` is faked to
+  // fail after listing, which holds for root too (an unreadable directory
+  // would also stop rsync first, and root reads it anyway).
+  const shim = path.join(root, 'failing-find');
+  fs.mkdirSync(shim, { recursive: true });
+  const realFind = execFileSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(shim, 'find'), `#!/bin/sh\n"${realFind}" "$@"; rc=$?\ncase "$*" in *'*.db'*) exit 1;; esac\nexit $rc\n`, { mode: 0o755 });
+  const failingFind = { PATH: `${shim}:${env.PATH}` };
+  const dbStamp = path.join(local, 'agent-state-stamps/cursor-db');
+  const stampBefore = fs.statSync(dbStamp).mtimeMs;
+  const marker = new Date(Date.now() - 60000);
+  fs.utimesSync(dbStamp, marker, marker);
+  let listFailed = false;
+  try { run('checkpoint', { env: { ...failingFind, CURSOR_DB_MIN_INTERVAL: '0' }, stdio: 'pipe' }); } catch { listFailed = true; }
+  check('Cursor checkpoint fails when the database listing fails', listFailed);
+  check('Cursor checkpoint leaves the database stamp where it was after a failed listing',
+    Math.abs(fs.statSync(dbStamp).mtimeMs - marker.getTime()) < 1500, `${stampBefore}`);
+  let migrateFailed = false;
+  try { run('migrate-cursor', { args: [legacyCurForListing], env: failingFind }); } catch { migrateFailed = true; }
+  check('migrate-cursor exits non-zero when the database listing fails', migrateFailed);
+
+  // Restore over a hot live tree. Each case starts from a valid live database
+  // whose newest row is only in its WAL, with a newer durable `.backup` that
+  // rsync --update would otherwise prefer.
+  const asideCount = () => (fs.existsSync(asideRoot)
+    ? execFileSync('find', [asideRoot, '-name', 'store.db', '-path', '*cursor*'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length : 0);
+  const walOnlyRow = async (db, label) => {
+    const w = spawn('sqlite3', [db], { stdio: ['pipe', 'pipe', 'pipe'] });
+    w.stdin.write('PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n');
+    w.stdin.write(`INSERT INTO blobs(body) VALUES ('${label}');\n.print ${label}-ready\n`);
+    await waitFor(w, `${label}-ready`);
+    const future = new Date(Date.now() + 30000);
+    fs.utimesSync(path.join(curDurable, curDbRel), future, future);
+    return w;
+  };
+  const rowsBefore = Number(sql(liveDb, 'SELECT count(*) FROM blobs;'));
+
+  // 1. The live databases cannot be listed (find fails before printing
+  //    anything): the restore fails and touches nothing.
+  const silentShim = path.join(root, 'silent-failing-find');
+  fs.mkdirSync(silentShim, { recursive: true });
+  fs.writeFileSync(path.join(silentShim, 'find'), [
+    '#!/bin/sh',
+    "case \"$*\" in *'*.db'*) echo 'find: .: Permission denied' >&2; exit 1 ;; esac",
+    `exec "${realFind}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  let w = await walOnlyRow(liveDb, 'unlisted');
+  let inode = fs.statSync(liveDb).ino;
+  let restoreFailed = false;
+  try { run('restore', { env: { ...boot.env, PATH: `${silentShim}:${env.PATH}` } }); } catch { restoreFailed = true; }
+  check('Cursor restore fails when the live databases cannot be listed', restoreFailed);
+  check('Cursor restore with a failed listing keeps the live database and its WAL row',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 1));
+  w.kill('SIGKILL');
+
+  // 2. quick_check cannot run (locked): the database is kept, not moved aside.
+  const sqliteShim = path.join(root, 'locked-sqlite');
+  fs.mkdirSync(sqliteShim, { recursive: true });
+  const realSqlite = execFileSync('sh', ['-c', 'command -v sqlite3'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(sqliteShim, 'sqlite3'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    "  *'PRAGMA quick_check;'*) echo 'Error: database is locked' >&2; exit 5 ;;",
+    'esac',
+    `exec "${realSqlite}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  w = await walOnlyRow(liveDb, 'locked');
+  inode = fs.statSync(liveDb).ino;
+  const asideBefore = asideCount();
+  run('restore', { env: { ...boot.env, PATH: `${sqliteShim}:${env.PATH}` } });
+  check('Cursor restore keeps a live database whose check could not run',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 2)
+      && asideCount() === asideBefore);
+  w.kill('SIGKILL');
+
+  // 3. One restore keeps valid A, replaces invalid B from its checkpoint, and
+  //    still brings a newer transcript from the durable tree.
+  const dbB = path.join(cur, 'chats/5d41402abc4b2a76b9719d911017c592/6f0c1a2e-0000-4000-8000-000000000002/store.db');
+  fs.mkdirSync(path.dirname(dbB), { recursive: true });
+  sql(dbB, "CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT); INSERT INTO blobs(body) VALUES ('b');");
+  run('checkpoint-final');
+  w = await walOnlyRow(liveDb, 'mixed');
+  inode = fs.statSync(liveDb).ino;
+  fs.writeFileSync(dbB, 'not a database either\n');
+  put(path.join(curDurable, curTranscriptRel), '{"role":"user","newer":"durable"}\n');
+  const transcriptTime = new Date(Date.now() + 30000);
+  fs.utimesSync(path.join(curDurable, curTranscriptRel), transcriptTime, transcriptTime);
+  const asideBeforeMixed = asideCount();
+  run('restore', boot);
+  check('Cursor restore keeps valid database A while it replaces invalid B',
+    fs.statSync(liveDb).ino === inode && sql(liveDb, 'SELECT count(*) FROM blobs;') === String(rowsBefore + 3)
+      && sql(dbB, 'PRAGMA quick_check;') === 'ok' && sql(dbB, 'SELECT body FROM blobs;') === 'b');
+  check('Cursor restore moves only the invalid database aside', asideCount() === asideBeforeMixed + 1);
+  check('Cursor restore with kept databases still updates a newer transcript',
+    fs.readFileSync(path.join(cur, curTranscriptRel), 'utf8').includes('"newer":"durable"'));
+  w.kill('SIGKILL');
+
+  // 4. A file vanishing mid-walk is not a failed listing: find reports it and
+  //    exits 1, the checkpoint still succeeds and advances the stamp.
+  const vanishShim = path.join(root, 'vanishing-find');
+  fs.mkdirSync(vanishShim, { recursive: true });
+  fs.writeFileSync(path.join(vanishShim, 'find'), [
+    '#!/bin/sh',
+    `"${realFind}" "$@"; rc=$?`,
+    'case "$*" in',
+    "  *'*.db'*) echo \"find: './chats/gone/store.db-wal': No such file or directory\" >&2; exit 1 ;;",
+    'esac',
+    'exit $rc',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const oldStamp = new Date(Date.now() - 60000);
+  fs.utimesSync(dbStamp, oldStamp, oldStamp);
+  let vanishOk = true;
+  try { run('checkpoint', { env: { PATH: `${vanishShim}:${env.PATH}`, CURSOR_DB_MIN_INTERVAL: '0' } }); } catch { vanishOk = false; }
+  check('Cursor checkpoint succeeds when find only reports vanished files', vanishOk);
+  check('Cursor checkpoint advances the stamp when find only reports vanished files',
+    fs.statSync(dbStamp).mtimeMs > oldStamp.getTime() + 30000);
+
+  // migrate-cursor: a real ~/.cursor from before the links existed. Its
+  // database goes through SQLite's backup (the WAL row comes along); its
+  // socket, WAL/SHM and logs stay in the rollback copy.
+  const legacyCur = path.join(legacyHome, '.cursor');
+  const legacyCfg = path.join(legacyHome, '.config/cursor');
+  put(path.join(legacyCur, curTranscriptRel), '{"role":"user","legacy":true}\n');
+  put(path.join(legacyCur, 'projects/work-repo/worker.log'), 'noise');
+  put(path.join(legacyCfg, 'auth.json'), '{"accessToken":"legacy"}\n');
+  bindSocket(path.join(legacyCur, 'projects/work-repo/worker.sock'));
+  fs.mkdirSync(path.dirname(path.join(legacyCur, curDbRel)), { recursive: true });
+  const legacyWriter = spawn('sqlite3', [path.join(legacyCur, curDbRel)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  legacyWriter.stdin.write('PRAGMA journal_mode=WAL;\nPRAGMA wal_autocheckpoint=0;\n');
+  legacyWriter.stdin.write('CREATE TABLE blobs(id INTEGER PRIMARY KEY, body TEXT);\n');
+  legacyWriter.stdin.write("INSERT INTO blobs(body) VALUES ('legacy row');\n.print leg-ready\n");
+  await waitFor(legacyWriter, 'leg-ready');
+  fs.rmSync(env.CURSOR_DURABLE, { recursive: true, force: true });
+  run('migrate-cursor', { args: [legacyCur] });
+  run('migrate-cursor', { args: [legacyCfg] });
+  const migrated = path.join(curDurable, curDbRel);
+  check('migrate-cursor copies a WAL database as a valid database with its rows',
+    fs.existsSync(migrated) && sql(migrated, 'PRAGMA quick_check;') === 'ok'
+      && sql(migrated, 'SELECT body FROM blobs;') === 'legacy row');
+  check('migrate-cursor copies the transcript and the sign-in',
+    fs.existsSync(path.join(curDurable, curTranscriptRel))
+      && fs.readFileSync(path.join(curDurable, curTranscriptRel), 'utf8').includes('legacy')
+      && fs.readFileSync(path.join(env.CURSOR_DURABLE, 'config/auth.json'), 'utf8').includes('legacy'));
+  const migratedJunk = findJunk(env.CURSOR_DURABLE);
+  check('migrate-cursor leaves WAL/SHM, sockets and logs behind', migratedJunk === '', migratedJunk);
+  check('migrate-cursor leaves the legacy tree untouched',
+    fs.existsSync(path.join(legacyCur, `${curDbRel}-wal`))
+      && fs.lstatSync(path.join(legacyCur, 'projects/work-repo/worker.sock')).isSocket());
+  legacyWriter.kill('SIGKILL');
+  let badMigrate = false;
+  try { run('migrate-cursor', { args: [path.join(root, 'nope')] }); } catch { badMigrate = true; }
+  check('migrate-cursor refuses a directory that is not a Cursor one', badMigrate);
 
   // --files-from supplies descendants explicitly: a directory-only exclusion
   // does not protect the mounted bucket from Codex's temporary plugin files.
@@ -716,7 +1002,7 @@ try {
     const log = f.hfLog();
     check('API: the restore succeeds over the bucket API', res.code === 0 && f.restored(), res.out.slice(-800));
     check('API: every adapter is planned and applied over the API',
-      (log.match(/ --plan /g) || []).length === 8 && (log.match(/ --apply /g) || []).length === 8, log);
+      (log.match(/ --plan /g) || []).length === 9 && (log.match(/ --apply /g) || []).length === 9, log);
     check('API: nothing is read from the mount directly', rsyncTrace(f.trace, 'mount').runs === 0, JSON.stringify(rsyncTrace(f.trace, 'mount')));
     check('API: copies from the local mirror still run in parallel', rsyncTrace(f.trace, 'other').most > 1, JSON.stringify(rsyncTrace(f.trace, 'other')));
     check('API: exactly the newest five Claude backups come back', f.backups());

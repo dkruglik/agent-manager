@@ -180,7 +180,7 @@ try {
   } finally { console.log = log0; }
   await check('the detector list is exactly the CLIs checked on real captured screens', () => {
     assert.deepEqual(config.CLIS.filter((c) => c.promptDetector && !c.id.startsWith('test-')).map((c) => c.id).sort(),
-      ['antigravity', 'claude', 'codex', 'hermes', 'opencode']);
+      ['antigravity', 'claude', 'codex', 'cursor', 'hermes', 'opencode']);
   });
   await runner.stopAll();
 

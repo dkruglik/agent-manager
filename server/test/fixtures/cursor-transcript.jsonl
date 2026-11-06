@@ -1,0 +1,8 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n<user_query>\nReply with exactly the word PONG and nothing else.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"PONG"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Tuesday, Nov 3, 2026, 5:50 PM (UTC)</timestamp>\n<user_query>\nList the files and show README.md.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll look at the folder first."},{"type":"tool_use","name":"Shell","input":{"command":"ls -la","description":"List files"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"/work/demo/README.md","limit":200}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"TODO","path":"/work/demo","glob":"*.js","head_limit":20}},{"type":"tool_use","name":"Glob","input":{"glob_pattern":"**/*.md"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"The folder has README.md and src/. README.md says: Demo project."}]}}
+{"type":"turn_ended","status":"success"}

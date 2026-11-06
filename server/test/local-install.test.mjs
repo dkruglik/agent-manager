@@ -46,7 +46,7 @@ fs.cpSync(path.join(root, 'server', 'src'), path.join(spacedRoot, 'server', 'src
 fs.copyFileSync(path.join(root, 'server', 'package.json'), path.join(spacedRoot, 'server', 'package.json'));
 fs.symlinkSync(path.join(root, 'server', 'node_modules'), path.join(spacedRoot, 'server', 'node_modules'));
 fs.mkdirSync(path.join(spacedRoot, 'scripts'), { recursive: true });
-for (const name of ['am-repin-hook.sh', 'am-input-required-hook.sh']) {
+for (const name of ['am-repin-hook.sh', 'am-input-required-hook.sh', 'am-claude-approval-hook.sh']) {
   fs.writeFileSync(path.join(spacedRoot, 'scripts', name), '#!/bin/sh\nprintf hook-ok\n', { mode: 0o755 });
 }
 const { pathToFileURL } = await import('node:url');

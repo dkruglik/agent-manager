@@ -70,6 +70,8 @@ const bashLaunch = `exec bash --rcfile ${shq(BASHRC)} -i`;
 // through a PTY, so unquoted-path breakage is otherwise invisible until a Shell
 // pane exits 127.
 export const __bashLaunchForTest = bashLaunch;
+/** The live host of a pane, so a test can break its pty. */
+export const __hostForTest = (id) => hosts.get(id);
 
 // ---------- session hosts (what replaced tmux) ----------
 //
@@ -1394,15 +1396,28 @@ export async function codexRolloutForId(id) {
   return (await codexRolloutsSince(0)).find((item) => path.basename(item.p).endsWith(suffix))?.p || null;
 }
 
-// Register the SessionStart hook in $CLAUDE_CONFIG_DIR/settings.json. Merge,
+const REPIN_HOOK = 'am-repin-hook.sh';
+const INPUT_HOOK = 'am-input-required-hook.sh';
+const APPROVAL_HOOK = 'am-claude-approval-hook.sh';
+const CLEAR_EVENTS = ['PostToolBatch', 'Stop', 'SessionEnd', 'ElicitationResult', 'UserPromptSubmit'];
+
+// Register Agent Manager's Claude hooks in $CLAUDE_CONFIG_DIR/settings.json,
+// and only when that variable is set. It adds: the SessionStart repin hook;
+// the input-required hook (Notification, plus the PostToolBatch, Stop,
+// SessionEnd, ElicitationResult and UserPromptSubmit events that clear it);
+// and the blocking chat-approval hook on PermissionRequest and on PreToolUse
+// for AskUserQuestion (timeout 150 s; it does nothing without an opted-in
+// binding, so the terminal dialog stays). Merge,
 // never replace: the file also holds permissions/model/theme. Idempotent — a
-// second boot finds the entry and writes nothing. A file that exists but does
+// second boot finds the entries and writes nothing. A file that exists but does
 // not parse is left alone (clobbering the user's settings to install a hook
-// would be a terrible trade), and every failure is non-fatal: without the
-// hook the watcher simply keeps today's behaviour.
+// would be a terrible trade), and every failure is non-fatal: without these
+// hooks a repin is found by the transcript scan alone, no input-required
+// marker is set, and approvals stay in the terminal.
 export function installClaudeRepinHook(
-  hookCmd = shq(appScript('am-repin-hook.sh')),
-  inputRequiredCmd = shq(appScript('am-input-required-hook.sh')),
+  hookCmd = shq(appScript(REPIN_HOOK)),
+  inputRequiredCmd = shq(appScript(INPUT_HOOK)),
+  approvalCmd = shq(appScript(APPROVAL_HOOK)),
 ) {
   const dir = process.env.CLAUDE_CONFIG_DIR;
   if (!dir) return false;
@@ -1418,39 +1433,38 @@ export function installClaudeRepinHook(
     console.warn(`[claude] not installing lifecycle hooks: ${file} hooks is not an object`);
     return false;
   }
-  const entries = Array.isArray(cfg.hooks?.SessionStart) ? cfg.hooks.SessionStart : [];
-  const present = entries.some((m) => (m?.hooks || []).some((h) => String(h?.command || '').includes('am-repin-hook.sh')));
-  const notifications = Array.isArray(cfg.hooks?.Notification) ? cfg.hooks.Notification : [];
-  const inputPresent = notifications.some((m) => (m?.hooks || [])
-    .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
-  const clearEvents = ['PostToolBatch', 'Stop', 'SessionEnd', 'ElicitationResult', 'UserPromptSubmit'];
-  const missingClear = clearEvents.some((event) => {
-    const eventEntries = Array.isArray(cfg.hooks?.[event]) ? cfg.hooks[event] : [];
-    return !eventEntries.some((m) => (m?.hooks || [])
-      .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
-  });
-  if (present && inputPresent && !missingClear) return true;
+  const hasHook = (event, script) => Array.isArray(cfg.hooks?.[event]) && cfg.hooks[event].some((m) => (m?.hooks || [])
+    .some((h) => String(h?.command || '').includes(script)));
+  const appendHook = (event, entry) => {
+    cfg.hooks[event] = [...(Array.isArray(cfg.hooks[event]) ? cfg.hooks[event] : []), entry];
+  };
+  const present = hasHook('SessionStart', REPIN_HOOK);
+  const inputPresent = hasHook('Notification', INPUT_HOOK);
+  const missingClear = CLEAR_EVENTS.filter((event) => !hasHook(event, INPUT_HOOK));
+  const permissionPresent = hasHook('PermissionRequest', APPROVAL_HOOK);
+  const questionPresent = hasHook('PreToolUse', APPROVAL_HOOK);
+  if (present && inputPresent && !missingClear.length && permissionPresent && questionPresent) return true;
   // No matcher: fire for every source. `startup` replaces the "--session-id
   // not honoured" heuristic with a fact, `resume` is a proven no-op (same id),
   // and `clear` is the case this exists for. Filtering happens server-side.
   cfg.hooks = cfg.hooks || {};
-  if (!present) cfg.hooks.SessionStart = [...entries, { hooks: [{ type: 'command', command: hookCmd, timeout: 5 }] }];
+  if (!present) appendHook('SessionStart', { hooks: [{ type: 'command', command: hookCmd, timeout: 5 }] });
   // Notification is deliberately later than PermissionRequest: it fires only
   // after the actual permission/elicitation UI has remained unanswered for
   // about six seconds, and cannot be intercepted by another decision hook.
-  if (!inputPresent) cfg.hooks.Notification = [...notifications, {
+  if (!inputPresent) appendHook('Notification', {
     matcher: 'permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed',
     hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
-  }];
+  });
   // These events prove the associated interaction has moved on. They only
   // remove a marker carrying this pane launch's nonce; hook output stays empty.
-  for (const event of clearEvents) {
-    const eventEntries = Array.isArray(cfg.hooks[event]) ? cfg.hooks[event] : [];
-    const clearPresent = eventEntries.some((m) => (m?.hooks || [])
-      .some((h) => String(h?.command || '').includes('am-input-required-hook.sh')));
-    if (!clearPresent) cfg.hooks[event] = [...eventEntries, {
-      hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }],
-    }];
+  for (const event of missingClear) appendHook(event, { hooks: [{ type: 'command', command: inputRequiredCmd, timeout: 5 }] });
+  // Blocking decision hooks: the server decides per binding whether a chat
+  // answers; with no answer the script prints nothing and the terminal dialog
+  // stays. The timeout outlasts the server's 120 s decision window.
+  if (!permissionPresent) appendHook('PermissionRequest', { hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] });
+  if (!questionPresent) {
+    appendHook('PreToolUse', { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: approvalCmd, timeout: 150 }] });
   }
   try {
     const tmp = `${file}.am-tmp`;
@@ -1802,6 +1816,56 @@ const agyCapturing = new Map();
 // permission. Only the pinned conversation counts: a pane that holds no pin
 // (shared folder, nothing captured yet) shows nothing rather than a guess, and
 // a new pin is a new token, so the old one's dialog never carries over.
+/**
+ * Cursor CLI's shell-approval dialog on the visible screen (2026.10.22; its
+ * hooks do not fire). Two things must both show: the question row ("Run this
+ * command?") and either its "→ Run (once)" option or the "Waiting for approval"
+ * status, so the question merely quoted in an assistant message is not a hit.
+ * The token hashes the command row above the question ("$  touch x in ."), so
+ * a new command shows again after a dismissed one.
+ */
+export function cursorApprovalOnScreen(screen) {
+  const rows = String(screen || '').split('\n');
+  const q = rows.findIndex((r) => /^\s*Run this command\?\s*$/.test(r));
+  if (q < 0) return null;
+  const option = rows.slice(q + 1, q + 8).some((r) => /^\s*\u2192\s*Run \(once\)/.test(r));
+  if (!option && !rows.some((r) => /Waiting for approval/.test(r))) return null;
+  const command = rows.slice(0, q).findLast((r) => /^\s*\$\s+\S/.test(r)) || rows[q];
+  return { kind: 'permission', source: 'cursor-screen', token: crypto.createHash('sha1').update(command.trim()).digest('hex').slice(0, 12) };
+}
+
+/**
+ * The `native` poll of one Cursor pane: its approval dialog on the visible
+ * screen. A screen that cannot be read says nothing about the dialog, so a
+ * throw keeps the last hit (the badge stays) instead of reading as "gone"; the
+ * first failure is logged through `log`, later ones are not.
+ */
+export function cursorNativePoll(getText, log) {
+  let last = null;
+  let logged = false;
+  return () => {
+    try {
+      last = cursorApprovalOnScreen(getText());
+    } catch (error) {
+      if (!logged) {
+        logged = true;
+        const message = error && error.message ? error.message : String(error);
+        log(message);
+      }
+    }
+    return last;
+  };
+}
+
+function nativeInputPoll(session, host) {
+  if (session.cli === 'antigravity') return () => agyPermissionPending(session.id);
+  if (session.cli === 'cursor') {
+    return cursorNativePoll(() => host.vt.getVisibleText(),
+      (message) => console.error(`[runner] cursor screen read failed for ${session.id}: ${message}`));
+  }
+  return null;
+}
+
 function agyPermissionPending(id) {
   const pin = list().find((s) => s.id === id)?.antigravityConversationId;
   const step = pin ? agyWaitingStep(pin) : null;
@@ -1956,6 +2020,23 @@ export function commandFor(session) {
     const projects = '"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"';
     const hasTranscript = `[ -n "$(find ${projects} -name '${session.sessionUuid}*' -print -quit 2>/dev/null)" ]`;
     return `if ${hasTranscript}; then exec ${cli.resume(session.sessionUuid, f)}; else ${fresh}; fi`;
+  }
+
+  // Cursor keys `--continue` by working directory, so grouped sessions sharing a
+  // folder would collide on it. Pin each pane to its own chat instead, reusing
+  // the session's sessionUuid as the Cursor chat id. `--resume <id>` with an id
+  // that has never been used CREATES the chat under exactly that id (verified on
+  // cursor-agent 2026.10.22), and the same command later resumes it with its
+  // full context, so there is no existence check and no `create-chat`
+  // subprocess: first launch and every later launch are the same line. A queued
+  // first prompt rides after the flags as the positional prompt, behind `--` so
+  // a prompt reading `--yolo` or `--version` is sent as text, not parsed as a
+  // flag. Never `--continue`. The id reaches the shell unquoted, so a missing
+  // or malformed one is not interpolated: it launches unpinned (`run`, or the
+  // withPrompt line when a first prompt is queued).
+  if (cli.id === 'cursor') {
+    if (!UUID.test(session.sessionUuid || '')) return `exec ${q0 ? firstCommand() : run}`;
+    return `exec ${cli.resume(session.sessionUuid, f)}${q0 ? ` -- ${q0}` : ''}`;
   }
 
   // OpenClaw: first run needs its onboarding wizard (keys, workspace); once the
@@ -2208,7 +2289,7 @@ export function ensureRunning(session, cols = 120, rows = 34) {
   };
   host.inputRequired = createInputRequiredTracker({
     id: session.id, runId, cli: session.cli,
-    native: session.cli === 'antigravity' ? () => agyPermissionPending(session.id) : null,
+    native: nativeInputPoll(session, host),
   });
   host.historyCheckpoint = createTerminalHistoryCheckpoint({
     directory: HISTORY_DIR,
@@ -2756,7 +2837,69 @@ export async function sendInput(id, text, opts = {}) {
   }
 }
 
-async function typeAndSubmit(host, id, text, { confirmEcho = false } = {}) {
+/**
+ * Type the prompt and submit it. An error thrown once the first byte of the
+ * prompt has gone to the terminal carries `typed: true`: the text may be on the
+ * agent's input line, so a caller that retries can send it twice. An error
+ * from the checks before that first write carries no flag. The chat outbox
+ * reads the flag (server/src/delivery-outcome.js).
+ */
+async function typeAndSubmit(host, id, text, opts = {}) {
+  const wrote = { any: false };
+  try {
+    return await typeAndSubmitSteps(host, id, text, opts, wrote);
+  } catch (error) {
+    if (wrote.any && error && typeof error === 'object') error.typed = true;
+    throw error;
+  }
+}
+
+/**
+ * OpenCode's echo wait: types the prompt and waits until the TUI paints it back. Enter is never pressed
+ * here, so a failure means nothing was submitted.
+ */
+async function typeUntilEchoed(host, id, text, payload, wrote) {
+  try {
+    const expected = text.replace(/\s+/g, ' ').trim();
+    const probe = expected.slice(-Math.min(48, expected.length));
+    const deadline = Date.now() + INPUT_ECHO_TIMEOUT_MS;
+    let attempt = 0;
+    let echoed = false;
+    while (Date.now() < deadline && !echoed) {
+      if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
+      if (attempt++) {
+        host.pty.write('\x15'); // clear any attempt accepted too late to paint
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const beforeOutput = host.outputSeq;
+      let beforeScreen = '';
+      try { beforeScreen = host.vt.getVisibleText(); } catch {}
+      host.pty.write(payload);
+      wrote.any = true; // after the write: one that threw typed nothing
+      const attemptDeadline = Math.min(deadline, Date.now() + 1200);
+      while (Date.now() < attemptDeadline) {
+        if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
+        let screen = '';
+        try { screen = host.vt.getVisibleText(); } catch {}
+        echoed = host.outputSeq > beforeOutput && screen !== beforeScreen
+          && screen.replace(/\s+/g, ' ').includes(probe);
+        if (echoed) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
+    host.inputEchoed = true;
+  } catch (error) {
+    // Enter was never pressed on this path, so nothing was submitted. Clear the line (the keys reach the
+    // pane in order, so this also removes an attempt the TUI paints late) and report it as untyped:
+    // the chat outbox then keeps the row pending instead of dropping a prompt that never went out.
+    try { host.pty.write('\x15'); } catch {}
+    wrote.any = false;
+    throw error;
+  }
+}
+
+async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, wrote) {
   // Typing a prompt onto a line that already holds something submits both as
   // one message. Clearing the line first would destroy what the operator
   // typed, so the send stops here instead and says what is in the way.
@@ -2792,36 +2935,10 @@ async function typeAndSubmit(host, id, text, { confirmEcho = false } = {}) {
     // input handler is installed. Probe with the real composer text, but do
     // not press Enter until the TUI has painted that text back. Retrying only
     // the unsubmitted composer is safe; Ctrl+U clears a late/partial attempt.
-    const expected = text.replace(/\s+/g, ' ').trim();
-    const probe = expected.slice(-Math.min(48, expected.length));
-    const deadline = Date.now() + INPUT_ECHO_TIMEOUT_MS;
-    let attempt = 0;
-    let echoed = false;
-    while (Date.now() < deadline && !echoed) {
-      if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
-      if (attempt++) {
-        host.pty.write('\x15'); // clear any attempt accepted too late to paint
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const beforeOutput = host.outputSeq;
-      let beforeScreen = '';
-      try { beforeScreen = host.vt.getVisibleText(); } catch {}
-      host.pty.write(payload);
-      const attemptDeadline = Math.min(deadline, Date.now() + 1200);
-      while (Date.now() < attemptDeadline) {
-        if (hosts.get(id) !== host) throw new ApiError(409, 'input-not-ready', 'session stopped while waiting for input acknowledgement');
-        let screen = '';
-        try { screen = host.vt.getVisibleText(); } catch {}
-        echoed = host.outputSeq > beforeOutput && screen !== beforeScreen
-          && screen.replace(/\s+/g, ' ').includes(probe);
-        if (echoed) break;
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-    if (!echoed) throw new ApiError(409, 'input-not-ready', 'session did not acknowledge the input before the timeout — prompt was not submitted');
-    host.inputEchoed = true;
+    await typeUntilEchoed(host, id, text, payload, wrote);
   } else {
     host.pty.write(payload);
+    wrote.any = true;
   }
   if (confirm) return submitConfirmed(host, id, confirm, text);
   await new Promise((r) => setTimeout(r, 300));
@@ -3004,6 +3121,20 @@ function emptyOpencodeComposer(snapshot) {
   if (i >= lines.length || !/^\s*\u2579/.test(lines[i].text)) return false;
   return !lines.slice(i + 1).some((l) => MENU_ROW.test(l.text) || DIALOG_HINT.test(l.text));
 }
+// Cursor hides the terminal cursor and draws a reverse-video one, so the cursor
+// row is not the input. Its composer is the bottom-most `→` row: the placeholder
+// (`→ Plan, search, build anything` on a fresh chat, `→ Add a follow-up` after a
+// turn) means empty; anything else is typed text. While a turn runs the row
+// ends in `ctrl+c to stop`, which is not the placeholder, so busy reads as not
+// empty; the approval dialog's own `→ Run (once)` row is not it either.
+// Captured from Cursor 2026.10.22.
+function emptyCursorComposer(snapshot) {
+  const lines = snapshot?.visibleLines || [];
+  const composer = lines.findLast((l) => /^\s*\u2192(?:\s|$)/.test(l.text));
+  if (!composer || /ctrl\+c to stop/.test(composer.text)) return false;
+  if (cursorApprovalOnScreen(lines.map((l) => l.text).join('\n'))) return false;
+  return /^\s*\u2192\s+(?:Plan, search, build anything|Add a follow-up)\s*$/.test(composer.text);
+}
 /** Can promptReady ever answer yes for this CLI? (config.js promptDetector) */
 export function hasPromptDetector(cli) {
   return !!cliById(cli)?.promptDetector;
@@ -3013,6 +3144,7 @@ export function emptyPrompt(snapshot, screen, cli) {
   const confirm = cliById(cli)?.confirmSubmit;
   if (confirm?.starting?.test(String(screen || ''))) return false;
   if (cli === 'opencode') return emptyOpencodeComposer(snapshot);
+  if (cli === 'cursor') return emptyCursorComposer(snapshot);
   const shape = liveComposer(snapshot, { notice: confirm?.notice });
   if (!shape || !(shape.located ? shape.cursorInside : shape.marked)) return false;
   if (composerBody(shape) !== '') return false;

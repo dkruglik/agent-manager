@@ -15,7 +15,7 @@ short_description: Private cloud manager for AI coding CLI sessions
 
 **Your coding agents, together in one private workspace.**
 
-Run Claude Code, Codex, Antigravity CLI, opencode, Hermes, OpenClaw and fx from
+Run Claude Code, Codex, Antigravity CLI, Cursor CLI, opencode, Hermes, OpenClaw and fx from
 your browser. Follow several tasks side by side, read the conversation or open
 the terminal, and pick up from another device while your Space stays running.
 
@@ -148,6 +148,8 @@ saved, see [state checkpoints](docs/agent-state-checkpoints.md) and
 | Manage shared skills | [Managed skills](docs/managed-skills.md) |
 | Run prompts on a schedule | [Scheduled prompts](docs/cron-jobs.md) |
 | Connect an agent on another machine | [Remote agents](docs/remote-agents.md) |
+| Run Cursor's agent | [Cursor CLI](docs/cursor-agent.md) |
+| Answer agents from Slack | [Messengers](docs/messengers.md) |
 | Upload files and follow file links | [Uploads](docs/workspace-file-uploads.md) · [File previews](docs/file-links.md) |
 | Inspect session operations | [API log](docs/api-audit-log.md) |
 | Run the source or deploy a development Space | [Development guide](docs/development.md) |

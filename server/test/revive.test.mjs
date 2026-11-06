@@ -14,7 +14,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-'));
 process.env.DATA_DIR = path.join(TMP, 'data');
 fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 
-const { selectRevivable, isTerminalReply, tellRevived, CONTINUE_TEXT } = await import('../src/runstate.js');
+const { selectRevivable, isTerminalReply, tellRevived, CONTINUE_TEXT, init, saveRunstate } = await import('../src/runstate.js');
 
 let pass = 0, fail = 0;
 const check = (name, got, want) => {
@@ -133,6 +133,27 @@ check('an empty snapshot', selectRevivable({
 check('a missing snapshot', selectRevivable({
   snapshot: null, sessions, digests, alive: new Set(), days: 7, now: NOW,
 }), []);
+
+console.log('\nsnapshot file');
+const runstateFile = path.join(process.env.DATA_DIR, 'runstate.json');
+saveRunstate();
+check('snapshot records the session set', JSON.parse(fs.readFileSync(runstateFile, 'utf8')).sessions, {});
+fs.writeFileSync(runstateFile, '{"tampered":true}');
+saveRunstate();
+check('an unchanged session set is not rewritten', fs.readFileSync(runstateFile, 'utf8'), '{"tampered":true}');
+fs.writeFileSync(runstateFile, '{');
+const warns = [];
+const origWarn = console.warn;
+console.warn = (m) => warns.push(String(m));
+let loaded;
+try { loaded = init(); } finally { console.warn = origWarn; }
+check('a corrupt snapshot warns', warns.some((w) => w.includes('could not read')), true);
+check('a corrupt snapshot loads as none', loaded, null);
+fs.rmSync(runstateFile, { force: true });
+warns.length = 0;
+console.warn = (m) => warns.push(String(m));
+try { init(); } finally { console.warn = origWarn; }
+check('a missing snapshot is quiet', warns.length, 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 fs.rmSync(TMP, { recursive: true, force: true });

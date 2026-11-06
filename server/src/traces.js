@@ -11,16 +11,18 @@ import { remoteDigest } from './remote.js';
 import { mark, tracked, PHASE } from './watchdog.js';
 // The trace panel reader (bottom of this file) locates its file with the same
 // resolver sharing uses. share.js does not import traces.js, so no cycle.
-import { findTrace, HARNESS_LABEL } from './share.js';
+import { findTrace, HARNESS_LABEL, cursorTranscriptPath } from './share.js';
 import { cachedTrace, traceRevision } from './trace-revision.js';
 import { outputHash } from './output-id.js';
+import { continuationChain, liveTranscript } from './claude-continuation.js';
 import { codeModeUses, codeModeResults, patchFiles, stripDataUrls } from './codex-code-mode.js';
 import { STEP, STATUS, readAgySteps, listAgyConversations, agyConversationPath, agyConversationExists, agyChangeKey, stepInFlight } from './antigravity.js';
 
 // Workspace-wide trace analytics: parse every Claude transcript and Codex
 // rollout on the Space into per-conversation stats (turns, tool calls, web
 // searches, tokens), attribute them to Agent Manager sessions where possible
-// (Claude: transcript filename == sessionUuid; Codex: pinned codexSessionId),
+// (Claude: transcript filename starts with sessionUuid, plus the later files of
+// its continued-in chain; Codex: pinned codexSessionId),
 // and aggregate the rest as "other".
 //
 // Parsing is memoized per file by (mtime, size), so repeat calls only re-read
@@ -563,6 +565,91 @@ function parseFx(txt) {
   st.tokensIn = tokIn;
   st.tokensOut = tokOut;
   dg.sinceTokens = Math.max(0, tokIn + tokOut - tokAtPrompt);
+  return { stats: st, digest: dg };
+}
+
+// ---------- Cursor CLI (~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl) ----------
+// One line per message: {role, message:{content:[text | tool_use]}}. No tool
+// results, ids or per-line timestamps. `{type:'turn_ended'}` is written only as
+// the LAST line, once the turn is done (the file is rewritten per turn), so a
+// last line that is anything else means the agent is still working. A user
+// message arrives as `<timestamp>…</timestamp>\n<user_query>\n…\n</user_query>`.
+// Located by chat id (cursorTranscriptPath); subagents/*.jsonl are not read.
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** A Cursor user message -> { text, ts }. `ts` (epoch ms) is set only for the
+ *  "Weekday, Mon D, YYYY, H:MM AM/PM (UTC)" form; any other zone is left unset. */
+function cursorUser(raw) {
+  let text = String(raw || '');
+  let ts;
+  text = text.replace(/^\s*<timestamp>([\s\S]*?)<\/timestamp>\s*/, (_, stamp) => {
+    const m = /^\w+,\s+(\w{3})\w*\s+(\d{1,2}),\s+(\d{4}),\s+(\d{1,2}):(\d{2})\s*([AP]M)\s*\(UTC\)\s*$/i.exec(stamp.trim());
+    const mon = m ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
+    if (mon >= 0) ts = Date.UTC(+m[3], mon, +m[2], (+m[4] % 12) + (m[6].toUpperCase() === 'PM' ? 12 : 0), +m[5]);
+    return '';
+  });
+  text = text.replace(/^\s*<user_query>\n?([\s\S]*?)\n?<\/user_query>\s*$/, '$1');
+  return { text: text.trim(), ts };
+}
+
+/** What a Cursor tool call shows: the command, path or pattern, else its input. */
+function cursorToolText(name, input) {
+  const i = input && typeof input === 'object' ? input : {};
+  const str = (v) => (typeof v === 'string' && v ? v : null);
+  switch (name) {
+    case 'Shell': return str(i.command) ?? i;
+    case 'Read': return str(i.path) ?? i;
+    case 'Glob': return str(i.glob_pattern) ?? i;
+    case 'Grep': return str(i.pattern) ? (str(i.path) ? `${i.pattern}  ${i.path}` : i.pattern) : i;
+    default: return input ?? '';
+  }
+}
+
+const cursorLines = (txt) => {
+  const lines = [];
+  for (const line of txt.split('\n')) {
+    if (!line.trim()) continue;
+    try { lines.push(JSON.parse(line)); } catch { lines.push(null); }
+  }
+  return lines;
+};
+const cursorDone = (lines) => lines.findLast(Boolean)?.type === 'turn_ended';
+
+function parseCursor(txt, dg = emptyDigest()) {
+  const st = emptyStats();
+  st.files = 1;
+  const lines = cursorLines(txt);
+  // Assistant lines carry no time; the latest prompt's time is the best bound.
+  let lastUserIso = '';
+  for (const j of lines) {
+    if (!j || !j.message) continue;
+    const items = Array.isArray(j.message.content) ? j.message.content : [];
+    if (j.role === 'user') {
+      const { text, ts } = cursorUser(items.filter((c) => c?.type === 'text').map((c) => c.text).join('\n'));
+      if (!text) continue;
+      const iso = ts ? new Date(ts).toISOString() : '';
+      // Every prompt resets it: a reply after a stamp that did not parse must
+      // not borrow an older prompt's time.
+      lastUserIso = iso;
+      addTs(st, iso);
+      st.prompts++; st.turns++;
+      digestPrompt(dg, text, iso);
+    } else if (j.role === 'assistant') {
+      dg.sinceTurns++;
+      for (const c of items) {
+        if (c?.type === 'text' && String(c.text || '').trim()) digestAssistant(dg, c.text, lastUserIso);
+        else if (c?.type === 'tool_use') {
+          const name = c.name || 'tool';
+          st.toolCalls++;
+          st.tools[name] = (st.tools[name] || 0) + 1;
+          if (/^web[_-]?(search|fetch)$/i.test(name)) st.web++;
+          const file = name === 'Read' || name === 'Write' || name === 'StrReplace' ? c.input?.path : null;
+          digestTool(dg, name, typeof file === 'string' ? file : null);
+        }
+      }
+    }
+  }
+  dg.running = lines.some(Boolean) && !cursorDone(lines);
   return { stats: st, digest: dg };
 }
 
@@ -1222,7 +1309,7 @@ async function statsFor(p, parser, quietMs = 0) {
   return parsed;
 }
 
-const PARSERS = { claude: parseClaude, codex: parseCodex, openclaw: parseOpenClaw, fx: parseFx };
+const PARSERS = { claude: parseClaude, codex: parseCodex, openclaw: parseOpenClaw, fx: parseFx, cursor: parseCursor };
 const PARSER_KIND = new Map(Object.entries(PARSERS).map(([k, fn]) => [fn, k]));
 
 /** Read and parse one transcript, start to finish. Runs on a trace-parse
@@ -1484,13 +1571,48 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(
 // restores the prior breadcrumb even if the build throws.
 function build() { return tracked(PHASE.buildTraces, buildImpl); }
 
+// Every later transcript of a continued-in chain (B and C in A -> B -> C)
+// belongs to the session pinned on the first file, unless another session
+// already pins that uuid.
+async function attributeContinuations(byClaudeUuid) {
+  const files = await claudeFiles();
+  for (const [uuid, s] of [...byClaudeUuid]) {
+    for (const p of files) {
+      if (!path.basename(p).includes(uuid)) continue;
+      for (const hop of (await continuationChain(p, files)).slice(1)) {
+        const m = path.basename(hop).match(UUID_RE);
+        if (m && !byClaudeUuid.has(m[1])) byClaudeUuid.set(m[1], s);
+      }
+    }
+  }
+}
+
+// A Claude session's digest comes from its live transcript (the last file of
+// the continued-in chain), the same file digestFor and traceLocation read. The
+// stats of every hop still merge into the session's totals; only the digest is
+// pinned here, so a middle hop with a later timestamp cannot win.
+async function setLiveDigests(sessions, digests) {
+  const files = await claudeFiles();
+  for (const s of sessions) {
+    if (s.cli !== 'claude' || !s.sessionUuid) continue;
+    const live = await liveTranscript(s.sessionUuid, files);
+    if (!live) continue;
+    const parsed = await statsFor(live, parseClaude);
+    if (parsed) digests.set(s.id, { ...parsed.digest, _ts: parsed.stats.lastTs });
+    // The live file cannot be read: an older hop's reply would be stale, so
+    // publish none (digestFor returns null for the same session).
+    else digests.delete(s.id);
+  }
+}
+
 async function buildImpl() {
   const sessions = store.list();
   const byClaudeUuid = new Map(sessions.filter((s) => s.cli === 'claude' && s.sessionUuid).map((s) => [s.sessionUuid, s]));
+  await attributeContinuations(byClaudeUuid);
   const byCodexId = new Map(sessions.filter((s) => s.codexSessionId).map((s) => [s.codexSessionId, s]));
 
   const perSession = new Map(); // session id -> aggregate stats
-  const digests = new Map();    // session id -> digest of the freshest file
+  const digests = new Map();    // session id -> digest (Claude: its live transcript; others: the freshest file)
   const other = emptyStats();
   const totals = emptyStats();
 
@@ -1515,6 +1637,7 @@ async function buildImpl() {
     attribute(m ? byClaudeUuid.get(m[1]) : null, await statsFor(p, parseClaude));
     await yieldLoop();
   }
+  await setLiveDigests(sessions, digests);
   // Codex fallback: sessions created before capture-and-pin have no
   // codexSessionId — attribute their rollouts by cwd when it's unambiguous.
   const byCodexCwd = new Map();
@@ -1562,6 +1685,16 @@ async function buildImpl() {
       if (hit && hit !== 'ambiguous') session = hit;
     }
     attribute(session, parsed);
+  }
+
+  // Cursor: every pane has its own chat id (its sessionUuid), so only the pin
+  // locates a transcript — there is no folder fallback.
+  for (const s of sessions.filter((x) => x.cli === 'cursor' && x.sessionUuid)) {
+    const p = await cursorTranscriptPath(s.sessionUuid);
+    if (!p) continue;
+    seenFiles.add(p);
+    attribute(s, await statsFor(p, parseCursor));
+    await yieldLoop();
   }
 
   // OpenClaw: every pane shares the ONE embedded agent (agent "main"), so its
@@ -1691,7 +1824,8 @@ export async function traceDigests({fresh = false} = {}) {
 
 /** Targeted digest for ONE session — parses only its own transcript files so
  *  the Overview can fill tiles progressively instead of waiting for the full
- *  build. Cheap for Claude (transcript filename == sessionUuid) and Codex (the
+ *  build. Cheap for Claude (liveTranscript: the newest file named for
+ *  sessionUuid, followed to the end of its continued-in chain) and Codex (the
  *  pinned rollout); db-backed CLIs return null and ride the bulk pass. Parsed
  *  files land in the shared per-file cache, so nothing is read twice. */
 export async function digestFor(s) {
@@ -1700,13 +1834,15 @@ export async function digestFor(s) {
     // and no transcript on this machine to find.
     if (isRemote(s.cli)) return remoteDigest(s);
     if (s.cli === 'claude' && s.sessionUuid) {
-      let best = null;
-      for (const p of await claudeFiles()) {
-        if (!path.basename(p).includes(s.sessionUuid)) continue;
-        const parsed = await statsFor(p, parseClaude);
-        if (parsed && (!best || parsed.stats.lastTs > best.stats.lastTs)) best = parsed;
-      }
-      return best ? best.digest : null;
+      const files = await claudeFiles();
+      const live = await liveTranscript(s.sessionUuid, files);
+      if (!live) return null;
+      const parsed = await statsFor(live, parseClaude);
+      if (parsed) return parsed.digest;
+      // The live file cannot be read and an older hop's reply would be stale:
+      // publish no digest (setLiveDigests drops it from the bulk map too).
+      console.warn(`[traces] live transcript ${path.basename(live)} is unreadable`);
+      return null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       const parsed = await statsFor(s.codexRollout, parseCodex);
@@ -1718,6 +1854,11 @@ export async function digestFor(s) {
         const parsed = await statsFor(p, parseFx);
         if (parsed) return parsed.digest;
       }
+    }
+    if (s.cli === 'cursor') {
+      const p = await cursorTranscriptPath(s.sessionUuid);
+      const parsed = p && await statsFor(p, parseCursor);
+      if (parsed) return parsed.digest;
     }
     if (s.cli === 'antigravity' && agyConversationExists(s.antigravityConversationId)) {
       const parsed = agyParsedFor(agyConversationPath(s.antigravityConversationId), true);
@@ -1735,10 +1876,8 @@ export async function digestFor(s) {
 export async function traceLocation(s) {
   try {
     if (s.cli === 'claude' && s.sessionUuid) {
-      for (const p of await claudeFiles()) {
-        if (path.basename(p).includes(s.sessionUuid)) return { format: 'jsonl', path: p };
-      }
-      return null;
+      const live = await liveTranscript(s.sessionUuid, await claudeFiles());
+      return live ? { format: 'jsonl', path: live } : null;
     }
     if (s.cli === 'codex' && s.codexRollout && fs.existsSync(s.codexRollout)) {
       return { format: 'jsonl', path: s.codexRollout };
@@ -1750,6 +1889,10 @@ export async function traceLocation(s) {
     if (s.cli === 'fx' && s.fxSessionId) {
       const p = fxEventsPath(s.fxSessionId);
       if (fs.existsSync(p)) return { format: 'jsonl', path: p };
+    }
+    if (s.cli === 'cursor') {
+      const p = await cursorTranscriptPath(s.sessionUuid);
+      if (p) return { format: 'jsonl', path: p };
     }
     if (s.cli === 'antigravity' && agyConversationExists(s.antigravityConversationId)) {
       return { format: 'sqlite', path: agyConversationPath(s.antigravityConversationId) };
@@ -2616,6 +2759,29 @@ async function normalizeFx(file, out, range) {
   }
 }
 
+// Cursor — see the format notes at parseCursor. Tool calls carry no ids and
+// their outputs are not in the file, so each is a bare `tool_use`. The turn is
+// finished only when the last line is `turn_ended`.
+async function normalizeCursor(file, out) {
+  let last = null;
+  for await (const j of jsonLines(file)) {
+    last = j;
+    const items = Array.isArray(j.message?.content) ? j.message.content : [];
+    if (j.role === 'user') {
+      const { text, ts } = cursorUser(items.filter((c) => c?.type === 'text').map((c) => c.text).join('\n'));
+      if (text) out.push({ role: 'user', ts, blocks: [textBlock('text', text)] });
+    } else if (j.role === 'assistant') {
+      const blocks = [];
+      for (const c of items) {
+        if (c?.type === 'text' && String(c.text || '').trim()) blocks.push(textBlock('text', c.text));
+        else if (c?.type === 'tool_use') blocks.push({ type: 'tool_use', name: c.name || 'tool', ...capText(cursorToolText(c.name, c.input)) });
+      }
+      if (blocks.length) out.push({ role: 'assistant', blocks });
+    }
+  }
+  if (last) out.activity = last.type === 'turn_ended' ? 'waiting' : 'working';
+}
+
 // ---------- SQLite harnesses ----------
 // One conversation, selected by id. NEVER copy the db: opencode's holds
 // account.access_token / refresh_token (spec §6). Read-only, off the hot path.
@@ -2776,6 +2942,7 @@ async function sniffHarnessUncached(file) {
     if (j.type === 'session_meta' || j.payload) return 'codex';
     if (j.type === 'file-history-snapshot' || ((j.type === 'user' || j.type === 'assistant') && j.message)) return 'claude';
     if (j.type === 'message' && j.message) return 'openclaw';
+    if (j.type === 'turn_ended' || ((j.role === 'user' || j.role === 'assistant') && Array.isArray(j.message?.content))) return 'cursor';
     if (++n >= 8) break;
   }
   return null;
@@ -2840,6 +3007,7 @@ async function parseTraceFile(harness, file, sessionId, range = null, allowSubag
     case 'codex': await normalizeCodex(file, out, range, allowSubagent); break;
     case 'openclaw': await normalizeOpenClaw(file, out, range); break;
     case 'fx': await normalizeFx(file, out, range); break;
+    case 'cursor': await normalizeCursor(file, out); break;
     case 'sts': await normalizeSts(file, out, range); break;
     case 'opencode': normalizeOpencodeDb(file, sessionId, out); break;
     case 'hermes': normalizeHermesDb(file, sessionId, out); break;
@@ -3262,6 +3430,18 @@ export async function readTrace(session, opts = {}) {
     sessionId: hit.sessionId || session.sessionUuid || null,
     size: st.size,
   }, opts);
+}
+
+/**
+ * The revision of a session's trace as readTrace reports it, without parsing: a stat, and a
+ * 128-byte read when the file changed. `null` when no trace is found. Equal revisions mean
+ * the cached parse of readTrace is still the right one.
+ */
+export async function traceRevisionOf(session) {
+  const hit = await findTrace(session, store.list());
+  const st = hit && await statRetry(hit.src);
+  if (!st) return null;
+  return (await traceRevision(hit.src, st, !WINDOWABLE.has(session.cli))).revision;
 }
 
 /**

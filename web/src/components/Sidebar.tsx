@@ -323,9 +323,10 @@ export default function Sidebar({
   const quickable = creatable(clis).filter((c) => c.id !== 'shell' && !isPassive(c.id) && !isRemote(c.id));
   // The picker is a 6-column grid. A seventh CLI used to wrap onto a third row
   // by itself; instead the overflow joins the second row, ahead of the session
-  // types and separated from them by a real empty cell. Slicing by the column
-  // count rather than naming a CLI means the next one added lands there too,
-  // instead of stranding itself again.
+  // types. The session types are set off by a divider in the grid's gutter, not
+  // by an empty cell: an empty cell is one more track, and it pushed the last
+  // tile onto a third row. Slicing by the column count rather than naming a CLI
+  // means the next one added lands there too, instead of stranding itself again.
   const QUICK_COLUMNS = 6;
   const quickRowOne = quickable.slice(0, QUICK_COLUMNS);
   const quickWrapped = quickable.slice(QUICK_COLUMNS);
@@ -341,6 +342,7 @@ export default function Sidebar({
     claude: "Anthropic's coding agent",
     codex: "OpenAI's coding agent",
     antigravity: "Google's newer coding agent, for Gemini 4 Argon",
+    cursor: "Cursor's coding agent, your choice of model",
     opencode: 'open-source agent, your choice of model',
     hermes: "Nous Research's agent",
     openclaw: 'open-source Claude Code fork',
@@ -826,9 +828,8 @@ export default function Sidebar({
             </div>
             <div className="quick-clis quick-clis-2">
               {quickWrapped.map(quickCliButton)}
-              {quickWrapped.length > 0 && <span className="quick-gap" aria-hidden="true" />}
               <button
-                className={`quick-cli quick-grp${quickMode === 'group' ? ' on' : ''}`}
+                className={`quick-cli quick-grp${quickWrapped.length > 0 ? ' quick-session-start' : ''}${quickMode === 'group' ? ' on' : ''}`}
                 title="Group — several agents created together, sharing a folder"
                 disabled={quickSending || quickImages.length > 0}
                 onClick={() => { resetQuickTarget(); setQuickMode('group'); }}

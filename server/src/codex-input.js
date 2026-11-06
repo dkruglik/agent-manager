@@ -11,8 +11,9 @@ import { recoveryPlan, verifyRecovered } from './codex-recovery.js';
 import { CodexInteractiveClient } from './codex-interactive.js';
 
 const fail = (code, message) => new ApiError(409, code, message);
+export const isUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(v);
 const digest = text => createHash('sha256').update(text).digest('hex');
-const uuid = v => typeof v === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(v);
+const uuid = isUuid;
 const uncertain = () => fail('codex-send-uncertain', 'Delivery is uncertain. Refresh the conversation before retrying; this message will not be sent twice.');
 
 export class CodexInput {

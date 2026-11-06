@@ -64,9 +64,15 @@ function publicState(current) {
 /**
  * Native interactive-dialog signals for one PTY launch.
  *
- * This intentionally has no screen-text or process-idle fallback. An agent can
- * print any prompt-looking text, and an event-loop TUI polls stdin while both
- * thinking and waiting. Only CLI lifecycle events enter this tracker.
+ * This intentionally has no generic screen-text or process-idle fallback. An
+ * agent can print any prompt-looking text, and an event-loop TUI polls stdin
+ * while both thinking and waiting. Only CLI lifecycle events enter this tracker,
+ * plus a CLI-specific `native` poll, which Antigravity (a WAITING step in its
+ * database) and Cursor both pass. Cursor's hooks do not fire, so its poll
+ * (runner.js cursorNativePoll) reads the screen and matches it with
+ * cursorApprovalOnScreen: the question row together with either the option
+ * row or the "Waiting for approval" status. When a screen read throws, the
+ * poll keeps its last answer and logs the first failure.
  */
 export function createInputRequiredTracker({ id, runId, cli, now = () => Date.now(), native = null }) {
   let current = null;

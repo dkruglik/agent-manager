@@ -78,12 +78,19 @@ export FX_DURABLE="$DATA_DIR/state/fx"
 # Both are linked into one local tree that agent-state.sh checkpoints.
 export ANTIGRAVITY_LIVE="$AM_LOCAL/antigravity-home"
 export ANTIGRAVITY_DURABLE="$DATA_DIR/state/antigravity"
+# Cursor CLI keeps chats, transcripts and config in ~/.cursor and its sign-in in
+# ~/.config/cursor. CURSOR_CONFIG_DIR does not move the transcripts (they are
+# always written under $HOME/.cursor/projects), so it is not set: both HOME
+# paths are linked into one local tree instead. Chats are WAL-mode SQLite.
+export CURSOR_LIVE="$AM_LOCAL/cursor-home"
+export CURSOR_DURABLE="$DATA_DIR/state/cursor"
 
 mkdir -p "$CODEX_HOME" "$CODEX_DURABLE/sessions" "$CODEX_DURABLE/db-backups" \
   "$CLAUDE_CONFIG_DIR" "$CLAUDE_DURABLE" "$GEMINI_LIVE" "$GEMINI_DURABLE" \
   "$OPENCLAW_STATE_DIR" "$OPENCLAW_DURABLE" "$OPENCODE_LIVE" \
   "$OPENCODE_DURABLE" "$HERMES_LIVE" "$HERMES_DURABLE" "$FX_LIVE" "$FX_DURABLE" \
-  "$ANTIGRAVITY_LIVE/antigravity-cli" "$ANTIGRAVITY_LIVE/config" "$ANTIGRAVITY_DURABLE"
+  "$ANTIGRAVITY_LIVE/antigravity-cli" "$ANTIGRAVITY_LIVE/config" "$ANTIGRAVITY_DURABLE" \
+  "$CURSOR_LIVE/dot-cursor" "$CURSOR_LIVE/config" "$CURSOR_DURABLE/dot-cursor" "$CURSOR_DURABLE/config"
 
 # Heal the old Codex layout on hot/dev restarts. Only unlink the known local
 # sessions symlink; never recursively remove its durable target.
@@ -120,11 +127,12 @@ for legacy in "$HOME/.openclaw.pre-symlink" "$HOME/.openclaw"; do
   fi
 done
 
-# opencode, Hermes, fx and Antigravity expect their state at paths under HOME. The live
+# opencode, Hermes, fx, Antigravity and Cursor expect their state at paths under HOME. The live
 # targets are local; legacy real directories are retained as rollback copies
 # instead of being deleted during migration. agy's databases are not raw-copied:
 # agent-state.sh moves them through SQLite's backup (rows still in a WAL come
-# along) and leaves its locks, logs and binaries behind.
+# along) and leaves its locks, logs and binaries behind. Cursor's are handled the
+# same way (migrate-cursor), leaving its worker socket, WAL/SHM and logs behind.
 AGENT_STATE_SCRIPT="${AGENT_STATE_SCRIPT:-/app/scripts/agent-state.sh}"
 export AGENT_STATE_SCRIPT
 OPENCODE_LINK="$HOME/.local/share/opencode"
@@ -132,16 +140,20 @@ HERMES_LINK="$HOME/.hermes"
 FX_LINK="$HOME/.fx"
 AGY_LINK="$HOME/.gemini/antigravity-cli"
 AGY_CONFIG_LINK="$HOME/.gemini/config"
+CURSOR_LINK="$HOME/.cursor"
+CURSOR_CONFIG_LINK="$HOME/.config/cursor"
 migrate_tree() {
   case "$1" in
     "$AGY_LINK"|"$AGY_CONFIG_LINK") sh "$AGENT_STATE_SCRIPT" migrate-antigravity "$1" ;;
+    "$CURSOR_LINK"|"$CURSOR_CONFIG_LINK") sh "$AGENT_STATE_SCRIPT" migrate-cursor "$1" ;;
     *) rsync -a --update "$1/" "$2/" ;;
   esac
 }
-mkdir -p "$(dirname "$OPENCODE_LINK")" "$HOME/.gemini"
+mkdir -p "$(dirname "$OPENCODE_LINK")" "$HOME/.gemini" "$HOME/.config"
 for pair in "$OPENCODE_LINK|$OPENCODE_DURABLE" "$HERMES_LINK|$HERMES_DURABLE" \
   "$FX_LINK|$FX_DURABLE" "$AGY_LINK|$ANTIGRAVITY_DURABLE/antigravity-cli" \
-  "$AGY_CONFIG_LINK|$ANTIGRAVITY_DURABLE/config"; do
+  "$AGY_CONFIG_LINK|$ANTIGRAVITY_DURABLE/config" \
+  "$CURSOR_LINK|$CURSOR_DURABLE/dot-cursor" "$CURSOR_CONFIG_LINK|$CURSOR_DURABLE/config"; do
   lnk="${pair%%|*}"; dur="${pair##*|}"
   if [ -e "$lnk" ] && [ ! -L "$lnk" ]; then
     if ! migrate_tree "$lnk" "$dur"; then
@@ -163,6 +175,27 @@ ln -sfn "$HERMES_LIVE" "$HERMES_LINK"
 ln -sfn "$FX_LIVE" "$FX_LINK"
 ln -sfn "$ANTIGRAVITY_LIVE/antigravity-cli" "$AGY_LINK"
 ln -sfn "$ANTIGRAVITY_LIVE/config" "$AGY_CONFIG_LINK"
+ln -sfn "$CURSOR_LIVE/dot-cursor" "$CURSOR_LINK"
+ln -sfn "$CURSOR_LIVE/config" "$CURSOR_CONFIG_LINK"
+
+# The image pins cursor-agent (/opt/cursor-agent, see the Dockerfile). A hand
+# install in the durable HOME (~/.local/bin) would otherwise win on PATH after
+# the next self-update, so put wrappers ahead of it in $AM_LOCAL/bin: they run
+# the pinned build, and keep Node's compile cache (hundreds of MB) on local
+# disk instead of ~/.cache on the bucket. The hand install is user data and is
+# never touched.
+if [ -x /usr/local/bin/cursor-agent ] && [ -d /opt/cursor-agent ]; then
+  mkdir -p "$AM_LOCAL/bin"
+  for w in cursor-agent agent; do
+    printf '%s\n' '#!/bin/sh' \
+      ": \"\${NODE_COMPILE_CACHE:=$AM_LOCAL/cursor-compile-cache}\"; export NODE_COMPILE_CACHE" \
+      'exec /usr/local/bin/cursor-agent "$@"' > "$AM_LOCAL/bin/$w"
+    chmod 0755 "$AM_LOCAL/bin/$w"
+  done
+  if [ -e "$HOME/.local/bin/cursor-agent" ] || [ -L "$HOME/.local/bin/cursor-agent" ]; then
+    boot "cursor-agent: the hand install in $HOME/.local/bin is shadowed by the image pin in /opt/cursor-agent"
+  fi
+fi
 
 boot "migrations done in $(boot_elapsed "$PHASE_T0")"
 
