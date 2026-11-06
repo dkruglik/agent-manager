@@ -101,16 +101,18 @@ RUN . /opt/agent-manager/cli-allowlist.sh \
     && if am_cli_install openclaw 1; then \
          npm install -g "$(am_cli_npm_spec openclaw)" || echo "openclaw install failed"; \
        fi
-# fx (Vercel Labs), Antigravity (`agy`) and Cursor (`cursor-agent`) are pinned
-# prebuilt binaries. The procedure, the pins, and the failure rules live in
-# scripts/cli-allowlist.sh (am_install_fx, am_install_agy, am_install_cursor) so
-# the local installer runs the same steps. fx and agy are best-effort: a vendor
-# CDN being down must not fail the build. Cursor is best-effort only for a
-# failed download. A checksum mismatch, or a tarball that matches but does not
-# unpack or run `--version`, fails the build — Cursor publishes no checksum, so
-# the pin is ours. An allowlist that omits one of them skips it, and the binary
-# is not written. To upgrade, bump the defaults in that script (see the comments
-# on each function, and docs/cursor-agent.md).
+# fx (Vercel Labs) and Antigravity (`agy`) are pinned prebuilt binaries.
+# Cursor (`cursor-agent`) has no npm package: every image build takes the
+# newest tarball cursor.com/install names, the same way the npm CLIs take
+# @latest. The procedures live in scripts/cli-allowlist.sh (am_install_fx,
+# am_install_agy, am_install_cursor) so the local installer runs the same
+# steps. fx and agy are best-effort: a vendor CDN being down must not fail the
+# build. Cursor is best-effort for a failed lookup or download. Cursor
+# publishes no checksum, so nothing is hash-checked; a tarball that does not
+# unpack, link or run `--version` fails the build. The result sits in the
+# root-owned /opt; entrypoint.sh puts wrappers for it ahead of any hand
+# install in the durable HOME. An allowlist that omits one of them skips it,
+# and the binary is not written.
 RUN . /opt/agent-manager/cli-allowlist.sh \
     && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
     && if am_cli_install fx 1; then am_install_fx; fi

@@ -60,8 +60,9 @@ variable is set and not empty it replaces the file.
 Cursor, Hermes, fx and Antigravity (`agy`, also accepted as an id) are not in
 the historical local set. They are the prebuilt and vendor-script installs the
 image already performs, and naming them opts in. Those prebuilt binaries are
-linux/x64, as in the image. Cursor's pinned tarball still fails the run when
-its checksum does not match, and a failed download does not. `agy` and
+linux/x64, as in the image. Cursor takes the newest build `cursor.com/install`
+names: a failed lookup or download leaves it unavailable, and a tarball that
+does not unpack or run fails the run. `agy` and
 `cursor-agent` are accepted aliases of `antigravity` and `cursor`.
 
 `./scripts/install-local-clis.sh --plan` prints what this run would install

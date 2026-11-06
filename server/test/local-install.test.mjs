@@ -214,26 +214,34 @@ assert.equal(rejected.status, 2);
 assert.match(rejected.stderr, /unknown CLI 'nope'/);
 assert.equal(fs.readFileSync(npmLog, 'utf8'), '', 'an unknown id fails before any install');
 
-// A selected cursor whose download fails is best-effort. A tarball that does
-// not match the pin still fails the run, same as the image build.
+// A selected cursor whose lookup fails is best-effort. A downloaded tarball
+// that does not unpack still fails the run, same as the image build.
 const cursorSoft = runInstaller([], { AM_INSTALL_CLIS: 'cursor' });
 assert.equal(cursorSoft.status, 0, `${cursorSoft.stderr}\n${cursorSoft.stdout}`);
 assert.match(cursorSoft.stdout, /Not installed: cursor/);
 if (process.platform === 'linux' && process.arch === 'x64') {
-  assert.match(fs.readFileSync(curlLog, 'utf8'), /cursor/, 'a selected cursor is fetched');
+  assert.match(fs.readFileSync(curlLog, 'utf8'), /cursor\.com\/install/, 'a selected cursor looks up the newest build');
   const curlBin = path.join(tmp, 'curlbin');
   fs.mkdirSync(curlBin);
-  fs.writeFileSync(path.join(curlBin, 'curl'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { printf x > "$2"; exit 0; }; shift; done\nexit 1\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(curlBin, 'curl'), [
+    '#!/bin/sh',
+    'prev=',
+    'for a in "$@"; do',
+    '  if [ "$prev" = -o ]; then printf "not a tarball\\n" > "$a"; exit 0; fi',
+    '  prev=$a',
+    'done',
+    'printf "%s\\n" \'DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.10.22-abc123/linux/x64/agent-cli-package.tar.gz"\'',
+    'exit 0',
+  ].join('\n'), { mode: 0o755 });
   const cursorHard = runInstaller([], {
     AM_INSTALL_CLIS: 'cursor',
     PATH: `${curlBin}:${process.env.PATH}`,
-    CURSOR_SHA256: '0'.repeat(64),
   });
   assert.equal(cursorHard.status, 1, `${cursorHard.stderr}\n${cursorHard.stdout}`);
-  assert.match(cursorHard.stderr, /does not match the pinned SHA-256/);
+  assert.match(cursorHard.stderr, /downloaded but did not install or run/);
 } else {
   assert.match(cursorSoft.stderr, /linux\/x64 only/);
-  assert.equal(fs.readFileSync(curlLog, 'utf8'), '', 'a non-linux/x64 host does not download the pinned tarball');
+  assert.equal(fs.readFileSync(curlLog, 'utf8'), '', 'a non-linux/x64 host does not download the tarball');
 }
 
 for (const id of ['claude', 'codex', 'gemini', 'opencode', 'openclaw', 'cursor', 'hermes', 'fx', 'antigravity']) {
@@ -255,8 +263,8 @@ assert.match(dockerfile, /SKIPPED/, 'the image inventory can say a CLI was left 
 assert.doesNotMatch(dockerfile, /npm install -g @anthropic-ai\/claude-code@latest @openai\/codex@latest/);
 const allowlistText = fs.readFileSync(allowlist, 'utf8');
 assert.match(allowlistText, /@anthropic-ai\/claude-code@latest/);
-assert.match(allowlistText, /85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294/);
-assert.match(allowlistText, /2026\.10\.22-27dcf5f/);
+assert.match(allowlistText, /cursor\.com\/install/, 'cursor tracks the newest build, shared with the image');
+assert.doesNotMatch(allowlistText, /CURSOR_SHA256/, 'cursor is not hash-pinned');
 
 // ---- the other app-owned paths, from the same spaced checkout ----
 const spacedShare = await import(pathToFileURL(path.join(spacedRoot, 'server', 'src', 'share.js')));

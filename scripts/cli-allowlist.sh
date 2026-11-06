@@ -178,47 +178,37 @@ am_cli_docdir() {
   printf '%s\n' "$(dirname "$am_bindir")/share/doc"
 }
 
-# Cursor CLI (`cursor-agent`, also linked as `agent`). A pinned tarball, not
-# npm. Cursor publishes no checksum, so CURSOR_SHA256 pins the bytes downloaded
-# on 2026-11-03. A mismatch fails the install (and therefore the image build):
-# a tarball that is not the one we pinned must not be unpacked. A failed
-# download does not: one vendor CDN being down must not fail the build, and a
-# missing binary is already reported as unavailable. A tarball that matches
-# but does not unpack, link or run `--version` fails too. To upgrade, read the
-# version and URL from cursor.com/install (a plain shell script), download the
-# tarball once, measure it with sha256sum, and bump the three defaults below.
-# Overrides: CURSOR_VERSION, CURSOR_URL, CURSOR_SHA256, AM_CURSOR_DEST,
-# AM_CLI_BINDIR, AM_CLI_TMP.
+# Cursor CLI (`cursor-agent`, also linked as `agent`). No npm package, so the
+# newest build is taken on every install, the same way the npm CLIs use
+# @latest. cursor.com/install is a shell script; the version is the lab/<id>
+# it names. Cursor publishes no checksum, so nothing is hash-checked. A failed
+# lookup or download does not fail the install: one vendor being unreachable
+# must not fail the image build, and a missing binary is already reported as
+# unavailable. A tarball that does not unpack, link or run `--version` fails.
+# Overrides: AM_CURSOR_DEST, AM_CLI_BINDIR, AM_CLI_TMP.
 am_install_cursor() {
-  version=${CURSOR_VERSION:-2026.10.22-27dcf5f}
-  url=${CURSOR_URL:-https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz}
-  sha=${CURSOR_SHA256:-85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294}
   dest=${AM_CURSOR_DEST:-/opt/cursor-agent}
   bindir=${AM_CLI_BINDIR:-/usr/local/bin}
   tmp=${AM_CLI_TMP:-${TMPDIR:-/tmp}}
   tarball=$tmp/cursor-agent.tar.gz
   home=$tmp/cursor-home
   mkdir -p "$tmp" "$bindir"
-  if ! curl -fsSL "$url" -o "$tarball"; then
-    echo "cursor-agent install failed"
-    rm -f "$tarball"
+  version=$(curl -fsSL https://cursor.com/install 2>/dev/null | grep -oE 'lab/[0-9][0-9.]*-[0-9a-f]+' | head -1 | cut -d/ -f2 || true)
+  if [ -n "$version" ] && curl -fsSL "https://downloads.cursor.com/lab/$version/linux/x64/agent-cli-package.tar.gz" -o "$tarball"; then
+    if ! mkdir -p "$dest/$version" "$home" \
+      || ! tar -xzf "$tarball" -C "$dest/$version" --strip-components=1 \
+      || ! ln -sf "$dest/$version/cursor-agent" "$bindir/cursor-agent" \
+      || ! ln -sf "$dest/$version/cursor-agent" "$bindir/agent" \
+      || ! HOME="$home" "$bindir/cursor-agent" --version; then
+      echo "ERROR: cursor-agent $version downloaded but did not install or run; failing the build" >&2
+      rm -rf "$tarball" "$home"
+      return 1
+    fi
+    rm -rf "$tarball" "$home"
     return 0
   fi
-  if ! echo "$sha  $tarball" | sha256sum -c -; then
-    echo "ERROR: cursor-agent $version does not match the pinned SHA-256; refusing to install it" >&2
-    rm -f "$tarball"
-    return 1
-  fi
-  if ! mkdir -p "$dest/$version" "$home" \
-    || ! tar -xzf "$tarball" -C "$dest/$version" --strip-components=1 \
-    || ! ln -sf "$dest/$version/cursor-agent" "$bindir/cursor-agent" \
-    || ! ln -sf "$dest/$version/cursor-agent" "$bindir/agent" \
-    || ! HOME="$home" "$bindir/cursor-agent" --version; then
-    echo "ERROR: cursor-agent $version matched its SHA-256 but did not install or run; failing the build" >&2
-    rm -rf "$tarball" "$home"
-    return 1
-  fi
-  rm -rf "$tarball" "$home"
+  echo "cursor-agent install failed"
+  rm -f "$tarball"
   return 0
 }
 
@@ -247,9 +237,8 @@ am_install_fx() {
 
 # Antigravity CLI (`agy`). Pinned build plus the SHA-512 from Google's
 # installer manifest, not install.sh (that resolves the newest build and then
-# edits shell rc files). A checksum or CDN failure is best-effort, unlike
-# Cursor, because this pin is the vendor's own and a bad download should not
-# take the Space down. To upgrade, bump AGY_URL and AGY_SHA512 from
+# edits shell rc files). A checksum or CDN failure is best-effort: a bad
+# download must not take the Space down. To upgrade, bump AGY_URL and AGY_SHA512 from
 # .../manifests/linux_amd64.json.
 am_install_agy() {
   bindir=${AM_CLI_BINDIR:-/usr/local/bin}

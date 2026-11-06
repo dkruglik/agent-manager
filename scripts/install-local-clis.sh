@@ -16,8 +16,9 @@ set -eu
 # Claude or Codex skips them instead of failing. Cursor, Hermes, fx and
 # Antigravity (`agy`) are the same installs the Dockerfile runs; they are not
 # in the historical default, so name them to opt in. Their prebuilt binaries
-# are linux/x64. Cursor's pinned tarball still fails this run when the
-# checksum does not match, and a failed download does not.
+# are linux/x64. Cursor takes the newest build cursor.com/install names. A
+# failed lookup or download does not fail this run; a tarball that does not
+# unpack or run does.
 #
 # `./scripts/install-local-clis.sh --plan` prints the selection and installs
 # nothing. The image's selection is `sh scripts/cli-allowlist.sh plan docker`.

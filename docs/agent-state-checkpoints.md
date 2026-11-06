@@ -55,11 +55,11 @@ the adapter's restore fails and leaves the live tree as it is. For the listing,
 `find` errors that are only vanished files (a live tree still being written)
 count as a complete listing, as rsync exit 24 does for the tree copy.
 
-The image pins the agent itself: `/opt/cursor-agent/<version>` (checksum-verified
-by `am_install_cursor` in `scripts/cli-allowlist.sh`, which the Dockerfile runs;
-a mismatch fails the build, and so does a matching tarball
-that does not unpack or run `--version`; a failed download leaves the image
-without the agent), linked as `cursor-agent` and
+The image installs the agent itself at `/opt/cursor-agent/<version>` (the newest
+build `cursor.com/install` names, via `am_install_cursor` in
+`scripts/cli-allowlist.sh`, which the Dockerfile runs; a failed lookup or
+download leaves the image without the agent, and a tarball that does not
+unpack or run `--version` fails the build), linked as `cursor-agent` and
 `agent` in `/usr/local/bin`. Because `~/.local/bin` (a hand install, durable
 HOME) is on `PATH` after `$AM_LOCAL/bin`, the entrypoint writes two wrappers
 there that run the pinned build and default `NODE_COMPILE_CACHE` to

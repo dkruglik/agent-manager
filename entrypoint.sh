@@ -178,7 +178,7 @@ ln -sfn "$ANTIGRAVITY_LIVE/config" "$AGY_CONFIG_LINK"
 ln -sfn "$CURSOR_LIVE/dot-cursor" "$CURSOR_LINK"
 ln -sfn "$CURSOR_LIVE/config" "$CURSOR_CONFIG_LINK"
 
-# The image pins cursor-agent (/opt/cursor-agent, see the Dockerfile). A hand
+# The image installs cursor-agent (/opt/cursor-agent, see the Dockerfile). A hand
 # install in the durable HOME (~/.local/bin) would otherwise win on PATH after
 # the next self-update, so put wrappers ahead of it in $AM_LOCAL/bin: they run
 # the pinned build, and keep Node's compile cache (hundreds of MB) on local
