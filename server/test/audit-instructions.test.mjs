@@ -110,8 +110,12 @@ try {
   assert.doesNotMatch(text, /localhost:/, 'no generated snippet hardcodes localhost');
   // …and the delegation command keeps its line continuations (a lone `\` in
   // the template literal is eaten, joining the command into one line).
-  assert.match(section('### Delegate with a durable completion reply'),
+  const delegate = section('### Delegate with a durable completion reply');
+  assert.match(delegate,
     /curl -sS --fail-with-body -H 'X-AM-Request: 1' -X POST \\\n  "http:\/\/\$\{AM_HOST:-[^}]+\}:\$\{AM_PORT:-\d+\}\/api\/agents\/\$ID\/prompt\?from=\$AM_ID" \\\n/);
+  assert.match(delegate, /Claude parent can target an existing Cursor session/);
+  assert.match(delegate, /\{"type":"turn_ended"\}/);
+  assert.match(delegate, /does not write an in-progress turn/);
 
   // Artifact links go through the Hub page, whatever the visibility: a direct
   // *.static.hf.space link to a private Space only works right after visiting
