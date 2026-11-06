@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {randomUUID} from 'node:crypto';
-import {Delegations,consumeEvidence,hash,traceCheckpoint} from '../src/delegations.js';
+import {Delegations,consumeEvidence,hash,traceCheckpoint,delegationSupported,notifyClaudeOnce} from '../src/delegations.js';
 const input=text=>({type:'user',message:{content:text}});
 const answer=(text='Review ready',reason='end_turn')=>({type:'assistant',message:{content:[{type:'text',text}],stop_reason:reason}});
 function fixture(t,overrides={}) {
@@ -133,4 +133,144 @@ test('archiving a parent during observation invalidates callback instead of retr
  const f=fixture(t);const id=await start(f);f.append(answer());f.state.parent='waiting';
  f.options.identity=()=>{throw Object.assign(Error('archived'),{code:'codex-sender-archived'});};
  const restored=f.create();await restored.tick();assert.equal(restored.get(id,'parent').state,'stale');assert.equal(f.counts().notifications,0);
+});
+
+const sharedOf=s=>s.shared===true;
+test('notify allows shared Codex to Claude, Codex, or Cursor, and Claude to Cursor',()=>{
+ const claude={id:'c',cli:'claude'},cursor={id:'u',cli:'cursor'},codex={id:'x',cli:'codex',shared:true},local={id:'y',cli:'codex'};
+ assert.equal(delegationSupported(codex,claude,sharedOf),true);
+ assert.equal(delegationSupported(codex,{...codex,id:'z'},sharedOf),true);
+ assert.equal(delegationSupported(codex,cursor,sharedOf),true);
+ assert.equal(delegationSupported(claude,cursor,sharedOf),true);
+ assert.equal(delegationSupported(claude,claude,sharedOf),false);
+ assert.equal(delegationSupported(claude,codex,sharedOf),false);
+ assert.equal(delegationSupported(cursor,cursor,sharedOf),false);
+ assert.equal(delegationSupported(local,cursor,sharedOf),false);
+ assert.equal(delegationSupported(null,cursor,sharedOf),false);
+});
+
+const cursorUser=text=>({role:'user',message:{content:[{type:'text',text:`<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n<user_query>\n${text}\n</user_query>`}]}});
+const cursorAssistant=text=>({role:'assistant',message:{content:[{type:'text',text}]}});
+function cursorHarness(t){
+ const f=fixture(t);let payload='',dispatches=0;
+ const write=records=>{
+  const next=f.file+'.next';
+  fs.writeFileSync(next,records.map(r=>JSON.stringify(r)).join('\n')+'\n');
+  fs.renameSync(next,f.file);
+ };
+ f.d.prepare=async()=>({cli:'cursor',expectedText:'placeholder',cursor:traceCheckpoint(f.file)});
+ f.d.dispatch=async(j,text)=>{dispatches++;payload=text;j.expectedHash=hash(text);write([cursorUser(text)]);};
+ return {f,write,payload:()=>payload,dispatches:()=>dispatches};
+}
+
+test('Cursor user_query matches the dispatched text; a quote or an earlier turn_ended does not',()=>{
+ const prompt='[message from parent:] review\n\n[AM delegation 123]',expected=hash(prompt),e={};
+ const wrapped=`<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n<user_query>\n${prompt}\n</user_query>`;
+ consumeEvidence(e,{type:'turn_ended',status:'success'},expected,'cursor');
+ consumeEvidence(e,{role:'assistant',message:{content:[{type:'text',text:'stale'}]}},expected,'cursor');
+ assert.equal(e.matched,undefined);assert.equal(e.outcome,undefined);
+ consumeEvidence(e,{role:'user',message:{content:[{type:'text',text:`quoted: ${prompt}`}]}},expected,'cursor');
+ assert.equal(!!e.matched,false);
+ consumeEvidence(e,{role:'user',message:{content:[{type:'text',text:wrapped}]}},expected,'cursor');
+ assert.equal(e.matched,true);
+ consumeEvidence(e,{role:'assistant',message:{content:[{type:'text',text:'ready'},{type:'tool_use',name:'Shell',input:{command:'ls'}}]}},expected,'cursor');
+ assert.equal(e.outcome,undefined);
+ consumeEvidence(e,{type:'turn_ended',status:'success'},expected,'cursor');
+ assert.equal(e.outcome,'completed');assert.equal(e.reason,'harness-turn-ended');assert.equal(e.answer,'ready');
+});
+
+test('Cursor rewrite completes on turn_ended; displacement, failure, and a vanished turn do not',async t=>{
+ const c=cursorHarness(t),id=await start(c.f);
+ await c.f.d.tick();assert.equal(c.f.d.get(id,'parent').outcome,null);
+ c.write([cursorUser(c.payload()),cursorAssistant('working'),{role:'assistant',message:{content:[{type:'tool_use',name:'Shell',input:{command:'ls'}}]}}]);
+ await c.f.d.tick();assert.equal(c.f.d.get(id,'parent').outcome,null,'tool text is not a final');
+ c.write([
+  cursorUser('older'),cursorAssistant('OLD'),{type:'turn_ended',status:'success'},
+  cursorUser(c.payload()),cursorAssistant('The review is done'),{type:'turn_ended',status:'success'},
+  cursorUser('after'),cursorAssistant('later'),{type:'turn_ended',status:'success'},
+ ]);
+ c.f.state.parent='waiting';await c.f.d.tick();
+ const done=c.f.d.get(id,'parent');
+ assert.equal(done.outcome,'completed');assert.equal(done.reason,'harness-turn-ended');assert.equal(done.result,'The review is done');
+ assert.equal(done.state,'delivered');assert.equal(c.f.counts().notifications,1);
+
+ const displaced=cursorHarness(t),id2=await start(displaced.f);
+ displaced.write([cursorUser(displaced.payload()),cursorUser('new scope'),cursorAssistant('answer to updated scope'),{type:'turn_ended',status:'success'}]);
+ await displaced.f.d.tick();
+ assert.equal(displaced.f.d.get(id2,'parent').outcome,'uncertain');
+ assert.equal(displaced.f.d.get(id2,'parent').reason,'another-user-input');
+
+ const noText=cursorHarness(t),id3=await start(noText.f);
+ noText.write([cursorUser(noText.payload()),{role:'assistant',message:{content:[{type:'tool_use',name:'Read',input:{path:'/work/README.md'}}]}},{type:'turn_ended',status:'success'}]);
+ await noText.f.d.tick();
+ assert.equal(noText.f.d.get(id3,'parent').outcome,'uncertain');assert.equal(noText.f.d.get(id3,'parent').reason,'no-final-result');
+
+ const failed=cursorHarness(t),id4=await start(failed.f);
+ failed.write([cursorUser(failed.payload()),cursorAssistant('partial'),{type:'turn_ended',status:'error'}]);
+ await failed.f.d.tick();
+ assert.equal(failed.f.d.get(id4,'parent').outcome,'failed');assert.equal(failed.f.d.get(id4,'parent').reason,'harness-turn-failed');
+
+ const unmarked=cursorHarness(t),id5=await start(unmarked.f);
+ unmarked.write([cursorUser(unmarked.payload()),cursorAssistant('done'),{type:'turn_ended'}]);
+ await unmarked.f.d.tick();
+ assert.equal(unmarked.f.d.get(id5,'parent').outcome,'completed');assert.equal(unmarked.f.d.get(id5,'parent').reason,'harness-turn-ended');
+
+ const blocked=cursorHarness(t),id6=await start(blocked.f);
+ blocked.f.state.target='input-required';await blocked.f.d.tick();
+ assert.equal(blocked.f.d.get(id6,'parent').outcome,'blocked');assert.equal(blocked.f.d.get(id6,'parent').reason,'input-required');
+
+ const stopped=cursorHarness(t),id7=await start(stopped.f);
+ stopped.f.state.target='stopped';await stopped.f.d.tick();
+ assert.equal(stopped.f.d.get(id7,'parent').outcome,'failed');assert.equal(stopped.f.d.get(id7,'parent').reason,'process-stopped-without-result');
+
+ const vanished=cursorHarness(t),id8=await start(vanished.f);
+ await vanished.f.d.tick();assert.equal(vanished.f.d.get(id8,'parent').outcome,null);
+ vanished.write([cursorUser('something else'),cursorAssistant('nope'),{type:'turn_ended',status:'success'}]);
+ await vanished.f.d.tick();
+ assert.equal(vanished.f.d.get(id8,'parent').outcome,'uncertain');assert.equal(vanished.f.d.get(id8,'parent').reason,'trace-rewritten');
+});
+
+test('Cursor retry stays one dispatch, a torn rewrite is not final, and the tail window sees the new turn',async t=>{
+ const c=cursorHarness(t),id=randomUUID();
+ const first=await c.f.d.create('parent','target',{requestId:id,text:'review'});
+ const second=await c.f.d.create('parent','target',{requestId:id,text:'review'});
+ assert.equal(first.id,second.id);assert.equal(c.dispatches(),1);
+ await assert.rejects(()=>c.f.d.create('parent','target',{requestId:id,text:'changed'}),{code:'delegation-conflict'});
+
+ const torn=cursorHarness(t),id2=await start(torn.f);
+ await torn.f.d.tick();
+ const body=[cursorUser(torn.payload()),cursorAssistant('done'),{type:'turn_ended',status:'success'}].map(r=>JSON.stringify(r)).join('\n');
+ fs.writeFileSync(torn.f.file,body);
+ await torn.f.d.tick();assert.equal(torn.f.d.get(id2,'parent').outcome,null);
+ fs.appendFileSync(torn.f.file,'\n');await torn.f.d.tick();
+ assert.equal(torn.f.d.get(id2,'parent').outcome,'completed');assert.equal(torn.f.d.get(id2,'parent').result,'done');
+
+ const tail=cursorHarness(t),id3=await start(tail.f);
+ const prefix=[cursorUser('old'),cursorAssistant('OLD'),{type:'turn_ended',status:'success'}].map(r=>JSON.stringify(r)).join('\n')+'\n';
+ const suffix=[cursorUser(tail.payload()),cursorAssistant('tail answer'),{type:'turn_ended',status:'success'}].map(r=>JSON.stringify(r)).join('\n')+'\n';
+ fs.writeFileSync(tail.f.file,prefix+suffix);
+ tail.f.d.jobs.get(id3).scanBytes=Buffer.byteLength(suffix);
+ await tail.f.d.tick();
+ assert.equal(tail.f.d.get(id3,'parent').outcome,'completed');assert.equal(tail.f.d.get(id3,'parent').result,'tail answer');
+});
+
+test('a Claude parent callback is pasted once and a typed failure is not repeated',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'am-notify-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ let calls=0;
+ const f=fixture(t,{notify:async job=>notifyClaudeOnce(root,job.callbackId,async()=>{calls++;return {ok:true,queued:true};})});
+ const id=await start(f);f.append(answer());f.state.parent='waiting';
+ await f.d.tick();assert.equal(calls,1);assert.equal(f.d.get(id,'parent').state,'delivered');
+ await f.d.tick();assert.equal(calls,1);assert.equal(f.d.get(id,'parent').notification.repeated,undefined);
+
+ let typed=0;
+ const f2=fixture(t,{notify:async job=>notifyClaudeOnce(root,job.callbackId,async()=>{typed++;throw Object.assign(Error('pasted'),{typed:true});})});
+ const id2=await start(f2);f2.append(answer());f2.state.parent='waiting';
+ await f2.d.tick();await f2.d.tick();
+ assert.equal(typed,1);assert.equal(f2.d.get(id2,'parent').state,'notification-uncertain');
+
+ let early=0;
+ const f3=fixture(t,{notify:async job=>notifyClaudeOnce(root,job.callbackId,async()=>{early++;if(early===1)throw Object.assign(Error('not yet'),{code:'input-not-ready'});return {ok:true};})});
+ const id3=await start(f3);f3.append(answer());f3.state.parent='waiting';
+ await f3.d.tick();assert.equal(f3.d.get(id3,'parent').state,'ready');
+ await f3.d.tick();assert.equal(early,2);assert.equal(f3.d.get(id3,'parent').state,'delivered');
 });
