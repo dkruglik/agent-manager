@@ -1,9 +1,9 @@
-// The Dockerfile's cursor-agent install step, run as shell against stubs. The
-// step's own text is extracted from the Dockerfile, so this checks the real
-// clause, with /opt, /usr/local/bin and /tmp moved under a temporary root. Its
-// promises: the version is read from cursor.com/install and that build is
-// installed; a failed lookup or download leaves the image without the agent but
-// builds; a downloaded build that does not unpack or run fails the build.
+// am_install_cursor, the install the Dockerfile runs, against stub downloads.
+// The image calls this function (it does not keep a second copy of the steps).
+// Its promises, the same ones the image build has: the version is read from
+// cursor.com/install and that build is installed; a failed lookup or download
+// leaves the image without the agent but builds; a downloaded build that does
+// not unpack or run fails the build.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,11 +12,12 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const allowlist = path.join(repo, 'scripts', 'cli-allowlist.sh');
 const dockerfile = fs.readFileSync(path.join(repo, 'Dockerfile'), 'utf8');
-const start = dockerfile.lastIndexOf('RUN set -e;', dockerfile.indexOf('cursor_ver="$('));
-const end = dockerfile.indexOf('\nRUN rm -rf /tmp/cursor-agent.tar.gz', start);
-assert.ok(start > 0 && end > start, 'the cursor-agent RUN step is found in the Dockerfile');
-const step = dockerfile.slice(start + 'RUN'.length, end).replace(/\\\n/g, ' ');
+assert.match(dockerfile, /am_cli_install cursor 1/, 'the image installs cursor only when the allowlist says so');
+assert.match(dockerfile, /am_install_cursor/, 'the image uses the shared installer');
+assert.doesNotMatch(dockerfile, /cursor_ver=/, 'the lookup is not copied into the Dockerfile');
+assert.match(fs.readFileSync(allowlist, 'utf8'), /cursor\.com\/install/, 'the shared installer reads the newest build');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'am-cursor-image-'));
 const VERSION = '2026.10.22-abc123';
@@ -42,20 +43,24 @@ const runStep = (name, { installer, source }) => {
   const installerText = installer === null ? '' : `DOWNLOAD_URL="https://downloads.cursor.com/lab/${installer}/\${OS}/\${ARCH}/agent-cli-package.tar.gz"\n`;
   fs.writeFileSync(path.join(stubs, 'curl'), [
     '#!/bin/sh',
+    'prev=',
     'for a in "$@"; do',
-    '  if [ "$a" = -o ]; then',
-    source ? `    cp "${source}" "$2"; exit $?` : '    exit 22',
+    '  if [ "$prev" = -o ]; then',
+    source ? `    cp "${source}" "$a"; exit $?` : '    exit 22',
     '  fi',
+    '  prev=$a',
     'done',
     installer === null ? 'exit 22' : `printf '%s' '${installerText}'`,
     '',
   ].join('\n'), { mode: 0o755 });
-  // One pass, so the temporary root (itself under /tmp) is not rewritten again.
-  const moved = { '/opt/': `${root}/opt/`, '/usr/local/bin': `${root}/bin`, '/tmp/': `${root}/tmp/` };
-  const script = step.replace(/\/opt\/|\/usr\/local\/bin|\/tmp\//g, (p) => moved[p]);
-  const result = spawnSync('sh', ['-c', script], {
+  const result = spawnSync('sh', ['-c', '. "$1" && am_install_cursor', 'sh', allowlist], {
     encoding: 'utf8',
-    env: { PATH: `${stubs}:${root}/bin:${process.env.PATH}` },
+    env: {
+      PATH: `${stubs}:${root}/bin:${process.env.PATH}`,
+      AM_CURSOR_DEST: path.join(root, 'opt', 'cursor-agent'),
+      AM_CLI_BINDIR: path.join(root, 'bin'),
+      AM_CLI_TMP: path.join(root, 'tmp'),
+    },
   });
   return { ...result, root };
 };

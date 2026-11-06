@@ -23,17 +23,52 @@ explicitly:
 ```bash
 ./scripts/install-local-clis.sh
 
-# Or only the ones you want:
+# Or only the ones you want, for this run:
 ./scripts/install-local-clis.sh opencode codex
 ```
 
-That installs into `${NPM_CONFIG_PREFIX:-$HOME/.local}`. Claude and Codex are
-required and a failure stops the run; Gemini (deprecated), opencode and
-OpenClaw are best-effort, exactly as in the container image, and anything that does not
-install is listed at the end and shown as unavailable in the app. Put that
-prefix's `bin` on the server's `PATH` and restart — availability is read once at
+That installs into `${NPM_CONFIG_PREFIX:-$HOME/.local}`. With no arguments and
+no allowlist, the script installs the historical set: Claude, Codex, Gemini,
+opencode and OpenClaw. Claude and Codex are required when they are selected
+and a failure stops the run; Gemini (deprecated), opencode and OpenClaw are
+best-effort, exactly as in the container image. Anything that does not install
+is listed at the end and shown as unavailable in the app. Put that prefix's
+`bin` on the server's `PATH` and restart — availability is read once at
 startup. With no CLIs installed the app's first-run window shows this same
 command to copy, and points back here.
+
+To install the same subset every time, including in the image, list ids in
+[`am-install-clis`](../am-install-clis) at the repo root, or set
+`AM_INSTALL_CLIS`. Both are read by the local script and by the Docker build.
+Comments and blank lines in the file are ignored. An empty or all-comment file,
+and an unset or empty variable, keep the historical set, so an existing
+checkout or Space does not change what it installs.
+
+```bash
+# Claude Code and Cursor only. Codex, Hermes, OpenClaw, fx, Antigravity,
+# Gemini and opencode are not installed.
+AM_INSTALL_CLIS=claude,cursor ./scripts/install-local-clis.sh
+```
+
+The same ids, one per uncommented line in `am-install-clis`, are what a Space
+build sees. A Space variable named `AM_INSTALL_CLIS` is injected when
+the container starts, which is too late to skip a Dockerfile `RUN`, so commit
+the file or pass `--build-arg AM_INSTALL_CLIS=claude,cursor` and rebuild.
+Command-line ids replace the allowlist for that one local run. When the
+variable is set and not empty it replaces the file.
+
+Cursor, Hermes, fx and Antigravity (`agy`, also accepted as an id) are not in
+the historical local set. They are the prebuilt and vendor-script installs the
+image already performs, and naming them opts in. Those prebuilt binaries are
+linux/x64, as in the image. Cursor takes the newest build `cursor.com/install`
+names: a failed lookup or download leaves it unavailable, and a tarball that
+does not unpack or run fails the run. `agy` and
+`cursor-agent` are accepted aliases of `antigravity` and `cursor`.
+
+`./scripts/install-local-clis.sh --plan` prints what this run would install
+and does not download anything. `sh scripts/cli-allowlist.sh plan docker`
+prints the image's selection. The build's **IMAGE CLI INVENTORY** marks a CLI
+the allowlist left out as `SKIPPED`.
 
 Start the backend from the repository root:
 
@@ -72,8 +107,10 @@ live suites, and writing a suite that is safe to run in parallel.
 
 The repository is also a Docker Space: the `Dockerfile` builds the frontend and
 runs the backend. It installs coding CLIs, with optional installations marked
-unavailable in the app if they fail. The build's **IMAGE CLI INVENTORY** lists
-which binaries and versions actually installed.
+unavailable in the app if they fail. Which agent CLIs are installed is decided
+by `am-install-clis` and `AM_INSTALL_CLIS` (see above); unset, the image still
+installs the full set. The build's **IMAGE CLI INVENTORY** lists which binaries
+and versions actually installed.
 
 ## Architecture
 
@@ -140,6 +177,7 @@ its state handling in `scripts/agent-state.sh` (`GEMINI_CLI_HOME`,
 
 | Var | Default | Purpose |
 |---|---|---|
+| `AM_INSTALL_CLIS` | (empty) | Comma- or space-separated agent CLI ids to install (`claude,cursor`). Empty keeps the historical default set. When non-empty, overrides the `am-install-clis` file. Read by `scripts/install-local-clis.sh` and, as a Docker build arg, by the image. A runtime Space variable of this name does not remove CLIs already in the image |
 | `PORT` | `7860` | HTTP + WS port (HF `app_port`) |
 | `DATA_DIR` | see purpose | Data root; `/data` in Docker, `./data` from the backend working directory otherwise |
 | `AM_SCROLLBACK_BYTES` | `67108864` | Maximum Ghostty scrollback memory per session |

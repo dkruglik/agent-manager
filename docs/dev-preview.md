@@ -78,7 +78,8 @@ Listing open PRs works either way.
 3. Refuses if the result would need a **full rebuild**: it changes, or differs
    from the running image in, `Dockerfile`, `.dockerignore`, `entrypoint.sh`,
    `codex-requirements.toml`, `gemini-system-defaults.json`,
-   `scripts/am-codex-repin-hook.sh` or the playwright pin in `web/package.json`.
+   `scripts/am-codex-repin-hook.sh`, `scripts/cli-allowlist.sh`,
+   `am-install-clis`, or the playwright pin in `web/package.json`.
    The image keeps its copies in `/app/.image-inputs/` for this comparison. A
    test fails if the Dockerfile gains a `COPY` this list does not cover.
 4. Refuses a tree without `server/src/dev-preview.js`: it would boot an app with
