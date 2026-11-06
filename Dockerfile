@@ -49,10 +49,30 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 
 ENV LANG=C.UTF-8
 
-# AI coding CLIs available to every session (installed globally, on PATH for all users).
+# Which agent CLIs land in the image. scripts/cli-allowlist.sh is the same
+# parser the local installer uses. am-install-clis lists ids; comments only, or
+# a missing list, means the historical full set. AM_INSTALL_CLIS overrides that
+# file when it is set and not empty — pass it as a build arg. A Space variable
+# of the same name arrives at runtime, after this build, so it cannot skip an
+# install; commit the file (or pass the build arg) and rebuild.
+# ccusage, uv, hf, gh and Chromium are not agent CLIs and are not gated.
+COPY scripts/cli-allowlist.sh /opt/agent-manager/cli-allowlist.sh
+COPY am-install-clis /opt/agent-manager/am-install-clis
+ARG AM_INSTALL_CLIS=
+ENV AM_INSTALL_CLIS=${AM_INSTALL_CLIS} \
+    AM_INSTALL_CLIS_FILE=/opt/agent-manager/am-install-clis
+
+# AI coding CLIs (installed globally, on PATH for all users).
 # Pinned to @latest so a factory reboot (no-cache rebuild) reinstalls the newest
 # published versions — that's what the "Relaunch & update" button triggers.
-RUN npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest
+# Claude and Codex fail the build when they are selected and npm fails. Leaving
+# them off the allowlist skips the install instead of failing the build.
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && pkgs="" \
+    && if am_cli_install claude 1; then pkgs="$pkgs $(am_cli_npm_spec claude)"; fi \
+    && if am_cli_install codex 1; then pkgs="$pkgs $(am_cli_npm_spec codex)"; fi \
+    && if [ -n "$pkgs" ]; then npm install -g $pkgs; fi
 # This image is the administrator of its own Codex runtime. Install Agent
 # Manager's lifecycle adapter as a managed hook so it runs deterministically
 # without weakening trust for any user/project hooks.
@@ -60,76 +80,46 @@ COPY codex-requirements.toml /etc/codex/requirements.toml
 COPY scripts/am-codex-repin-hook.sh /etc/codex/hooks/am-codex-repin-hook.sh
 RUN chmod 755 /etc/codex/hooks/am-codex-repin-hook.sh
 # Newer agents, best-effort so a publish hiccup can't break the image build;
-# the app marks any missing binary "unavailable" gracefully.
-RUN npm install -g @google/gemini-cli@latest || echo "gemini-cli install failed"
+# the app marks any missing binary "unavailable" gracefully. Skipped entirely
+# when the allowlist does not name them.
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install gemini 1; then \
+         npm install -g "$(am_cli_npm_spec gemini)" || echo "gemini-cli install failed"; \
+       fi
 # Gemini merges hook arrays across settings layers. The lowest-priority system
 # defaults layer adds an observation-only ToolPermission hook without replacing
 # any user or project hooks.
 COPY gemini-system-defaults.json /etc/gemini-cli/system-defaults.json
-RUN npm install -g opencode-ai@latest || echo "opencode install failed"
-RUN npm install -g openclaw@latest || echo "openclaw install failed"
-# fx (Vercel Labs) ships as one static binary, not an npm package. Fetch the
-# PINNED tarball rather than piping the vendor's setup.sh into a shell: that
-# script resolves whatever `latest.txt` says on the day of the build, so the
-# image would stop being reproducible. Apache-2.0 asks that the notices travel
-# with a redistributed binary, hence the two doc files.
-#
-# Best-effort like the npm installs above, and for the same reason: one vendor
-# CDN being unreachable must not fail the whole image and take the Space down
-# with it. A missing binary is already a first-class state — cliCatalog() reports
-# fx unavailable and the launcher greys it out.
-RUN (curl -fsSL https://releases.fx.sh/v0.0.5/fx-linux-x86_64.tar.gz -o /tmp/fx.tar.gz \
-      && tar -xzf /tmp/fx.tar.gz -C /tmp fx LICENSE THIRD_PARTY_NOTICES.md \
-      && install -D -m 0755 /tmp/fx /usr/local/bin/fx \
-      && install -D -m 0644 -t /usr/local/share/doc/fx /tmp/LICENSE /tmp/THIRD_PARTY_NOTICES.md \
-      && fx --version) || echo "fx install failed"
-RUN rm -f /tmp/fx.tar.gz /tmp/fx /tmp/LICENSE /tmp/THIRD_PARTY_NOTICES.md
-# Antigravity CLI (`agy`, Google) is also one native binary. Same reasoning as
-# fx: fetch a PINNED build and check it against the SHA-512 Google's installer
-# manifest publishes for it, rather than running install.sh, which resolves the
-# newest build and then runs `agy install` to edit shell rc files. The binary is
-# root-owned, so don't count on its background self-update replacing it: to
-# upgrade, bump these two args (from .../manifests/linux_amd64.json).
-ARG AGY_URL=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.10-5501573669978112/linux-x64/cli_linux_x64.tar.gz
-ARG AGY_SHA512=3a14c21697e86349ce8402e0b1889cbd1d3a5f4e2cb4dc43aae1c48c404240c2ccff9f775eec277e1f759234a33ec026645c63ed22ab6f6ebede561eda7c38b6
-RUN (curl -fsSL "$AGY_URL" -o /tmp/agy.tar.gz \
-      && echo "$AGY_SHA512  /tmp/agy.tar.gz" | sha512sum -c - \
-      && tar -xzf /tmp/agy.tar.gz -C /tmp antigravity \
-      && install -D -m 0755 /tmp/antigravity /usr/local/bin/agy \
-      && HOME=/tmp/agy-home agy --version) || echo "agy install failed"
-RUN rm -rf /tmp/agy.tar.gz /tmp/antigravity /tmp/agy-home
-# Cursor CLI (`cursor-agent`, also installed as `agent`) is a ~185 MB Node
-# bundle: a wrapper script that finds the `node` and `index.js` beside it. Same
-# reasoning as agy: fetch a PINNED build rather than running cursor.com/install,
-# which resolves the newest build, and keep it in the root-owned /opt so the
-# image has one known version; entrypoint.sh puts wrappers for it ahead of any
-# hand install in the durable HOME. Cursor publishes no checksum, so the SHA-256
-# pins what we downloaded (2026-11-03) and a MISMATCH FAILS THE BUILD, unlike a
-# failed download, which only leaves the image without the agent. A build that
-# matched the checksum but cannot extract, link or run `--version` fails too. To upgrade:
-# read the version and URL from cursor.com/install (it is a plain shell script),
-# download the tarball once, measure it with `sha256sum`, and bump the three args.
-ARG CURSOR_VERSION=2026.10.22-27dcf5f
-ARG CURSOR_URL=https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz
-ARG CURSOR_SHA256=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
-RUN set -e; \
-    if curl -fsSL "$CURSOR_URL" -o /tmp/cursor-agent.tar.gz; then \
-      if ! echo "$CURSOR_SHA256  /tmp/cursor-agent.tar.gz" | sha256sum -c -; then \
-        echo "ERROR: cursor-agent $CURSOR_VERSION does not match the pinned SHA-256; refusing to install it" >&2; \
-        exit 1; \
-      fi; \
-      if ! (mkdir -p "/opt/cursor-agent/$CURSOR_VERSION" /tmp/cursor-home \
-          && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
-          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
-          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
-          && HOME=/tmp/cursor-home cursor-agent --version); then \
-        echo "ERROR: cursor-agent $CURSOR_VERSION matched its SHA-256 but did not install or run; failing the build" >&2; \
-        exit 1; \
-      fi; \
-    else \
-      echo "cursor-agent install failed"; \
-    fi
-RUN rm -rf /tmp/cursor-agent.tar.gz /tmp/cursor-home
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install opencode 1; then \
+         npm install -g "$(am_cli_npm_spec opencode)" || echo "opencode install failed"; \
+       fi
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install openclaw 1; then \
+         npm install -g "$(am_cli_npm_spec openclaw)" || echo "openclaw install failed"; \
+       fi
+# fx (Vercel Labs), Antigravity (`agy`) and Cursor (`cursor-agent`) are pinned
+# prebuilt binaries. The procedure, the pins, and the failure rules live in
+# scripts/cli-allowlist.sh (am_install_fx, am_install_agy, am_install_cursor) so
+# the local installer runs the same steps. fx and agy are best-effort: a vendor
+# CDN being down must not fail the build. Cursor is best-effort only for a
+# failed download. A checksum mismatch, or a tarball that matches but does not
+# unpack or run `--version`, fails the build — Cursor publishes no checksum, so
+# the pin is ours. An allowlist that omits one of them skips it, and the binary
+# is not written. To upgrade, bump the defaults in that script (see the comments
+# on each function, and docs/cursor-agent.md).
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install fx 1; then am_install_fx; fi
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install antigravity 1; then am_install_agy; fi
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install cursor 1; then am_install_cursor; fi
 # ccusage powers the Usage page (token/cost aggregation across agents). Its
 # platform binary ships without an execute bit and the package tries to chmod
 # itself on first run — which fails with EPERM at runtime as the non-root user.
@@ -210,34 +200,55 @@ RUN cd server && npm install --omit=dev
 
 # Best-effort Hermes (Nous Research). Hardened so it can never hang or fail the
 # build; the app marks it "unavailable" gracefully if the binary isn't on PATH.
-RUN (curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/h.sh \
-      && timeout 180 bash /tmp/h.sh </dev/null) \
-      || echo "hermes not installed — will show as unavailable"
+# The allowlist skips the vendor script entirely when hermes is not listed.
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install hermes 1; then am_install_hermes; fi
 # Its installer only drops a shim in ~/.local/bin — expose it globally in
 # /usr/local/bin like every other CLI.
 USER root
-RUN [ -x /home/node/.local/bin/hermes ] \
-      && ln -sf /home/node/.local/bin/hermes /usr/local/bin/hermes \
-      || true
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && if am_cli_install hermes 1; then \
+         AM_CLI_BINDIR=/usr/local/bin AM_HERMES_BIN=/home/node/.local/bin/hermes am_link_hermes; \
+       fi
 USER node
 
 # ---------- what actually installed ----------
-# Every install above is best-effort (`|| echo "… failed"`), so the build stays
-# green whether a CLI landed or not. That is how a missing OpenClaw shipped for
-# months without anyone noticing. This step makes the log SAY what the image
+# Optional installs above are best-effort (`|| echo "… failed"`), so the build
+# stays green when one of those CLIs does not land. A CLI the allowlist left
+# out is SKIPPED below, not MISSING. This step makes the log SAY what the image
 # ended up with, per CLI and with versions, so a build can be read rather than
 # trusted.
 #
-# Deliberately non-fatal: `set +e`, and it always exits 0. Making a missing CLI
-# fail the build is a policy change nobody has asked for — see the PR.
-RUN set +e; \
+# Deliberately non-fatal once the allowlist has loaded: `set +e`, and the
+# inventory itself always exits 0. A malformed allowlist still fails the build.
+# Making a missing CLI fail the build is a policy change nobody has asked for.
+RUN . /opt/agent-manager/cli-allowlist.sh \
+    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
+    && set +e; \
     echo "=================== IMAGE CLI INVENTORY ==================="; \
     printf '  %-10s %s\n' node "$(node --version 2>/dev/null)"; \
     printf '  %-10s %s\n' npm "$(npm --version 2>/dev/null)"; \
     printf '  %-10s %s\n' python3 "$(python3 --version 2>&1)"; \
+    if [ "$AM_CLI_ALLOWLIST_MODE" = explicit ]; then \
+      echo "  allowlist:$AM_CLI_ALLOWLIST"; \
+    else \
+      echo "  allowlist: (default — every agent CLI below)"; \
+    fi; \
     echo "  ----------------------------------------------------------"; \
     missing=""; \
     for c in claude codex gemini agy cursor-agent opencode openclaw hermes fx ccusage uv hf; do \
+      case "$c" in \
+        agy) id=antigravity ;; \
+        cursor-agent) id=cursor ;; \
+        ccusage|uv|hf) id="" ;; \
+        *) id=$c ;; \
+      esac; \
+      if [ -n "$id" ] && ! am_cli_install "$id" 1; then \
+        printf '  %-10s SKIPPED  (not on the install allowlist)\n' "$c"; \
+        continue; \
+      fi; \
       path="$(command -v "$c" 2>/dev/null)"; \
       if [ -n "$path" ]; then \
         ver="$(timeout 30 "$c" --version 2>&1 | head -1 | tr -d '\r')"; \
@@ -279,8 +290,8 @@ COPY --chown=node:node session.bashrc /app/
 # tell whether a PR stack needs a full rebuild instead (server/src/dev-preview.js
 # REBUILD_FILES; the playwright pin is read from web/package.json). Small, and
 # inert unless the Space sets AM_DEV_PREVIEW=1.
-COPY --chown=node:node Dockerfile .dockerignore entrypoint.sh codex-requirements.toml gemini-system-defaults.json /app/.image-inputs/
-COPY --chown=node:node scripts/am-codex-repin-hook.sh /app/.image-inputs/scripts/
+COPY --chown=node:node Dockerfile .dockerignore entrypoint.sh codex-requirements.toml gemini-system-defaults.json am-install-clis /app/.image-inputs/
+COPY --chown=node:node scripts/am-codex-repin-hook.sh scripts/cli-allowlist.sh /app/.image-inputs/scripts/
 COPY --chown=node:node web/package.json web/package-lock.json /app/.image-inputs/web/
 
 ENV PORT=7860 \

@@ -54,6 +54,9 @@ export const SWAPPED = ['server', 'scripts', 'public', 'session.bashrc'];
 export const REBUILD_FILES = [
   'Dockerfile', '.dockerignore', 'entrypoint.sh', 'codex-requirements.toml',
   'gemini-system-defaults.json', 'scripts/am-codex-repin-hook.sh',
+  // Which agent CLIs the image contains. A dev-preview swap cannot install or
+  // remove binaries, so a change here needs a full rebuild.
+  'scripts/cli-allowlist.sh', 'am-install-clis',
 ];
 // web/package.json feeds the image only through its playwright pin (the baked
 // Chromium must match it); its other changes are handled by `npm ci`.

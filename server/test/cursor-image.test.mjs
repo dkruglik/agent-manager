@@ -1,9 +1,8 @@
-// The Dockerfile's cursor-agent install step, run as shell against a stub
-// download. The step's own text is extracted from the Dockerfile, so this
-// checks the real clause, with /opt, /usr/local/bin and /tmp moved under a
-// temporary root. Its three promises: a checksum mismatch fails the build, a
-// checksum-matched tarball that does not unpack or run fails the build, and a
-// failed download leaves the image without the agent but builds.
+// am_install_cursor, the install the Dockerfile runs, against a stub download.
+// The image calls this function (it does not keep a second copy of the steps).
+// Its three promises: a checksum mismatch fails the build, a checksum-matched
+// tarball that does not unpack or run fails the build, and a failed download
+// leaves the image without the agent but builds.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -13,11 +12,11 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const allowlist = path.join(repo, 'scripts', 'cli-allowlist.sh');
 const dockerfile = fs.readFileSync(path.join(repo, 'Dockerfile'), 'utf8');
-const start = dockerfile.indexOf('RUN', dockerfile.indexOf('ARG CURSOR_SHA256='));
-const end = dockerfile.indexOf('\nRUN rm -rf /tmp/cursor-agent.tar.gz', start);
-assert.ok(start > 0 && end > start, 'the cursor-agent RUN step is found in the Dockerfile');
-const step = dockerfile.slice(start + 'RUN'.length, end).replace(/\\\n/g, ' ');
+assert.match(dockerfile, /am_cli_install cursor 1/, 'the image installs cursor only when the allowlist says so');
+assert.match(dockerfile, /am_install_cursor/, 'the image uses the shared installer');
+assert.doesNotMatch(dockerfile, /downloads\.cursor\.com/, 'the pin lives in the shared installer, not a second copy');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'am-cursor-image-'));
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -41,16 +40,16 @@ const runStep = (name, { source, sha }) => {
   fs.writeFileSync(path.join(stubs, 'curl'), source
     ? `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "${source}" "$2"; exit 0; }; shift; done\nexit 1\n`
     : '#!/bin/sh\nexit 22\n', { mode: 0o755 });
-  // One pass, so the temporary root (itself under /tmp) is not rewritten again.
-  const moved = { '/opt/': `${root}/opt/`, '/usr/local/bin': `${root}/bin`, '/tmp/': `${root}/tmp/` };
-  const script = step.replace(/\/opt\/|\/usr\/local\/bin|\/tmp\//g, (p) => moved[p]);
-  const result = spawnSync('sh', ['-c', script], {
+  const result = spawnSync('sh', ['-c', '. "$1" && am_install_cursor', 'sh', allowlist], {
     encoding: 'utf8',
     env: {
       PATH: `${stubs}:${root}/bin:${process.env.PATH}`,
       CURSOR_VERSION: '2026.10.22-test',
       CURSOR_URL: 'https://downloads.invalid/agent-cli-package.tar.gz',
       CURSOR_SHA256: sha,
+      AM_CURSOR_DEST: path.join(root, 'opt', 'cursor-agent'),
+      AM_CLI_BINDIR: path.join(root, 'bin'),
+      AM_CLI_TMP: path.join(root, 'tmp'),
     },
   });
   return { ...result, root };
