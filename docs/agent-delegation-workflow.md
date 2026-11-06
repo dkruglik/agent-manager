@@ -2,8 +2,10 @@
 
 ### Delegate with a durable completion reply
 
-For a supported shared Codex parent delegating to an existing Claude or shared
-Codex session, request completion delivery explicitly when dispatching the task.
+For a supported parent delegating to an existing child, request completion
+delivery explicitly when dispatching the task. A shared Codex parent can target
+an existing Claude session, a shared Codex session, or a Cursor session. A
+Claude parent can target an existing Cursor session. Other pairs are refused.
 First resolve your own exact thread with `am-context resolve`. A resolved mapping
 is an association, not permission to send: check `archivedAt` and
 `messaging.allowed` when provided. An archived AM session may still be active in
@@ -24,10 +26,24 @@ curl -sS --fail-with-body -X POST \
 The file contains `{"requestId":"a saved UUID","text":"the task",
 "completion":"notify"}`. On HTTP202, save the returned delegation ID. This
 means subscribed/accepted, not finished. AM observes the exact dispatched native
-exchange and later queues one attributed result into the originating shared
-Codex thread, including after its current turn has ended or AM has restarted.
-It does **not** use `/api/notify` or send a phone/device push. The child should
+exchange and later queues one attributed result back to the parent. A shared
+Codex parent receives it in that thread. A Claude parent receives it typed once
+into its session when that session is waiting, idle, or stopped. Delivery still
+happens after the parent's current turn has ended or AM has restarted. A crash
+while typing the Claude callback is `notification-uncertain` and is not pasted
+again. It does **not** use `/api/notify` or send a phone/device push. The child should
 answer normally in its own conversation, without messaging the parent back.
+
+Cursor completion is the child's transcript line `{"type":"turn_ended"}`
+after the matched user turn. `status:"success"`, or the marker with no status,
+counts only when that turn has assistant text. Any other status is failed. The
+file is rewritten each turn and read again; a matched turn that disappears is
+uncertain. Cursor does not write an in-progress turn, including a command
+approval, until the turn ends, so the delegation stays watching until that
+exchange is on disk. Once it is on disk and caught up, `input-required` is
+blocked and a stopped process with no `turn_ended` is failed. The matched
+exchange has to appear in the transcript's last 4 MiB. A Cursor session with
+no transcript file yet cannot be subscribed.
 
 Read `GET /api/delegations/ID?from=$AM_ID` for status/result. `delivered` describes
 the callback; inspect `outcome` separately: completed, blocked, failed or

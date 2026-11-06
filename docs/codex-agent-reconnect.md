@@ -42,7 +42,9 @@ an app-server turn after the parent agent's own turn has ended. The reproduced
 Claude review finished with a native `end_turn` and a result file, but there was
 no durable return path. This is one verified case, not proof about all harnesses.
 
-For an **existing** Claude or shared Codex target and a mapped shared Codex parent:
+For an **existing** Claude or shared Codex target and a mapped shared Codex parent
+(a Claude parent delegating to Cursor is a separate pair; see
+[delegation workflow](agent-delegation-workflow.md)):
 
 ```sh
 curl -sS -H 'X-AM-Request: 1' -H 'Content-Type: application/json' \
@@ -66,6 +68,9 @@ and hash of the full attributed prompt including a unique marker. Only a matchin
 user input followed by a native terminal result counts. Tool output, quoted
 markers, old answers and `waiting` alone never suffice. JSONL scanning is bounded,
 retains partial records, and refuses replaced/truncated/oversized traces.
+Cursor is the exception: its transcript is rewritten each turn, so that file is
+read again instead of treated as a rotated trace. Completion is its `turn_ended`
+record, described in the delegation workflow.
 
 - `completed`: exact exchange has native final text and terminal evidence. This
   means a result is available, not that its content meets the operator's goal.
