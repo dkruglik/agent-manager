@@ -350,7 +350,7 @@ export const CLIS = [
     // prompt as pendingPrompt (it does so only for CLIs with withPrompt)
     // instead of the boot-then-type fallback.
     withPrompt: (q, _images, f) => `${withFlags('cursor-agent --trust', f)} -- ${q}`, // `--`: a prompt like `--yolo` is text, not a flag
-    noUpdate: 'a pinned prebuilt build in the image (/opt/cursor-agent, see the Dockerfile), not an npm package',
+    noUpdate: 'a prebuilt build in the image (/opt/cursor-agent, see the Dockerfile), not an npm package; it updates with an image rebuild',
     secrets: ['CURSOR_API_KEY'],
     setup: 'Add CURSOR_API_KEY as a Space secret. Signing in from the pane (cursor-agent login) has not been checked from a Space.' },
   // Model only. `--variant` exists on `opencode run` but not on the TUI, and
