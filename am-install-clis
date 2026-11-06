@@ -26,8 +26,8 @@
 # Example: Claude Code and Cursor only, and nothing else (Codex, Hermes,
 # OpenClaw, fx, Antigravity, Gemini, opencode):
 #
-# claude
-# cursor
+claude
+cursor
 
 # claude
 # codex
