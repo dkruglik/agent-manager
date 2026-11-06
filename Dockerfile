@@ -99,31 +99,24 @@ RUN (curl -fsSL "$AGY_URL" -o /tmp/agy.tar.gz \
       && HOME=/tmp/agy-home agy --version) || echo "agy install failed"
 RUN rm -rf /tmp/agy.tar.gz /tmp/antigravity /tmp/agy-home
 # Cursor CLI (`cursor-agent`, also installed as `agent`) is a ~185 MB Node
-# bundle: a wrapper script that finds the `node` and `index.js` beside it. Same
-# reasoning as agy: fetch a PINNED build rather than running cursor.com/install,
-# which resolves the newest build, and keep it in the root-owned /opt so the
-# image has one known version; entrypoint.sh puts wrappers for it ahead of any
-# hand install in the durable HOME. Cursor publishes no checksum, so the SHA-256
-# pins what we downloaded (2026-11-03) and a MISMATCH FAILS THE BUILD, unlike a
-# failed download, which only leaves the image without the agent. A build that
-# matched the checksum but cannot extract, link or run `--version` fails too. To upgrade:
-# read the version and URL from cursor.com/install (it is a plain shell script),
-# download the tarball once, measure it with `sha256sum`, and bump the three args.
-ARG CURSOR_VERSION=2026.10.22-27dcf5f
-ARG CURSOR_URL=https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz
-ARG CURSOR_SHA256=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+# bundle: a wrapper script that finds the `node` and `index.js` beside it. It has
+# no npm package, so it comes from the download that cursor.com/install names,
+# and the newest build is used on every image build, like the npm CLIs above.
+# The version is read from that installer at build time. Cursor publishes no
+# checksum, so nothing is pinned or hash-checked: the download's TLS is the only
+# check. A failed lookup or download only leaves the image without the agent. A
+# build that does not extract, link or run `--version` fails the build. The
+# result sits in the root-owned /opt; entrypoint.sh puts wrappers for it ahead of
+# any hand install in the durable HOME.
 RUN set -e; \
-    if curl -fsSL "$CURSOR_URL" -o /tmp/cursor-agent.tar.gz; then \
-      if ! echo "$CURSOR_SHA256  /tmp/cursor-agent.tar.gz" | sha256sum -c -; then \
-        echo "ERROR: cursor-agent $CURSOR_VERSION does not match the pinned SHA-256; refusing to install it" >&2; \
-        exit 1; \
-      fi; \
-      if ! (mkdir -p "/opt/cursor-agent/$CURSOR_VERSION" /tmp/cursor-home \
-          && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$CURSOR_VERSION" --strip-components=1 \
-          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/cursor-agent \
-          && ln -sf "/opt/cursor-agent/$CURSOR_VERSION/cursor-agent" /usr/local/bin/agent \
+    cursor_ver="$(curl -fsSL https://cursor.com/install 2>/dev/null | grep -oE 'lab/[0-9][0-9.]*-[0-9a-f]+' | head -1 | cut -d/ -f2 || true)"; \
+    if [ -n "$cursor_ver" ] && curl -fsSL "https://downloads.cursor.com/lab/$cursor_ver/linux/x64/agent-cli-package.tar.gz" -o /tmp/cursor-agent.tar.gz; then \
+      if ! (mkdir -p "/opt/cursor-agent/$cursor_ver" /tmp/cursor-home \
+          && tar -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/$cursor_ver" --strip-components=1 \
+          && ln -sf "/opt/cursor-agent/$cursor_ver/cursor-agent" /usr/local/bin/cursor-agent \
+          && ln -sf "/opt/cursor-agent/$cursor_ver/cursor-agent" /usr/local/bin/agent \
           && HOME=/tmp/cursor-home cursor-agent --version); then \
-        echo "ERROR: cursor-agent $CURSOR_VERSION matched its SHA-256 but did not install or run; failing the build" >&2; \
+        echo "ERROR: cursor-agent $cursor_ver downloaded but did not install or run; failing the build" >&2; \
         exit 1; \
       fi; \
     else \
