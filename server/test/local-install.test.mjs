@@ -67,6 +67,9 @@ assert.equal(fs.readFileSync(installedPlugin, 'utf8'), fs.readFileSync(path.join
 
 const installer = path.join(scripts, 'install-local-clis.sh');
 const allowlist = path.join(scripts, 'cli-allowlist.sh');
+// Default-mode runs use an empty allowlist file: the committed am-install-clis (claude and cursor) is checked on its own below.
+const emptyAllowlist = path.join(tmp, 'empty-allowlist');
+fs.writeFileSync(emptyAllowlist, '# no allowlist\n');
 assert.notEqual(fs.statSync(installer).mode & 0o111, 0, 'CLI installer is executable');
 assert.notEqual(fs.statSync(allowlist).mode & 0o111, 0, 'allowlist parser is executable');
 assert.equal(spawnSync('sh', ['-n', installer]).status, 0, 'CLI installer parses as POSIX shell');
@@ -106,23 +109,26 @@ const writeFakeNpm = (failing) => {
 // A download that fails. The default run must not reach it: cursor, fx and
 // antigravity are opt-in, not part of the historical local set.
 fs.writeFileSync(path.join(fakeBin, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${curlLog}'\nexit 1\n`, { mode: 0o755 });
+// A host with cursor-agent already installed would make the failed-download case look installed.
+const pathWithout = (name) => (process.env.PATH || '').split(path.delimiter)
+  .filter((dir) => dir && !fs.existsSync(path.join(dir, name))).join(path.delimiter);
 const runInstaller = (args = [], extra = {}) => {
   fs.writeFileSync(npmLog, '');
   fs.writeFileSync(curlLog, '');
   const env = {
     ...process.env,
-    PATH: `${fakeBin}:${process.env.PATH}`,
+    PATH: `${fakeBin}:${pathWithout('cursor-agent')}`,
     NPM_CONFIG_PREFIX: path.join(tmp, 'prefix'),
   };
   delete env.AM_INSTALL_CLIS;
   delete env.AM_INSTALL_CLIS_FILE;
-  return spawnSync('sh', [installer, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
+  return spawnSync('sh', [installer, ...args], { encoding: 'utf8', env: { ...env, AM_INSTALL_CLIS_FILE: emptyAllowlist, ...extra } });
 };
 const plan = (profile, extra = {}) => {
   const env = { ...process.env };
   delete env.AM_INSTALL_CLIS;
   delete env.AM_INSTALL_CLIS_FILE;
-  return spawnSync('sh', [allowlist, 'plan', profile], { encoding: 'utf8', env: { ...env, ...extra } });
+  return spawnSync('sh', [allowlist, 'plan', profile], { encoding: 'utf8', env: { ...env, AM_INSTALL_CLIS_FILE: emptyAllowlist, ...extra } });
 };
 const planOf = (result) => Object.fromEntries(result.stdout.trim().split('\n').filter(Boolean).map((line) => {
   const [id, action, need] = line.split(' ');
@@ -149,6 +155,11 @@ assert.deepEqual(planOf(localDefault), {
   opencode: 'install optional', openclaw: 'install optional',
   cursor: 'skip optional', hermes: 'skip optional', fx: 'skip optional', antigravity: 'skip optional',
 });
+// The committed file is what a real checkout installs: claude and cursor.
+const committed = plan('local', { AM_INSTALL_CLIS_FILE: path.join(scripts, '..', 'am-install-clis') });
+assert.equal(committed.status, 0, committed.stderr);
+assert.equal(planOf(committed).cursor, 'install optional');
+assert.equal(planOf(committed).codex, 'skip required');
 const imageDefault = plan('docker');
 assert.equal(imageDefault.status, 0, imageDefault.stderr);
 for (const id of Object.keys(planOf(localDefault))) {
