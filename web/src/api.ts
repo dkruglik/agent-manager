@@ -254,7 +254,14 @@ export const getCliUpdate = (): Promise<CliUpdateStatus> => fetch('/api/clis/upd
 export const runCliUpdate = (id: string): Promise<CliUpdateStatus> =>
   fetch('/api/clis/update', { method: 'POST', headers: HEADERS, body: JSON.stringify({ id }) }).then(json);
 
+/** Rule strings for one CLI. The syntax is that CLI's own. */
+export interface PermissionLists { allow: string[]; deny: string[] }
+
 export interface AmConfig {
+  /** Permission rules applied to every agent of each CLI (Settings → General). */
+  agentPermissions: { claude: PermissionLists; cursor: PermissionLists };
+  /** Result of writing the Cursor rules on the last save; null when not written. */
+  cursorPermissions?: { ok: boolean; changed?: boolean; error?: string } | null;
   artifacts: { enabled: boolean; space: string; visibility: 'public' | 'private' };
   jobs: { askAboveUsd: number };
   archive: { after: 'week' | 'month' | 'never' };

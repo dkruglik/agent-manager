@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execSync, execFile } from 'node:child_process';
+import { normalizeAgentPermissions, claudeSettingsJson } from './agent-permissions.js';
 
 export const PORT = parseInt(process.env.PORT || '7860', 10);
 export function resolveBindHost(env = process.env) {
@@ -217,6 +218,23 @@ export const LAUNCH_MODEL = /^[A-Za-z0-9._/:@[\]-]{1,120}$/;
 export const LAUNCH_EFFORT = /^[a-z]{1,16}$/;
 const shq = (t) => `'${String(t).replace(/'/g, `'\\''`)}'`;
 const join = (...parts) => parts.filter(Boolean).join(' ');
+// Operator settings file (Settings → General). Read here, not in the callers,
+// so every launch sees the rules saved most recently.
+export const AM_CONFIG_PATH = path.join(DATA_DIR, 'am-config.json');
+export function loadAgentPermissions(file = AM_CONFIG_PATH) {
+  try {
+    return normalizeAgentPermissions(JSON.parse(fs.readFileSync(file, 'utf8')).agentPermissions);
+  } catch {
+    return normalizeAgentPermissions(undefined);
+  }
+}
+// cursor-agent's own config, and the record of which rules this app wrote there.
+export const cursorCliConfigPath = (env = process.env) => path.join(env.HOME || os.homedir(), '.cursor', 'cli-config.json');
+export const CURSOR_PERMISSIONS_STATE = path.join(STATE_DIR, 'cursor-permissions-applied.json');
+const claudeSettingsFlag = (perms) => {
+  const json = claudeSettingsJson(perms);
+  return json ? `--settings ${shq(json)}` : '';
+};
 const withFlags = (base, f = '') => (f ? `${base} ${f}` : base);
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const AGY_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']; // `agy --help`, 1.4.10
@@ -277,7 +295,9 @@ export const CLIS = [
     resume: (id, f) => withFlags(`claude --resume ${id}`, f),
     withPrompt: (q, _images, f) => `${withFlags('claude', f)} ${q}`,
     launch: { model: true, efforts: CLAUDE_EFFORTS,
-      flags: ({ model, effort }) => join(model && `--model ${shq(model)}`, effort && `--effort ${shq(effort)}`) },
+      flags: ({ model, effort }) => join(model && `--model ${shq(model)}`, effort && `--effort ${shq(effort)}`),
+      // Agent permissions from Settings, on every launch (see agent-permissions.js).
+      permissions: claudeSettingsFlag },
     confirmSubmit: CLAUDE_CONFIRM, promptDetector: true,
     npm: '@anthropic-ai/claude-code',
     secrets: ['ANTHROPIC_API_KEY'], setup: setupHint('ANTHROPIC_API_KEY') },
@@ -426,7 +446,8 @@ export function launchChoice(session) {
 }
 export function launchFlags(session) {
   const spec = cliById(session?.cli)?.launch;
-  return spec ? spec.flags(launchChoice(session)) : '';
+  if (!spec) return '';
+  return join(spec.flags(launchChoice(session)), spec.permissions?.(loadAgentPermissions()));
 }
 
 export function cliById(id) {

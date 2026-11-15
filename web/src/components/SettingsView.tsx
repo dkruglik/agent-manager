@@ -216,6 +216,45 @@ export function PushRow() {
   );
 }
 
+// One CLI's allow / deny rule lists. A rule is added with Enter or Add, so a
+// half-typed rule is never autosaved as part of the settings.
+const NO_RULES: api.PermissionLists = { allow: [], deny: [] };
+const PERMISSION_KINDS = [['allow', 'Allow'], ['deny', 'Deny']] as const;
+function PermissionRules({ label, lists, onChange }: { label: string; lists: api.PermissionLists; onChange: (next: api.PermissionLists) => void }) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const add = (kind: 'allow' | 'deny') => {
+    const rule = (drafts[kind] || '').trim();
+    if (!rule || lists[kind].includes(rule)) return setDrafts({ ...drafts, [kind]: '' });
+    onChange({ ...lists, [kind]: [...lists[kind], rule] });
+    setDrafts({ ...drafts, [kind]: '' });
+  };
+  return (
+    <div className="perm-cli">
+      <div className="s-label">{label}</div>
+      {PERMISSION_KINDS.map(([kind, title]) => (
+        <div key={kind} className="perm-kind">
+          <div className="s-help">{title}</div>
+          <ul className="perm-rules">
+            {lists[kind].map((rule) => (
+              <li key={rule}>
+                <span className="mono">{rule}</span>
+                <button className="btn-ghost" aria-label={`Remove ${rule}`}
+                  onClick={() => onChange({ ...lists, [kind]: lists[kind].filter((r) => r !== rule) })}>×</button>
+              </li>
+            ))}
+          </ul>
+          <form className="perm-add" onSubmit={(e) => { e.preventDefault(); add(kind); }}>
+            <input className="mono" value={drafts[kind] || ''} maxLength={200} placeholder={kind === 'allow' ? 'e.g. Bash(npm test)' : 'e.g. Read(/etc/**)'}
+              aria-label={`${label} ${title.toLowerCase()} rule`}
+              onChange={(e) => setDrafts({ ...drafts, [kind]: e.target.value })} />
+            <button className="btn-ghost" type="submit">Add</button>
+          </form>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SettingsView({
   page, onClose, theme, onToggleTheme, clis, onClisChanged, info, onShowWelcome, demoMode, onToggleDemo,
   onOpenSharedTrace,
@@ -1081,6 +1120,28 @@ export default function SettingsView({
               )}
             </div>
             {updState.msg && <div className="s-help" style={{ marginTop: 6 }}>{updState.msg}</div>}
+
+            <h3>Agent permissions</h3>
+            <div className="s-help">
+              Rules that apply to every new agent of one CLI. Claude gets them as <span className="mono">--settings</span> on each launch,
+              so an existing agent takes them on its next start. Cursor's rules are written to its <span className="mono">cli-config.json</span> on save.
+              Each CLI decides what a rule means and refuses the ones it cannot read.
+            </div>
+            {cfg && (
+              <>
+                <div className="setting-row" style={{ display: 'block' }}>
+                  <PermissionRules label="Claude Code" lists={cfg.agentPermissions?.claude ?? NO_RULES}
+                    onChange={(claude) => setCfg({ ...cfg, agentPermissions: { ...cfg.agentPermissions, claude } })} />
+                </div>
+                <div className="setting-row" style={{ display: 'block' }}>
+                  <PermissionRules label="Cursor CLI" lists={cfg.agentPermissions?.cursor ?? NO_RULES}
+                    onChange={(cursor) => setCfg({ ...cfg, agentPermissions: { ...cfg.agentPermissions, cursor } })} />
+                </div>
+                {cfg.cursorPermissions && !cfg.cursorPermissions.ok && (
+                  <div className="s-warn">Cursor's rules were not written: {cfg.cursorPermissions.error}</div>
+                )}
+              </>
+            )}
 
             <h3>Space</h3>
             {info?.bucketUnverified && (
