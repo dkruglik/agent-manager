@@ -126,7 +126,7 @@ export function createValidator({ cliExists, sessionExists, groupExists }) {
       return; // sender, availability, self-target and nonempty prompt checks remain in the route
     }
     if (route === '/api/config') {
-      for (const key of ['artifacts', 'jobs', 'archive', 'revive', 'backup']) optional(b, key, object);
+      for (const key of ['artifacts', 'jobs', 'archive', 'revive', 'backup', 'agentPermissions']) optional(b, key, object);
       if (b.artifacts) { optional(b.artifacts, 'enabled', boolean); optional(b.artifacts, 'space', text, { empty: true }); optional(b.artifacts, 'visibility', oneOf, ['public', 'private']); }
       if (b.jobs) optional(b.jobs, 'askAboveUsd', number, 0, Number.MAX_SAFE_INTEGER, false);
       if (b.archive) optional(b.archive, 'after', oneOf, ['week', 'month', 'never']);

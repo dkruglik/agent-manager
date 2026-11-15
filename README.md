@@ -149,6 +149,7 @@ saved, see [state checkpoints](docs/agent-state-checkpoints.md) and
 | Run prompts on a schedule | [Scheduled prompts](docs/cron-jobs.md) |
 | Connect an agent on another machine | [Remote agents](docs/remote-agents.md) |
 | Run Cursor's agent | [Cursor CLI](docs/cursor-agent.md) |
+| Set permission rules for every agent of a CLI | [Agent permissions](docs/agent-permissions.md) |
 | Answer agents from Slack | [Messengers](docs/messengers.md) |
 | Upload files and follow file links | [Uploads](docs/workspace-file-uploads.md) · [File previews](docs/file-links.md) |
 | Inspect session operations | [API log](docs/api-audit-log.md) |

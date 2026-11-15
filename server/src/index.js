@@ -22,6 +22,8 @@ import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
   ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice, chatCredentialValues,
 } from './config.js';
+import { AM_CONFIG_PATH, cursorCliConfigPath, CURSOR_PERMISSIONS_STATE } from './config.js';
+import { normalizeAgentPermissions, checkAgentPermissions, applyCursorPermissions } from './agent-permissions.js';
 import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice } from './model-catalog.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
@@ -2021,7 +2023,7 @@ function loadSecretNotes() {
   return stored.unreadable ? {} : (stored.value || {});
 }
 // ---------- operator config (artifacts hub, jobs policy) ----------
-const AM_CONFIG_FILE = path.join(DATA_DIR, 'am-config.json');
+const AM_CONFIG_FILE = AM_CONFIG_PATH;
 const spaceNamespace = () => (process.env.SPACE_ID || '').split('/')[0] || '';
 const defaultArtifactsSpace = () => (spaceNamespace() ? `${spaceNamespace()}/agent-artifacts` : '');
 function loadAmConfig() {
@@ -2065,8 +2067,24 @@ function normalizeAmConfig(saved) {
       // quick by default; an emptied list stays empty. backup.js explains both.
       exclude: backup.excludeFromConfig(saved.backup?.exclude),
     },
+    // Rules for every agent of a CLI, per CLI (agent-permissions.js). Claude
+    // reads them on each launch; Cursor has them written to its own file.
+    agentPermissions: normalizeAgentPermissions(saved.agentPermissions),
   };
 }
+// Cursor reads its permissions from its own file, so they are written there on
+// every save and once at boot. Claude gets its rules per launch (config.js).
+// A failure is reported in the response, the same way the skill fan-out is.
+let cursorPermissionsStatus = null; // the last write, for GET /api/config
+function applyCursorPermissionsFromConfig(perms) {
+  try {
+    cursorPermissionsStatus = applyCursorPermissions({ file: cursorCliConfigPath(), stateFile: CURSOR_PERMISSIONS_STATE, desired: perms });
+  } catch (e) {
+    cursorPermissionsStatus = { ok: false, error: String((e && e.message) || e) };
+  }
+  return cursorPermissionsStatus;
+}
+try { applyCursorPermissionsFromConfig(loadAmConfig().agentPermissions); } catch (e) { console.error('[permissions cursor]', e && e.message); }
 // The read carries what a writer needs to replace it safely: the revision of the
 // bytes on disk, and — when they cannot be read at all — the reason, so the panel
 // can say why a save will be refused instead of quietly showing defaults over a
@@ -2076,6 +2094,7 @@ api.get('/api/config', (_req, res) => {
   res.json({
     ...normalizeAmConfig(stored.unreadable ? {} : (stored.value || {})),
     defaultArtifactsSpace: defaultArtifactsSpace(),
+    cursorPermissions: cursorPermissionsStatus,
     rev: stored.rev || null,
     readError: stored.unreadable || null,
     derived: envSkillReport(),
@@ -2089,6 +2108,8 @@ api.put('/api/config', async (req, res) => {
   if (typeof b !== 'object' || Array.isArray(b)) {
     return res.status(400).json({ code: 'invalid-input', error: 'settings must be an object' });
   }
+  const permissionProblem = checkAgentPermissions(b.agentPermissions);
+  if (permissionProblem) return res.status(400).json({ code: 'invalid-input', error: permissionProblem });
   const cfg = {
     artifacts: {
       enabled: !!(b.artifacts?.enabled ?? true),
@@ -2110,6 +2131,8 @@ api.put('/api/config', async (req, res) => {
       // never asked and takes the default, `[]` is an emptied list and persists.
       exclude: backup.excludeFromConfig(b.backup?.exclude),
     },
+    // Whole-resource like everything else here: an omitted list is an empty one.
+    agentPermissions: normalizeAgentPermissions(b.agentPermissions),
   };
   // Whole-resource replacement, guarded by the revision being replaced: that is
   // what keeps a second writer from posting its own stale copy of every OTHER
@@ -2134,11 +2157,12 @@ api.put('/api/config', async (req, res) => {
   // distribution outcome itself is answered too (#121), so a refused or partial
   // fan-out to an agent's owned copy is never swallowed by a 200.
   const skillDistribution = await refreshEnvSkill();
+  const cursorPermissions = applyCursorPermissionsFromConfig(cfg.agentPermissions);
   // What was actually committed, normalization included, in the shape
   // /api/config returns — plus the revision to send with the next save.
   res.json({
     ok: true, ...cfg, defaultArtifactsSpace: defaultArtifactsSpace(),
-    rev: commit.rev, derived: envSkillReport(), skillDistribution,
+    rev: commit.rev, derived: envSkillReport(), skillDistribution, cursorPermissions,
   });
 });
 
