@@ -11,6 +11,9 @@ export const PERMISSION_CLIS = ['claude', 'cursor'];
 const MAX_RULES = 100;
 const MAX_RULE_LENGTH = 200;
 const CONTROL = /[\x00-\x1f\x7f]/;
+// On/off settings of Claude Code's `permissions` block, not rules. Cursor has no
+// such keys, so they are refused there instead of being saved and ignored.
+export const CLAUDE_SWITCHES = ['blockReadsOutsideWorkingDirectories', 'blockWritesOutsideWorkingDirectories'];
 
 const emptyLists = () => ({ allow: [], deny: [] });
 
@@ -29,6 +32,11 @@ export function checkAgentPermissions(raw) {
     const lists = raw[cli];
     if (lists === undefined) continue;
     if (!lists || typeof lists !== 'object' || Array.isArray(lists)) return `agentPermissions.${cli} must be an object`;
+    for (const key of CLAUDE_SWITCHES) {
+      if (lists[key] === undefined) continue;
+      if (cli !== 'claude') return `${key} is not a Cursor setting`;
+      if (typeof lists[key] !== 'boolean') return `agentPermissions.${cli}.${key} must be true or false`;
+    }
     for (const kind of ['allow', 'deny']) {
       const rules = lists[kind];
       if (rules === undefined) continue;
@@ -65,6 +73,8 @@ export function normalizeAgentPermissions(raw) {
   const out = emptyAgentPermissions();
   for (const cli of PERMISSION_CLIS) {
     out[cli] = { allow: cleanList(raw?.[cli]?.allow), deny: cleanList(raw?.[cli]?.deny) };
+    // A switch is stored only when on, so off and never-set read the same.
+    if (cli === 'claude') for (const key of CLAUDE_SWITCHES) if (raw?.[cli]?.[key] === true) out[cli][key] = true;
   }
   return out;
 }
@@ -72,10 +82,12 @@ export function normalizeAgentPermissions(raw) {
 /** The JSON for `claude --settings`, or '' when Claude has no rules. */
 export function claudeSettingsJson(perms) {
   const lists = perms?.claude;
-  if (!lists || (!lists.allow.length && !lists.deny.length)) return '';
+  const switches = CLAUDE_SWITCHES.filter((key) => lists?.[key] === true);
+  if (!lists || (!lists.allow.length && !lists.deny.length && !switches.length)) return '';
   const permissions = {};
   if (lists.allow.length) permissions.allow = lists.allow;
   if (lists.deny.length) permissions.deny = lists.deny;
+  for (const key of switches) permissions[key] = true;
   return JSON.stringify({ permissions });
 }
 

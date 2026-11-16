@@ -2084,7 +2084,17 @@ function applyCursorPermissionsFromConfig(perms) {
   }
   return cursorPermissionsStatus;
 }
-try { applyCursorPermissionsFromConfig(loadAmConfig().agentPermissions); } catch (e) { console.error('[permissions cursor]', e && e.message); }
+try {
+  // An unreadable am-config.json reads as "no rules"; applying that would delete
+  // the deny rules this app wrote into Cursor's file. Leave the file alone.
+  const stored = readSettingsFile(AM_CONFIG_FILE);
+  if (stored.unreadable) {
+    cursorPermissionsStatus = { ok: false, error: `am-config.json could not be read, Cursor rules left as they are — ${stored.unreadable}` };
+    console.error('[permissions cursor]', cursorPermissionsStatus.error);
+  } else {
+    applyCursorPermissionsFromConfig(normalizeAmConfig(stored.value || {}).agentPermissions);
+  }
+} catch (e) { console.error('[permissions cursor]', e && e.message); }
 // The read carries what a writer needs to replace it safely: the revision of the
 // bytes on disk, and — when they cannot be read at all — the reason, so the panel
 // can say why a save will be refused instead of quietly showing defaults over a
