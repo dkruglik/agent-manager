@@ -221,11 +221,18 @@ const join = (...parts) => parts.filter(Boolean).join(' ');
 // Operator settings file (Settings → General). Read here, not in the callers,
 // so every launch sees the rules saved most recently.
 export const AM_CONFIG_PATH = path.join(DATA_DIR, 'am-config.json');
+// A file that is missing has no rules yet. A file that exists but cannot be read
+// or parsed must not turn every deny rule off for the next launch: the rules
+// read last time stay in force, and the failure is logged.
+let lastGoodAgentPermissions = null;
 export function loadAgentPermissions(file = AM_CONFIG_PATH) {
   try {
-    return normalizeAgentPermissions(JSON.parse(fs.readFileSync(file, 'utf8')).agentPermissions);
-  } catch {
-    return normalizeAgentPermissions(undefined);
+    lastGoodAgentPermissions = normalizeAgentPermissions(JSON.parse(fs.readFileSync(file, 'utf8')).agentPermissions);
+    return lastGoodAgentPermissions;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return normalizeAgentPermissions(undefined);
+    console.error('[permissions] settings unreadable, keeping the last rules:', (e && e.message) || e);
+    return lastGoodAgentPermissions || normalizeAgentPermissions(undefined);
   }
 }
 // cursor-agent's own config, and the record of which rules this app wrote there.

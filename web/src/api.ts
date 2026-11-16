@@ -256,10 +256,15 @@ export const runCliUpdate = (id: string): Promise<CliUpdateStatus> =>
 
 /** Rule strings for one CLI. The syntax is that CLI's own. */
 export interface PermissionLists { allow: string[]; deny: string[] }
+/** Claude Code's on/off settings in `permissions`, stored only when on. */
+export interface ClaudePermissions extends PermissionLists {
+  blockReadsOutsideWorkingDirectories?: boolean;
+  blockWritesOutsideWorkingDirectories?: boolean;
+}
 
 export interface AmConfig {
   /** Permission rules applied to every agent of each CLI (Settings → General). */
-  agentPermissions: { claude: PermissionLists; cursor: PermissionLists };
+  agentPermissions: { claude: ClaudePermissions; cursor: PermissionLists };
   /** Result of writing the Cursor rules on the last save; null when not written. */
   cursorPermissions?: { ok: boolean; changed?: boolean; error?: string } | null;
   artifacts: { enabled: boolean; space: string; visibility: 'public' | 'private' };
