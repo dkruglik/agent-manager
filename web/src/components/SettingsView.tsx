@@ -220,6 +220,16 @@ export function PushRow() {
 // One CLI's allow / deny rule lists. A rule is added with Enter or Add, so a
 // half-typed rule is never autosaved as part of the settings.
 const NO_RULES: api.PermissionLists = { allow: [], deny: [] };
+const CLAUDE_SWITCHES = [
+  ['blockReadsOutsideWorkingDirectories', 'Block reads outside the working directory', "Claude Code's own setting: reads outside the agent's working directories are blocked."],
+  ['blockWritesOutsideWorkingDirectories', 'Block writes outside the working directory', "Claude Code's own setting: writes outside the agent's working directories are blocked."],
+] as const;
+// A switch that is off is removed, not saved as false, so the page and the
+// server agree on what is stored.
+function withSwitch(lists: api.PermissionLists, key: string, on: boolean): api.ClaudePermissions {
+  const { [key as keyof api.ClaudePermissions]: _old, ...rest } = lists as api.ClaudePermissions;
+  return on ? { ...rest, [key]: true } as api.ClaudePermissions : rest as api.ClaudePermissions;
+}
 const PERMISSION_KINDS = [['allow', 'Allow'], ['deny', 'Deny']] as const;
 function PermissionRules({ label, lists, onChange }: { label: string; lists: api.PermissionLists; onChange: (next: api.PermissionLists) => void }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -1135,6 +1145,19 @@ export default function SettingsView({
                 <div className="setting-row" style={{ display: 'block' }}>
                   <PermissionRules label="Claude Code" lists={cfg.agentPermissions?.claude ?? NO_RULES}
                     onChange={(claude) => setCfg({ ...cfg, agentPermissions: { ...cfg.agentPermissions, claude } })} />
+                  {CLAUDE_SWITCHES.map(([key, title, help]) => {
+                    const claude = cfg.agentPermissions?.claude ?? NO_RULES;
+                    const on = !!(claude as api.ClaudePermissions)[key];
+                    return (
+                      <div key={key} className="perm-switch">
+                        <button className={on ? 'btn-primary' : 'btn-ghost'} aria-pressed={on}
+                          onClick={() => setCfg({ ...cfg, agentPermissions: { ...cfg.agentPermissions, claude: withSwitch(claude, key, !on) } })}>
+                          {title}: {on ? 'On' : 'Off'}
+                        </button>
+                        <div className="s-help">{help}</div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="setting-row" style={{ display: 'block' }}>
                   <PermissionRules label="Cursor CLI" lists={cfg.agentPermissions?.cursor ?? NO_RULES}

@@ -69,3 +69,18 @@ test('writing Cursor rules keeps every other key and refuses an unreadable file'
   assert.match(refused.error, /not valid JSON/);
   assert.equal(fs.readFileSync(file, 'utf8'), before, 'nothing written over a file that cannot be parsed');
 });
+
+test('Claude can block reads and writes outside the working directory', () => {
+  const on = { claude: { blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true } };
+  assert.equal(checkAgentPermissions(on), null);
+  assert.match(checkAgentPermissions({ claude: { blockReadsOutsideWorkingDirectories: 'yes' } }), /must be true or false/);
+  assert.match(checkAgentPermissions({ cursor: { blockReadsOutsideWorkingDirectories: true } }), /not a Cursor setting/);
+  const perms = normalizeAgentPermissions({ ...on, cursor: { blockWritesOutsideWorkingDirectories: true } });
+  assert.deepEqual(perms.cursor, { allow: [], deny: [] });
+  assert.deepEqual(JSON.parse(claudeSettingsJson(perms)), {
+    permissions: { blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true },
+  });
+  const one = normalizeAgentPermissions({ claude: { allow: ['Bash(ls)'], blockWritesOutsideWorkingDirectories: true } });
+  assert.deepEqual(JSON.parse(claudeSettingsJson(one)), { permissions: { allow: ['Bash(ls)'], blockWritesOutsideWorkingDirectories: true } });
+  assert.equal(claudeSettingsJson(normalizeAgentPermissions({ claude: { blockReadsOutsideWorkingDirectories: false } })), '');
+});

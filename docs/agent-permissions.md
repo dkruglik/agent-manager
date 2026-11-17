@@ -23,9 +23,26 @@ to every agent of one CLI. Rules are saved in `am-config.json` under
 - The save response and `GET /api/config` both carry `cursorPermissions`
   (`{ok, changed?, error?}`).
 
+## When `am-config.json` cannot be read
+
+A missing file means no rules yet. A file that exists but cannot be read or
+parsed never turns rules off: Claude launches keep the rules read last time
+(logged as `[permissions]`), and at boot the Cursor file is left as it is and
+the page shows why.
+
+## Claude switches
+
+Two on/off settings sit beside Claude's rules: `blockReadsOutsideWorkingDirectories`
+and `blockWritesOutsideWorkingDirectories`. When on, they go into the same
+`--settings` JSON as `permissions.<key>: true`. Claude Code 2.1.325 contains
+both keys and the messages that name them; the page only has them for Claude,
+and a save that sets them for Cursor is refused. A running agent keeps the
+settings it started with.
+
 ## Not covered
 
-- Claude's rule syntax is not verified against Claude Code's schema yet. The
-  two keys `blockReadsOutsideWorkingDirectories` / `blockWritesOutsideWorkingDirectories`
-  are not used here.
-- Claude's rules are not checked against the boot default `bypassPermissions`.
+- Claude's allow/deny rule syntax is not verified against Claude Code's schema
+  yet. The two switches above are present in the installed binary, but their
+  effect has not been run here.
+- Claude's rules and switches are not checked against the boot default `bypassPermissions`.
+- After a restart with an unreadable file and no earlier read, Claude launches have no rules.
