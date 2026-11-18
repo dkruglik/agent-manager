@@ -2534,7 +2534,11 @@ no transcript file yet cannot be subscribed.
 
 Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivered\` describes
 the callback; inspect \`outcome\` separately: completed, blocked, failed or
-uncertain. Completion is a correlated native final, not proof the deliverable is
+uncertain. \`delivery\` records the callback itself: \`state\` (pending, delivered, uncertain
+or not-delivered), \`reason\`, \`attempts\` and \`lastAttemptAt\`. Once the outcome
+is known and the callback has not landed, \`reason\` is the delivery's (for
+example \`delegation-notify-uncertain\`); the child's own reason is always
+\`outcomeReason\`. Completion is a correlated native final, not proof the deliverable is
 correct: validate it. Native input, binding or permission ambiguity fails closed.
 An active parent waits until available. An archived/deleted/remapped parent cannot
 receive the callback. A result may expire; inspect the status rather than assuming
