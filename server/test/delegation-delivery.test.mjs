@@ -6,7 +6,7 @@
 // reason, attempts, last attempt), `reason` names the delivery failure when
 // the result is known but not delivered, and the child's own reason stays in
 // `outcomeReason`. Journal files written before this (no `delivery`) derive
-// it from `state` and `reason`. Plan: .cursor/plans/delegation_result_delivery.plan.md, it. 1.
+// it from `state` and `reason`. See docs/agent-delegation-workflow.md.
 //
 // Run with: node test/delegation-delivery.test.mjs
 import test from 'node:test';
@@ -131,4 +131,20 @@ test('a crash while notifying: the resumed call is the next attempt, recorded on
   assert.equal(calls, 1);
   assert.equal(v.state, 'delivered');
   assert.deepEqual(v.delivery, { state: 'delivered', reason: null, attempts: 2, lastAttemptAt: 9000 });
+});
+
+test('a crash after the receipt was written: the resumed call is uncertain and never pastes again', async (t) => {
+  let calls = 0;
+  const f = fixture(t, (job, root) => notifyClaudeOnce(root, job.callbackId, async () => { calls++; return { ok: true }; }));
+  const id = await f.done();
+  f.d.state = async (who) => (who === 'parent' ? 'working' : 'waiting');
+  await f.d.tick();
+  const j = f.d.jobs.get(id); j.state = 'notifying'; j.delivery = { state: 'pending', reason: null, attempts: 1, lastAttemptAt: 1000 }; f.d.save(j);
+  delivery.writeNotifyReceipt(f.root, j.callbackId, { status: 'sending' });
+  f.time(9000);
+  const resumed = f.reopen(); await resumed.tick(); await resumed.tick();
+  const v = resumed.get(id, 'parent');
+  assert.equal(calls, 0, 'the callback was pasted again');
+  assert.equal(v.state, 'notification-uncertain');
+  assert.deepEqual(v.delivery, { state: 'uncertain', reason: 'delegation-notify-uncertain', attempts: 2, lastAttemptAt: 9000 });
 });
