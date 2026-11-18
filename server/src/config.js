@@ -465,6 +465,11 @@ export const CLIS = [
   ...(process.env.AM_TEST_REPAINT_CMD
     ? [{ id: 'test-repaint', label: 'Repaint fixture', bin: 'bash', color: '#8aa0ad', run: () => process.env.AM_TEST_REPAINT_CMD, cont: null, resizeMode: 'repaint', promptDetector: true }]
     : []),
+  // A pane drawing Claude Code's captured screens, read like Claude (claude-pane-view test).
+  ...(process.env.AM_TEST_CLAUDE_CMD
+    ? [{ id: 'test-claude', label: 'Claude screen fixture', bin: 'node', color: '#8aa0ad', run: () => process.env.AM_TEST_CLAUDE_CMD, cont: null,
+      confirmSubmit: CLAUDE_CONFIRM }]
+    : []),
   // A fake TUI for the submit-confirmation tests, read like Codex.
   ...(process.env.AM_TEST_SUBMIT_CMD
     ? [{ id: 'test-submit', label: 'Submit fixture', bin: 'node', color: '#8aa0ad', run: () => process.env.AM_TEST_SUBMIT_CMD, cont: null, promptDetector: true,

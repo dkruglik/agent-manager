@@ -2808,6 +2808,15 @@ async function settled(host, quietMs = 250, maxMs = 3000) {
   }
 }
 
+const screenNow = (host) => {
+  try { return host.vt.snapshot({ includeCells: false }); } catch { return null; }
+};
+// What a view does with input, for a refusal that says why (config.js views).
+const VIEW_TEXT = {
+  'agents-view': 'Claude\'s agents view, where Enter starts a new session with what is typed',
+  'transcript-view': 'Claude\'s detailed transcript view, which drops what is typed',
+};
+const viewText = (view) => VIEW_TEXT[view] || `the CLI's ${view}`;
 const shapeNow = (host) => {
   try { return composerShape(host.vt.snapshot({ includeCells: false })); } catch { return null; }
 };
@@ -3002,6 +3011,14 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
     throw new ApiError(409, 'input-line-busy',
       `this session's terminal has unsent text on its input line (${JSON.stringify(shown)}), and sending now would submit both as one message. Send or clear that line in the terminal, then try again.`);
   }
+  // A view whose composer is not the session's (Claude's agents list) would
+  // take the prompt as something else; one that drops input would lose it.
+  const views = cliById(host.cli)?.confirmSubmit;
+  const view = views?.views ? paneView(screenNow(host), views) : null;
+  if (view) {
+    throw new ApiError(409, 'input-pane-view',
+      `this session's terminal shows ${viewText(view)}, so nothing was typed. Go back to the conversation in the terminal (Esc), then try again.`);
+  }
   host.inputRequired.observeInput();
   host.inputSeen = true;
   const confirm = cliById(host.cli)?.confirmSubmit;
@@ -3073,15 +3090,20 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
 async function submitConfirmed(host, id, confirm, text) {
   const look = () => {
     let reading = { body: null, holds: false }, screen = '';
-    try { reading = promptInComposer(host.vt.snapshot({ includeCells: false }), confirm, text); } catch {}
+    const snap = screenNow(host);
+    try { if (snap) reading = promptInComposer(snap, confirm, text); } catch {}
     try { screen = host.vt.getVisibleText(); } catch {}
-    const { body, holds } = reading;
+    const { body } = reading;
+    // In a view whose composer is not the session's, a placeholder there is
+    // not the session holding the prompt, and an empty one is no submit.
+    const view = paneView(snap, confirm);
+    const holds = reading.holds && !view;
     const busy = confirm.busy.test(screen);
     // The notice in its own place, where one is known: a prompt that merely
     // mentions it must not hold the Enter off.
     const starting = confirm.notice ? screen.split('\n').some((row) => confirm.notice.test(row))
       : !!confirm.starting?.test(screen);
-    return { holds, submitted: !holds && (body === '' || busy), starting };
+    return { holds, view, submitted: !view && !holds && (body === '' || busy), starting };
   };
   const until = async (test, ms) => {
     const deadline = Date.now() + ms;
@@ -3098,13 +3120,18 @@ async function submitConfirmed(host, id, confirm, text) {
     lineEmpty.set(id, { alt: false, located: false, typed: '\u0000unsent', full: '\u0000unsent' });
     return new ApiError(409, code, message);
   };
-  if (!await until((v) => v.holds, PASTE_SHOWN_TIMEOUT_MS)) {
+  const inView = (view) => unsent('input-pane-view',
+    `the prompt was typed into this session's terminal, but it now shows ${viewText(view)}, so AM did not press Enter and cannot say it was delivered. Check the terminal: clear what is on that input line.`);
+  if (!await until((v) => v.holds || v.view, PASTE_SHOWN_TIMEOUT_MS)) {
     throw unsent('input-not-confirmed',
       'the prompt was typed into this session\'s terminal, but it never showed in the composer, so AM did not press Enter and cannot say it was delivered. Check the terminal: send or clear what is on its input line.');
   }
   if (confirm.starting) await until((v) => !v.starting, STARTUP_WAIT_MS);
   // The Enter still goes as its own keypress, apart from the paste burst.
   await new Promise((r) => setTimeout(r, 300));
+  // Checked last, right before the Enter: the operator can switch views at any time.
+  const now = look();
+  if (now.view) throw inView(now.view);
   const before = stillScreen(host, confirm);
   host.pty.write('\r');
   let ok = await until((v) => v.submitted, SUBMIT_CONFIRM_TIMEOUT_MS);
