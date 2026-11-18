@@ -243,6 +243,8 @@ export class Delegations {
           if(!['waiting','idle','stopped','unloaded'].includes(await this.state(j.parentId)))continue;
           if(terminal.has(j.state))continue;
           if(!this.valid(j)){j.state='stale';this.save(j);continue;}
+          // A job restored in `notifying` (AM stopped mid-call) counts as a new attempt:
+          // that call ended with the process, and its receipt guards the paste.
           this.assertWritable();j.state='notifying';startAttempt(j,this.now());this.save(j);
           // Shared Codex repeats callbackId through its native receipt. A Claude
           // parent uses notifyClaudeOnce: the receipt is written before the paste.

@@ -116,3 +116,19 @@ test('what agents are told (the served skill text and the spec) names delivery a
     assert.match(text, /lastAttemptAt/, name);
   }
 });
+
+test('a crash while notifying: the resumed call is the next attempt, recorded once, never a second paste', async (t) => {
+  let calls = 0;
+  const f = fixture(t, (job, root) => notifyClaudeOnce(root, job.callbackId, async () => { calls++; return { ok: true }; }));
+  const id = await f.done();
+  f.d.state = async (who) => (who === 'parent' ? 'working' : 'waiting');
+  await f.d.tick();
+  // As left by a crash after startAttempt was saved and before notify() settled.
+  const j = f.d.jobs.get(id); j.state = 'notifying'; j.delivery = { state: 'pending', reason: null, attempts: 1, lastAttemptAt: 1000 }; f.d.save(j);
+  f.time(9000);
+  const resumed = f.reopen(); await resumed.tick();
+  const v = resumed.get(id, 'parent');
+  assert.equal(calls, 1);
+  assert.equal(v.state, 'delivered');
+  assert.deepEqual(v.delivery, { state: 'delivered', reason: null, attempts: 2, lastAttemptAt: 9000 });
+});

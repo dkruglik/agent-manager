@@ -45,10 +45,10 @@ blocked and a stopped process with no `turn_ended` is failed. The matched
 exchange has to appear in the transcript's last 4 MiB. A Cursor session with
 no transcript file yet cannot be subscribed.
 
-Read `GET /api/delegations/ID?from=$AM_ID` for status/result. `delivered` describes
-the callback; inspect `outcome` separately: completed, blocked, failed or
-uncertain. `delivery` records the callback itself: `state` (pending, delivered, uncertain
-or not-delivered), `reason`, `attempts` and `lastAttemptAt`. Once the outcome
+Read `GET /api/delegations/ID?from=$AM_ID` for status/result. A job `state` of `delivered`
+describes the callback; inspect `outcome` separately: completed, blocked, failed or
+uncertain. `delivery` records the callback itself, apart from the job's
+`state`: `delivery.state` (pending, delivered, uncertain or not-delivered), `reason`, `attempts` and `lastAttemptAt`. Once the outcome
 is known and the callback has not landed, `reason` is the delivery's (for
 example `delegation-notify-uncertain`); the child's own reason is always
 `outcomeReason`. Completion is a correlated native final, not proof the deliverable is
