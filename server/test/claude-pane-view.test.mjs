@@ -83,6 +83,17 @@ try {
   if (!await until(() => fetch(`${API}/api/health`).then((r) => r.ok), 60_000)) throw new Error(`server did not start:\n${logs.slice(-1200)}`);
   await post('/api/welcome/seen');
 
+  console.log('\n# what agents are told about delegation callbacks');
+  // The environment skill AM writes for agents repeats docs/agent-delegation-workflow.md.
+  const skillText = () => { try { return fs.readFileSync(path.join(DATA_DIR, 'workspaces', 'skills', 'environment.md'), 'utf8'); } catch { return ''; } };
+  await until(() => skillText(), 20_000);
+  const skill = skillText();
+  check('the environment skill says a callback waits while Claude shows its agents or transcript view', () => {
+    assert.ok(skill, 'no environment skill was written');
+    assert.match(skill, /input-pane-view/);
+    assert.match(skill, /agents view/);
+  });
+
   console.log('\n# the session\'s own composer');
   let pane = await openPane('claude-main', 'main');
   setMode({ view: 'main' });

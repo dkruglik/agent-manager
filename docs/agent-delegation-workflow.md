@@ -36,7 +36,7 @@ nothing is typed (`input-pane-view` before the first byte) and the callback
 waits for the next try; the agents view's own composer would start a new
 session with it. If the view opens after the paste, AM presses no Enter and the
 callback is `notification-uncertain`, like any failure after typing began
-(see `classifyDeliveryError` in `server/src/delivery-outcome.js`). It does **not** use `/api/notify` or send a phone/device push. The child should
+(see `notifyClaudeOnce` in `server/src/delegations.js`). It does **not** use `/api/notify` or send a phone/device push. The child should
 answer normally in its own conversation, without messaging the parent back.
 
 Cursor completion is the child's transcript line `{"type":"turn_ended"}`
