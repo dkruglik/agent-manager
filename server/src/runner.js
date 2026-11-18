@@ -2723,6 +2723,56 @@ export function promptInComposer(snapshot, confirm, text) {
     || (shape.scrolled && body.length >= Math.min(24, flat.length) && flat.endsWith(body)) };
 }
 
+/**
+ * The CLI's full-screen view on this pane, or null for its ordinary screen:
+ * a name from `confirm.views` (config.js), e.g. 'agents-view'. Read only from
+ * the rows below the screen's lowest rule — a footer, which in the ordinary
+ * screen sits under the composer — so the same words in the conversation
+ * above can never name a view.
+ */
+export function paneView(snapshot, confirm) {
+  const views = confirm?.views;
+  const lines = snapshot?.visibleLines || [];
+  if (!views) return null;
+  let last = -1;
+  for (let i = lines.length - 1; i >= 0 && last < 0; i--) if (isRule(lines[i].text)) last = i;
+  if (last < 0) return null;
+  const footer = lines.slice(last + 1).map((l) => l.text);
+  for (const [name, row] of Object.entries(views)) if (footer.some((t) => row.test(t))) return name;
+  return null;
+}
+
+/** `[Pasted text #N +L lines]` (whitespace optional) as `{ n, lines }`, else null. */
+export function pastePlaceholder(text) {
+  const m = /^\[Pastedtext#(\d+)(?:\+(\d+)lines)?\]$/.exec(String(text || '').replace(/\s+/g, ''));
+  return m ? { n: Number(m[1]), lines: m[2] ? Number(m[2]) : 0 } : null;
+}
+
+/**
+ * May a prompt be pasted into this pane now? One screen, no pty:
+ *  - a name from `confirm.views` — the CLI's own composer is not on screen;
+ *  - 'not-idle' — the CLI is working, or no composer can be found (an
+ *    unknown view is never taken for a ready one);
+ *  - 'dialog' — a menu or a dialog's key hints instead of a composer;
+ *  - 'placeholder-shown' — the composer holds one collapsed paste, nothing else;
+ *  - 'line-busy' — the composer holds anything else;
+ *  - 'ready' — the session's composer, empty.
+ */
+export function readiness(snapshot, confirm) {
+  if (!snapshot) return 'not-idle';
+  const view = paneView(snapshot, confirm);
+  if (view) return view;
+  const lines = snapshot.visibleLines || [];
+  if (confirm?.busy?.test(lines.map((l) => l.text).join('\n'))) return 'not-idle';
+  const shape = composerShape(snapshot);
+  if (!shape?.located || !shape.cursorInside) {
+    return lines.some((l) => MENU_ROW.test(l.text) || DIALOG_HINT.test(l.text)) ? 'dialog' : 'not-idle';
+  }
+  const body = composerBody(shape).replace(/\s+/g, '');
+  if (!body) return 'ready';
+  return pastePlaceholder(body) ? 'placeholder-shown' : 'line-busy';
+}
+
 // ONE prompt marker, not every glyph that could be one: stripping greedily
 // turned a typed `❯ >` into nothing at all and let the send through.
 const ONE_MARKER = /^[\s\u2502\u2503|]*[>\u276f\u203a\u27e9\u25b6][^\S\r\n]?/;
