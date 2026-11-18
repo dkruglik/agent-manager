@@ -31,7 +31,9 @@ Codex parent receives it in that thread. A Claude parent receives it typed once
 into its session when that session is waiting, idle, or stopped. Delivery still
 happens after the parent's current turn has ended or AM has restarted. A crash
 while typing the Claude callback is `notification-uncertain` and is not pasted
-again. It does **not** use `/api/notify` or send a phone/device push. The child should
+again. While the Claude pane shows its agents view or detailed transcript view,
+nothing is typed (`input-pane-view`) and the callback waits for the next try;
+the agents view's own composer would start a new session with it. It does **not** use `/api/notify` or send a phone/device push. The child should
 answer normally in its own conversation, without messaging the parent back.
 
 Cursor completion is the child's transcript line `{"type":"turn_ended"}`
