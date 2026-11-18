@@ -3013,15 +3013,14 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
   }
   // A view whose composer is not the session's (Claude's agents list) would
   // take the prompt as something else; one that drops input would lose it.
-  const views = cliById(host.cli)?.confirmSubmit;
-  const view = views?.views ? paneView(screenNow(host), views) : null;
+  const confirm = cliById(host.cli)?.confirmSubmit;
+  const view = confirm?.views ? paneView(screenNow(host), confirm) : null;
   if (view) {
     throw new ApiError(409, 'input-pane-view',
       `this session's terminal shows ${viewText(view)}, so nothing was typed. Go back to the conversation in the terminal (Esc), then try again.`);
   }
   host.inputRequired.observeInput();
   host.inputSeen = true;
-  const confirm = cliById(host.cli)?.confirmSubmit;
   // OpenCode can paint a stable first screen before its input handler works
   // (below). Until one send to THIS launch has been echoed back, every send
   // checks — whoever started the pane. Deriving it from "did this call start
