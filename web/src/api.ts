@@ -118,6 +118,16 @@ export interface BackupHealth {
   message: string | null; reason: string | null;
   lastSuccessAt: number | null; jobsUrl: string;
 }
+// Agent-state checkpoints that are not getting through; null when all are.
+// See server/src/checkpoint-health.js.
+export interface CheckpointHealth {
+  adapters: {
+    adapter: string; failures: number; since: number | null; lastSuccessAt: number | null;
+    rc: number | null; pending: number; untested: number; copied: number; reason: string | null; paths: string | null;
+  }[];
+  stalled: { lastPassAt: number } | null;
+  log: string;
+}
 /** Will this survive a restart? See server/src/storage.js. */
 export interface StorageStatus { persistent: boolean; dataDir: string; reason: string }
 export interface Info {
@@ -136,6 +146,7 @@ export interface Info {
   secrets?: string[];
   bucketUnverified?: boolean;
   backup?: BackupHealth | null;
+  checkpoint?: CheckpointHealth | null;
   welcomeSeen?: boolean;
   demoMode?: boolean;
   /** Only on a dev-preview Space (AM_DEV_PREVIEW=1); absent everywhere else. */
@@ -419,8 +430,9 @@ export interface MetaSession extends Session {
   output?: OutputVersion | null;
   read?: (OutputVersion & { at?: string }) | null;
 }
-export const getMeta = (signal?: AbortSignal): Promise<{ sessions: MetaSession[]; generatedAt: string }> =>
-  fetch('/api/meta', { signal }).then(json);
+/** `fresh`: wait for digests built after the request (an agent just finished). */
+export const getMeta = (signal?: AbortSignal, fresh = false): Promise<{ sessions: MetaSession[]; generatedAt: string }> =>
+  fetch(fresh ? '/api/meta?fresh=1' : '/api/meta', { signal }).then(json);
 
 /**
  * "These replies were shown to the operator." Used by both read paths — a
