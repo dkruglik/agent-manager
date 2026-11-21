@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { remoteState, setPaused } from './remote.js';
 import { fxSessionForPid } from './fx-process.js';
+import { cursorChatForPid, cursorRepin } from './cursor-conversation.js';
 import { cliById, cliVersion, isRemote, launchFlags, INTERNAL_HOST, PORT, STATE_DIR, WORKSPACES_DIR } from './config.js';
 import { update, list } from './sessions.js';
 import { captureOpencodeSession, opencodeSessionExists, opencodeSessionInfo, readTrace,
@@ -1960,6 +1961,51 @@ function scheduleAgyCapture(session, workdir) {
   agyCapturing.set(session.id, t0);
 }
 
+const cursorCapturing = new Map();
+
+// One check: follow the chat whose store.db the pane's cursor-agent holds open
+// (it moves on /clear). Returns the session's sessionUuid afterwards.
+function cursorPinCheck(session) {
+  const all = list();
+  const current = all.find((s) => s.id === session.id) || session;
+  const claimed = new Set(all.filter((s) => s.id !== session.id && s.sessionUuid).map((s) => s.sessionUuid));
+  const pinned = current.sessionUuid;
+  const id = cursorRepin({ owned: cursorChatForPid(paneRootPid(session.id)), pinned, claimed });
+  if (!id) return pinned;
+  console.warn(`[cursor] re-pinning ${session.id}: ${pinned} -> ${id} (the pane's cursor-agent moved to it)`);
+  update(session.id, { sessionUuid: id });
+  return id;
+}
+
+// Runs the check once now for a running cursor session (delegation prepare).
+export function refreshCursorPin(sessionId) {
+  const session = list().find((s) => s.id === sessionId);
+  if (!session || session.cli !== 'cursor' || !isRunning(sessionId)) return session?.sessionUuid;
+  try { return cursorPinCheck(session); } catch (e) {
+    console.warn(`[cursor] pin refresh failed for ${sessionId}: ${e?.message || e}`);
+    return session.sessionUuid;
+  }
+}
+
+function scheduleCursorCapture(session) {
+  const prev = cursorCapturing.get(session.id);
+  if (prev) clearTimeout(prev);
+
+  const tick = () => {
+    if (!isRunning(session.id)) { cursorCapturing.delete(session.id); return; }
+    try { cursorPinCheck(session); } catch (e) {
+      console.warn(`[cursor] pin check failed for ${session.id}: ${e?.message || e}`);
+    }
+    const t = setTimeout(tick, REPIN_MS);
+    if (t.unref) t.unref();
+    cursorCapturing.set(session.id, t);
+  };
+
+  const t0 = setTimeout(tick, 3000);
+  if (t0.unref) t0.unref();
+  cursorCapturing.set(session.id, t0);
+}
+
 const fxCapturing = new Map();
 
 // fx names its session directory with the conversation id and records the
@@ -2433,6 +2479,7 @@ export function ensureRunning(session, cols = 120, rows = 34) {
   if (session.cli === 'codex' && !boundOrUnknown(session)) scheduleCodexCapture(session, workdir);
   if (session.cli === 'opencode') scheduleOpencodeCapture(session, workdir);
   if (session.cli === 'fx') scheduleFxCapture(session, workdir);
+  if (session.cli === 'cursor') scheduleCursorCapture(session);
   if (session.cli === 'antigravity') scheduleAgyCapture(session, workdir);
   if (session.cli === 'claude') scheduleClaudeCapture(session, workdir);
   return true;
