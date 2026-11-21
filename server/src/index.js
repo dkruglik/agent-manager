@@ -42,7 +42,7 @@ import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js'
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
   waitForInputReady, promptReady, hasPromptDetector, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
-  installClaudeRepinHook, installOpencodeRepinPlugin,
+  installClaudeRepinHook, installOpencodeRepinPlugin, refreshCursorPin,
 } from './runner.js';
 
 // Control frames ride the terminal socket behind a leading NUL pair, which real
@@ -523,7 +523,9 @@ try {
       if(!['waiting','idle','stopped','unloaded'].includes(await delegationState(targetId)))
         throw new ApiError(409,'delegation-busy','The target is already working or needs input.');
       const shared=sessionRuntime.shared(target),source=codexInput.agentSource(parentId);
-      const file=shared ? await sharedCodexRollout(target) : (await traceLocation(target))?.path;
+      // A /clear moves a Cursor pane to a new chat, and the 20 s pin watcher may not have run yet.
+      if(!shared&&target.cli==='cursor')refreshCursorPin(targetId);
+      const file=shared ? await sharedCodexRollout(target) : (await traceLocation(store.get(targetId)))?.path;
       if(!file)throw new ApiError(409,'delegation-trace','A pinned existing native trace is required before delegation.');
       const name=String(source.name||source.id).replace(/[\x00-\x1f\x7f\[\]]/g,' ');
       const expectedText=shared ? `[message from ${name}:] [AM source ${JSON.stringify({amSessionId:source.id,threadId:source.threadId})}]\n${payload}` : `[message from ${parent.name}:] ${payload}`;

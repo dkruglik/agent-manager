@@ -49,6 +49,9 @@ exchange is on disk. Once it is on disk and caught up, `input-required` is
 blocked and a stopped process with no `turn_ended` is failed. The matched
 exchange has to appear in the transcript's last 4 MiB. A Cursor session with
 no transcript file yet cannot be subscribed.
+Before a follow-up is accepted, AM re-reads which chat the Cursor pane holds
+open, so a `/clear` before the delegation is followed and the job watches the
+current chat's transcript, not the abandoned one.
 
 Read `GET /api/delegations/ID?from=$AM_ID` for status/result. `delivery` is the
 callback: `delivery.state` (pending, delivered, uncertain or not-delivered),
