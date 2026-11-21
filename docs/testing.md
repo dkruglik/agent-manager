@@ -115,6 +115,7 @@ npm test -- codex-creation-live --manual
 | `web/test/codexShared.render` | Chromium and a local HTTP listener | `npm test -- codexShared --manual` |
 | `server/test/codex-*-live`, `codex-shared-pilot` | need an installed Codex CLI and local sockets; isolated homes, no model calls | `npm test -- codex- --manual` |
 | `server/test/delegation-live` | **real model calls**: needs the operator's explicit authorization | by hand only |
+| `server/test/claude-screens-live` | drives the installed Claude Code CLI with a set-up `HOME`; no model calls | `npm test -- claude-screens-live --manual` (see [Claude screens](#claude-screens)) |
 
 Live suites start real CLIs. Run them under `env -i` with an explicit allowlist
 and scratch `HOME`/`TMPDIR`, never with a shell that exports a live
@@ -127,3 +128,90 @@ env -i PATH="$PATH" HOME="$H" TMPDIR="$H" LANG=C.UTF-8 \
 ```
 
 The same applies to the default run on a machine that hosts live agents.
+
+## Claude screens
+
+AM decides from the screen whether a Claude Code pane may take a pasted prompt
+(`readiness()` and `paneView()` in `server/src/runner.js`). It recognizes two of
+Claude's views by phrases in their footer, listed in `CLAUDE_CONFIRM.views` in
+`server/src/config.js`:
+
+| View | How it is opened | Phrase | What it does with a paste |
+|---|---|---|---|
+| detailed transcript | ctrl+o | `Showing detailed transcript` | drops it |
+| agents | left arrow twice | `enter to create` / `enter to return` | its composer's Enter starts a **new session** |
+
+The phrases were captured from Claude Code 2.1.325, and the image installs
+`@anthropic-ai/claude-code@latest`. If a newer Claude rewords them, nothing
+fails: sends behave as before this check existed, and a message sent while the
+operator looks at the agents list becomes a stray session. The default suites
+replay recorded screens (`server/test/fixtures/claude-screens.json`), so they
+cannot notice. `claude-screens-live` checks the installed Claude instead.
+
+### When to run it
+
+- after Claude Code is updated: a new image, or **Update CLIs** in Settings,
+  which installs the latest release in place without a rebuild;
+- before a deploy that rebuilds the image.
+
+It cannot run inside `docker build`: there Claude has no set-up home and stops
+at its first-run screens (theme, login). Run it on a machine or container where
+`claude` is installed and has been started and logged in once.
+
+### How to run it
+
+From the repository root, as the user whose `HOME` has the logged-in Claude:
+
+```bash
+claude --version                                  # the version under test
+npm test -- claude-screens-live --manual --verbose
+```
+
+Inside the Agent Manager container, the same from `/app`, with the container's
+persistent `HOME`. It takes about 15 seconds. It starts `claude` in a scratch
+folder and walks the screens without submitting anything: the trust dialog, the
+empty composer, typed text, a pasted `[Pasted text #N +3 lines]`, the transcript
+view and the agents view, with and without a paste in its composer. Nothing goes
+to a model. The only side effect is a trust entry for the deleted scratch folder
+in `~/.claude.json`.
+
+Unlike the other live suites it does **not** run under a scratch `HOME`: with an
+empty home Claude never reaches its composer.
+
+### Reading the result
+
+Passing: the last line is `claude-screens-live: all checks passed`.
+
+Failing: each failed check names the screen, what `readiness()` returned and what
+it expected, and prints the screen. The two that matter:
+
+```
+FAIL left arrow twice: the agents view is named
+     readiness() is ready, expected agents-view
+FAIL a paste in the agents composer is still the agents view, never a placeholder of ours
+     readiness() is placeholder-shown, expected agents-view
+```
+
+This means the agents view is no longer recognized. Do not deploy that Claude
+version until the phrases are fixed, or pin the previous version in
+`scripts/cli-allowlist.sh`. A pin covers the image only: **Update CLIs** in
+Settings still installs the latest release. A failure that says `the screen never showed …`
+means a step did not reach its screen at all (a changed key binding, a login
+prompt, a first-run notice). Read the printed screen.
+
+### Updating the phrases
+
+1. Save what the installed Claude shows:
+   ```bash
+   AM_CLAUDE_SCREENS_SAVE=/tmp/claude-screens.json \
+     npm test -- claude-screens-live --manual
+   ```
+   Scratch paths are replaced with `/data/workspaces/claude-fixture`.
+2. Read the footer rows of `transcript`, `agents` and `agentsPlaceholder` in that
+   file, and update `CLAUDE_CONFIRM.views` in `server/src/config.js`. Match only a
+   row below the screen's lowest rule, the way `paneView` reads it.
+3. Review the file and replace `server/test/fixtures/claude-screens.json` with it.
+   The agents view lists this home's other sessions by title: replace those rows
+   with neutral text before committing.
+4. Run `npm test -- claude-` (the replayed screens) and the live suite again.
+
