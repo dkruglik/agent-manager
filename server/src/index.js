@@ -2532,13 +2532,19 @@ blocked and a stopped process with no \`turn_ended\` is failed. The matched
 exchange has to appear in the transcript's last 4 MiB. A Cursor session with
 no transcript file yet cannot be subscribed.
 
-Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivered\` describes
-the callback; inspect \`outcome\` separately: completed, blocked, failed or
-uncertain. Completion is a correlated native final, not proof the deliverable is
-correct: validate it. Native input, binding or permission ambiguity fails closed.
-An active parent waits until available. An archived/deleted/remapped parent cannot
-receive the callback. A result may expire; inspect the status rather than assuming
-success. Unsupported parent/child types are refused; do not promise notification.
+Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivery\` is
+the callback: \`delivery.state\` (pending, delivered, uncertain or not-delivered),
+\`reason\`, \`attempts\` and \`lastAttemptAt\`. Once the outcome is known and the
+callback has not landed, \`reason\` is the delivery's (for example
+\`delegation-notify-uncertain\`); the child's own reason is always
+\`outcomeReason\`. The job's \`state\` is its lifecycle (watching, notifying,
+delivered, notification-uncertain, ...). Inspect \`outcome\` separately:
+completed, blocked, failed or uncertain. Completion is a correlated native final,
+not proof the deliverable is correct: validate it. Native input, binding or
+permission ambiguity fails closed. An active parent waits until available. An
+archived/deleted/remapped parent cannot receive the callback. A result may expire;
+inspect the status rather than assuming success. Unsupported parent/child types
+are refused; do not promise notification.
 
 A timeout is not permission to send again with a new UUID. Query the saved ID and,
 if necessary, retry the exact same request with the same UUID. Never resend work

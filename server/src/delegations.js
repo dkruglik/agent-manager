@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
 import {ApiError} from './api-errors.js';
+import {deliveryOf,startAttempt,endAttempt,reasonOf} from './delegation-delivery.js';
 const uuid = s => typeof s === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(s);
 export const hash = s => createHash('sha256').update(s).digest('hex');
 const terminal = new Set(['delivered','cancelled','expired','stale','notification-uncertain','notification-review','failed']);
@@ -174,15 +175,15 @@ export class Delegations {
     const signature=hash(JSON.stringify({...j,updatedAt:null,audit:null}));
     if(this.written.get(j.id)===signature)return;
     j.updatedAt=this.now();
-    const event={at:j.updatedAt,state:j.state,outcome:j.evidence?.outcome || null,reason:j.evidence?.reason || j.reason || null};
-    const last=j.audit?.at(-1);if(!last || ['state','outcome','reason'].some(k=>last[k]!==event[k]))j.audit=[...(j.audit || []),event].slice(-100);
+    const event={at:j.updatedAt,state:j.state,outcome:j.evidence?.outcome || null,reason:reasonOf(j),attempts:deliveryOf(j).attempts};
+    const last=j.audit?.at(-1);if(!last || ['state','outcome','reason','attempts'].some(k=>last[k]!==event[k]))j.audit=[...(j.audit || []),event].slice(-100);
     const file=path.join(this.dir,j.id+'.json'),tmp=file+'.'+randomUUID()+'.tmp';
     let fd;
     try {fd=fs.openSync(tmp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(j));fs.fsyncSync(fd);fs.closeSync(fd);fd=null;fs.renameSync(tmp,file);
       fd=fs.openSync(this.dir,'r');fs.fsyncSync(fd);this.jobs.set(j.id,j);this.written.set(j.id,signature);
     } finally {if(fd!==null && fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp)}catch{}}
   }
-  view(j) {return {id:j.id,parentId:j.parentId,targetId:j.targetId,state:j.state,outcome:j.evidence?.outcome || null,reason:j.evidence?.reason || j.reason || null,result:j.evidence?.answer || null,createdAt:j.createdAt,updatedAt:j.updatedAt,expiresAt:j.expiresAt,notification:j.notification || null,audit:j.audit || []};}
+  view(j) {return {id:j.id,parentId:j.parentId,targetId:j.targetId,state:j.state,outcome:j.evidence?.outcome || null,reason:reasonOf(j),outcomeReason:j.evidence?.reason || null,delivery:deliveryOf(j),result:j.evidence?.answer || null,createdAt:j.createdAt,updatedAt:j.updatedAt,expiresAt:j.expiresAt,notification:j.notification || null,audit:j.audit || []};}
   get(id,parentId) {const j=this.jobs.get(id);if(!j || j.parentId!==parentId)throw new ApiError(404,'not-found','Delegation not found.');return this.view(j);}
   valid(j) {try{return this.identity(j.parentId)===j.parentIdentity && this.identity(j.targetId)===j.targetIdentity;}catch(e){if(['codex-sender-stale','codex-sender-archived','codex-unmapped','codex-binding-stale'].includes(e?.code))return false;throw e;}}
   async create(parentId,targetId,{requestId,text}) {
@@ -242,7 +243,9 @@ export class Delegations {
           if(!['waiting','idle','stopped','unloaded'].includes(await this.state(j.parentId)))continue;
           if(terminal.has(j.state))continue;
           if(!this.valid(j)){j.state='stale';this.save(j);continue;}
-          this.assertWritable();j.state='notifying';this.save(j);
+          // A job restored in `notifying` (AM stopped mid-call) counts as a new attempt:
+          // that call ended with the process, and its receipt guards the paste.
+          this.assertWritable();j.state='notifying';startAttempt(j,this.now());this.save(j);
           // Shared Codex repeats callbackId through its native receipt. A Claude
           // parent uses notifyClaudeOnce: the receipt is written before the paste.
           try {
@@ -254,6 +257,7 @@ export class Delegations {
             else j.state='ready';
             j.reason=error?.code || 'notification-unavailable';
           }
+          endAttempt(j,j.state==='delivered' ? null : j.reason);
           this.save(j);
         }catch { /* Identity or storage unavailable: fail closed; next tick rechecks. */ }
       }
@@ -261,53 +265,4 @@ export class Delegations {
   }
   start() {const t=setInterval(()=>this.tick().catch(()=>{}),5000);t.unref();return ()=>clearInterval(t);}
 }
-
-// Claude has no native receipt channel. The receipt is written before the paste
-// and a retry of `sending`/`submitted` never pastes again. A throw before any
-// byte is typed deletes the receipt so the next tick can try.
-const notifyPath = (dir, id) => path.join(dir, 'notify', id + '.json');
-export function readNotifyReceipt(dir, id) {
-  if(!uuid(id))return {status:'sending'};
-  let fd;
-  try {
-    fd=fs.openSync(notifyPath(dir,id),fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
-    const s=fs.fstatSync(fd);
-    if(!s.isFile() || s.size>8192)return {status:'sending'};
-    return JSON.parse(fs.readFileSync(fd,'utf8'));
-  } catch(e){if(e.code==='ENOENT')return null;return {status:'sending'};}
-  finally {if(fd!==undefined)fs.closeSync(fd);}
-}
-export function writeNotifyReceipt(dir, id, record) {
-  if(!uuid(id))throw fail('delegation-notify-uncertain','Callback id is not durable.');
-  const folder=path.join(dir,'notify');
-  fs.mkdirSync(folder,{recursive:true,mode:0o700});
-  const dest=notifyPath(dir,id),tmp=dest+'.'+randomUUID()+'.tmp';
-  let fd;
-  try {
-    fd=fs.openSync(tmp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(record));fs.fsyncSync(fd);fs.closeSync(fd);fd=null;
-    fs.renameSync(tmp,dest);fd=fs.openSync(folder,'r');fs.fsyncSync(fd);
-  } finally {if(fd!==null && fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch{}}
-}
-export function clearNotifyReceipt(dir, id) {
-  if(!uuid(id))return;
-  try{fs.unlinkSync(notifyPath(dir,id));}catch{}
-}
-export async function notifyClaudeOnce(dir, callbackId, send) {
-  const existing=readNotifyReceipt(dir,callbackId);
-  if(existing?.status==='accepted')return {ok:true,repeated:true};
-  if(existing)throw fail('delegation-notify-uncertain','The callback may already have been typed; it was not pasted again.');
-  writeNotifyReceipt(dir,callbackId,{status:'sending'});
-  try {
-    const result=await send();
-    writeNotifyReceipt(dir,callbackId,{status:'accepted'});
-    return result ?? {ok:true};
-  } catch(error) {
-    if(error?.typed===true){
-      writeNotifyReceipt(dir,callbackId,{status:'submitted'});
-      error.code='delegation-notify-uncertain';
-      throw error;
-    }
-    clearNotifyReceipt(dir,callbackId);
-    throw error;
-  }
-}
+export {notifyClaudeOnce,readNotifyReceipt,writeNotifyReceipt,clearNotifyReceipt} from './delegation-delivery.js';
