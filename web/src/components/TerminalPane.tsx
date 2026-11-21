@@ -8,6 +8,7 @@ import { FileLinkScope, useFilePreview } from './FileLinkContent';
 import { installTerminalFileLinks, terminalLinkHandler, openTerminalLink } from '../lib/terminalFileLinks';
 import '@xterm/xterm/css/xterm.css';
 import { touchDebug, installTouchDebug } from '../lib/touchDebug';
+import { touchScrollRoute, touchWheelSteps } from '../lib/touchWheel';
 import { PROGRAM_COPY_MS, clipboardPreview, clipboardSize } from '../lib/programCopy';
 import { isMacPlatform, terminalKeyAction } from '../lib/terminalKeys';
 import type { Cli, Session } from '../types';
@@ -652,8 +653,8 @@ export default function TerminalPane({
     };
     claimRef.current = claimControl;
     const onPointerDown = (e: PointerEvent) => {
-      // A touch may only be inspecting local scrollback. Claim lazily below if
-      // the gesture actually needs to drive an application's mouse mode.
+      // A touch may only be inspecting local scrollback. scrollByPixels claims
+      // lazily when a drag on the alternate screen has to reach the application.
       if (e.pointerType !== 'touch') claimControl();
     };
     const onPaste = (event: ClipboardEvent) => {
@@ -992,16 +993,20 @@ export default function TerminalPane({
     window.addEventListener('focus', onReturn);
     document.addEventListener('visibilitychange', onVisible);
 
-    // A phone drag always navigates browser-retained terminal history. Passing
-    // it to an agent's mouse mode at the live bottom makes Claude consume the
-    // gesture without moving xterm's viewport, leaving no reliable way back
-    // through history on touch-only devices. xterm 5.5 registers no touch
-    // listeners of its own (verified against the bundled lib) and .term-host
-    // sets touch-action:none on mobile while the terminal is what you see, so
-    // neither xterm nor the browser will pan: this is the only touch scrolling
-    // a phone has, in every pane. Reader mode is the exception at both ends —
-    // it hands touch-action back (.term-host.reading) and these handlers stand
-    // down — because there the scroller you mean to drag is its own.
+    // A phone drag scrolls what has history to scroll. On the primary screen
+    // that is xterm's scrollback: passing the drag to an agent's mouse mode at
+    // the live bottom makes it consume the gesture without moving xterm's
+    // viewport, leaving no reliable way back through history on touch-only
+    // devices. The alternate screen has no scrollback, so there the drag goes
+    // to the application as wheel events on xterm's own wheel path, which
+    // encodes them for the app's mouse mode (or arrow keys without one).
+    // xterm 5.5 registers no touch listeners of its own (verified against the
+    // bundled lib) and .term-host sets touch-action:none on mobile while the
+    // terminal is what you see, so neither xterm nor the browser will pan:
+    // this is the only touch scrolling a phone has, in every pane. Reader mode
+    // is the exception at both ends — it hands touch-action back
+    // (.term-host.reading) and these handlers stand down — because there the
+    // scroller you mean to drag is its own.
     //
     // Convert the drag to whole rows and carry the remainder in `residual`.
     // Quantising each event to a fixed notch instead silently drops whatever
@@ -1033,6 +1038,9 @@ export default function TerminalPane({
     const first = (e: Event) => { if (handled.has(e)) return false; handled.add(e); return true; };
     let touchId: number | null = null;
     let touchY: number | null = null;
+    // Last known finger point, kept after touchend so a glide fires wheel events where the finger left.
+    let pointX = 0;
+    let pointY = 0;
     const ourTouch = (list: TouchList) => {
       if (touchId == null) return null;
       for (let i = 0; i < list.length; i++) if (list[i].identifier === touchId) return list[i];
@@ -1119,7 +1127,11 @@ export default function TerminalPane({
       if (!rows) return 0;
       residual -= rows * cell;
       userScroll();
-      term.scrollLines(rows);
+      if (touchScrollRoute(term.buffer.active.type) === 'application') {
+        claimControl();
+        const screen = host.querySelector<HTMLElement>('.xterm-screen') ?? term.element;
+        for (const init of touchWheelSteps(rows, pointX, pointY)) screen?.dispatchEvent(new WheelEvent('wheel', init));
+      } else term.scrollLines(rows);
       touchDebug.rows(rows);
       return rows;
     };
@@ -1168,6 +1180,8 @@ export default function TerminalPane({
       measureCell();             // one layout read for the whole gesture
       touchId = firstTouch.identifier;
       touchY = firstTouch.clientY;
+      pointX = firstTouch.clientX;
+      pointY = firstTouch.clientY;
       const node = e.target instanceof Element ? e.target : null;
       if (node && node !== frame) {
         touchNode = node;
@@ -1194,6 +1208,8 @@ export default function TerminalPane({
         touch = e.touches[0];
         touchId = touch.identifier;
         touchY = touch.clientY;
+        pointX = touch.clientX;
+        pointY = touch.clientY;
         measureCell();
         touchDebug.reacquire();
         if (e.cancelable) e.preventDefault();
@@ -1204,6 +1220,8 @@ export default function TerminalPane({
       if (touchY == null) { touchY = y; return; }
       const deltaY = touchY - y;
       touchY = y;
+      pointX = touch.clientX;
+      pointY = y;
       touchDebug.seen(deltaY);
       if (deltaY === 0) return;
       // Drop what has aged out, so a finger that paused and then released does
@@ -1251,7 +1269,10 @@ export default function TerminalPane({
         v *= 0.95 ** (frame / 16);      // ~5% per 60Hz frame, frame-rate neutral
         // Stop at a standstill, or the moment a requested row does not move the
         // view: that is either end of the buffer, and coasting into it drags.
-        if (Math.abs(v) < 0.02 || (rows !== 0 && term.buffer.active.viewportY === before)) {
+        // The application route never moves viewportY, so only decay stops it.
+        const atEnd = rows !== 0 && term.buffer.active.viewportY === before
+          && touchScrollRoute(term.buffer.active.type) === 'scrollback';
+        if (Math.abs(v) < 0.02 || atEnd) {
           glideFrame = 0;
           return;
         }
