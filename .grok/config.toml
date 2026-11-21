@@ -1,0 +1,18 @@
+[permission]
+defaultMode = "default"
+deny = [
+    "Bash(git push*)",
+    "Bash(rm *)",            
+    "Read(..\\**)",
+    "Read(**/.env*)",         
+]
+allow = [
+    "Read(*)",
+    "Edit(*)",
+    "Grep",
+    "Bash(git *)",
+    "Bash(npm *)",
+]
+
+[sandbox]
+profile = "workspace" 

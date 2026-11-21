@@ -21,11 +21,13 @@ for (const k of Object.keys(process.env)) {
   if (/^(CLAUDE_CONFIG_DIR|CODEX_HOME|GEMINI_CLI_HOME|OPENCODE_\w+|HERMES_HOME|OPENCLAW_HOME|FX_HOME|XDG_\w+|AM_\w+)$/.test(k)) delete process.env[k];
 }
 const FAKE_DIR = path.join(root, 'fake'); fs.mkdirSync(FAKE_DIR);
+const CLAUDE_FAKE_DIR = path.join(root, 'fake-claude'); fs.mkdirSync(CLAUDE_FAKE_DIR);
 Object.assign(process.env, {
   DATA_DIR: path.join(root, 'data'), HOME: path.join(root, 'home'), AM_LOCAL: path.join(root, 'local'),
   AM_INPUT_REQUIRED_DIR: path.join(root, 'input-required'), AM_BASHRC: '/nonexistent',
   AM_INPUT_ECHO_TIMEOUT_MS: '1500', AM_PASTE_SHOWN_TIMEOUT_MS: '800', AM_SUBMIT_CONFIRM_TIMEOUT_MS: '500',
   AM_TEST_SUBMIT_CMD: `env FAKE_DIR=${FAKE_DIR} ${process.execPath} ${path.join(HERE, 'fixtures', 'fake-submit-tui.mjs')}`,
+  AM_TEST_CLAUDE_CMD: `env FAKE_DIR=${CLAUDE_FAKE_DIR} ${process.execPath} ${path.join(HERE, 'fixtures', 'fake-claude-tui.mjs')}`,
 });
 for (const d of [process.env.DATA_DIR, process.env.HOME, process.env.AM_LOCAL]) fs.mkdirSync(d, { recursive: true });
 const config = await import('../src/config.js');
@@ -164,5 +166,26 @@ test('a pty write that throws marks nothing as typed, on the plain path and on t
   const opencode = await fails(runner.sendInput(t.id, 'nor this one', { confirmEcho: true }));
   assert.equal(opencode.message, 'write EIO');
   assert.equal(opencode.typed, undefined);
+  runner.stop(t.id);
+});
+
+test('Claude\'s agents view: refused before the paste is not typed; opened after it is typed', async () => {
+  const claudeMode = (m) => fs.writeFileSync(path.join(CLAUDE_FAKE_DIR, 'mode'), JSON.stringify(m));
+  claudeMode({ view: 'agents' });
+  const s = make('test-claude');
+  runner.ensureRunning(s);
+  assert.ok(await painted(s.id, 'describe a task for a new session'), 'the agents view never painted');
+  const before = await fails(runner.sendInput(s.id, 'a delegation\nresult\nof\nfour lines'));
+  assert.equal(before.code, 'input-pane-view');
+  assert.equal(before.typed, undefined, 'nothing was typed, so a retry is safe');
+  runner.stop(s.id);
+
+  claudeMode({ view: 'main', viewOnPaste: 'agents' });
+  const t = make('test-claude');
+  runner.ensureRunning(t);
+  assert.ok(await painted(t.id, 'Try "'), 'the session composer never painted');
+  const after = await fails(runner.sendInput(t.id, 'a delegation\nresult\nof\nfour lines'));
+  assert.equal(after.code, 'input-pane-view');
+  assert.equal(after.typed, true, 'the paste went to the terminal: never send it again');
   runner.stop(t.id);
 });

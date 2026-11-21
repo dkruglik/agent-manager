@@ -257,3 +257,32 @@ test('fx: never takes a flag', () => {
   const s = make('fx', { model: 'm', effort: 'high' });
   assert.deepEqual(launch(runner.commandFor(s)).calls, [['fx']]);
 });
+
+test('claude: Settings permissions reach every launch as one quoted --settings', () => {
+  const file = path.join(process.env.DATA_DIR, 'am-config.json');
+  const rules = { allow: ["Bash(echo 'hi')"], deny: ['Read(/etc/**)'], blockReadsOutsideWorkingDirectories: true };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ agentPermissions: { claude: rules, cursor: { deny: ['Shell(rm)'] } } }));
+  try {
+    const want = { permissions: { ...rules } };
+    const fresh = make('claude', {});
+    let r = launch(runner.commandFor(fresh));
+    assert.equal(r.calls.length, 1);
+    const i = r.calls[0].indexOf('--settings');
+    assert.ok(i > 0, `no --settings in ${r.calls[0]}`);
+    assert.deepEqual(JSON.parse(r.calls[0][i + 1]), want, 'the JSON arrives whole as one argument');
+
+    // A file that cannot be read keeps the rules read last time.
+    fs.writeFileSync(file, '{ not json');
+    r = launch(runner.commandFor(make('claude', {})));
+    assert.deepEqual(JSON.parse(r.calls[0][r.calls[0].indexOf('--settings') + 1]), want);
+
+    // No rules, no flag; and other CLIs never get one.
+    fs.writeFileSync(file, JSON.stringify({}));
+    assert.equal(launch(runner.commandFor(make('claude', {}))).calls[0].includes('--settings'), false);
+    fs.writeFileSync(file, JSON.stringify({ agentPermissions: { claude: rules } }));
+    assert.equal(launch(runner.commandFor(make('gemini', {}))).calls[0].includes('--settings'), false);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});

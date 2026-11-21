@@ -2084,7 +2084,17 @@ function applyCursorPermissionsFromConfig(perms) {
   }
   return cursorPermissionsStatus;
 }
-try { applyCursorPermissionsFromConfig(loadAmConfig().agentPermissions); } catch (e) { console.error('[permissions cursor]', e && e.message); }
+try {
+  // An unreadable am-config.json reads as "no rules"; applying that would delete
+  // the deny rules this app wrote into Cursor's file. Leave the file alone.
+  const stored = readSettingsFile(AM_CONFIG_FILE);
+  if (stored.unreadable) {
+    cursorPermissionsStatus = { ok: false, error: `am-config.json could not be read, Cursor rules left as they are — ${stored.unreadable}` };
+    console.error('[permissions cursor]', cursorPermissionsStatus.error);
+  } else {
+    applyCursorPermissionsFromConfig(normalizeAmConfig(stored.value || {}).agentPermissions);
+  }
+} catch (e) { console.error('[permissions cursor]', e && e.message); }
 // The read carries what a writer needs to replace it safely: the revision of the
 // bytes on disk, and — when they cannot be read at all — the reason, so the panel
 // can say why a save will be refused instead of quietly showing defaults over a
@@ -2508,7 +2518,12 @@ Codex parent receives it in that thread. A Claude parent receives it typed once
 into its session when that session is waiting, idle, or stopped. Delivery still
 happens after the parent's current turn has ended or AM has restarted. A crash
 while typing the Claude callback is \`notification-uncertain\` and is not pasted
-again. It does **not** use \`/api/notify\` or send a phone/device push. The child should
+again. While the Claude pane shows its agents view or detailed transcript view,
+nothing is typed (\`input-pane-view\` before the first byte) and the callback
+waits for the next try; the agents view's own composer would start a new
+session with it. If the view opens after the paste, AM presses no Enter and the
+callback is \`notification-uncertain\`, like any failure after typing began.
+It does **not** use \`/api/notify\` or send a phone/device push. The child should
 answer normally in its own conversation, without messaging the parent back.
 
 Cursor completion is the child's transcript line \`{"type":"turn_ended"}\`
@@ -2522,13 +2537,19 @@ blocked and a stopped process with no \`turn_ended\` is failed. The matched
 exchange has to appear in the transcript's last 4 MiB. A Cursor session with
 no transcript file yet cannot be subscribed.
 
-Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivered\` describes
-the callback; inspect \`outcome\` separately: completed, blocked, failed or
-uncertain. Completion is a correlated native final, not proof the deliverable is
-correct: validate it. Native input, binding or permission ambiguity fails closed.
-An active parent waits until available. An archived/deleted/remapped parent cannot
-receive the callback. A result may expire; inspect the status rather than assuming
-success. Unsupported parent/child types are refused; do not promise notification.
+Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivery\` is
+the callback: \`delivery.state\` (pending, delivered, uncertain or not-delivered),
+\`reason\`, \`attempts\` and \`lastAttemptAt\`. Once the outcome is known and the
+callback has not landed, \`reason\` is the delivery's (for example
+\`delegation-notify-uncertain\`); the child's own reason is always
+\`outcomeReason\`. The job's \`state\` is its lifecycle (watching, notifying,
+delivered, notification-uncertain, ...). Inspect \`outcome\` separately:
+completed, blocked, failed or uncertain. Completion is a correlated native final,
+not proof the deliverable is correct: validate it. Native input, binding or
+permission ambiguity fails closed. An active parent waits until available. An
+archived/deleted/remapped parent cannot receive the callback. A result may expire;
+inspect the status rather than assuming success. Unsupported parent/child types
+are refused; do not promise notification.
 
 A timeout is not permission to send again with a new UUID. Query the saved ID and,
 if necessary, retry the exact same request with the same UUID. Never resend work
