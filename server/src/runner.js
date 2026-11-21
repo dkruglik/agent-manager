@@ -3381,6 +3381,9 @@ export function stop(id) {
     'This task runs on the shared server. Close the terminal view or use Codex to interrupt the current turn.');
   const host = hosts.get(id);
   if (!host) return;
+  // Last chance to read which chat cursor-agent holds open: a /clear since the
+  // last watcher beat would otherwise make the next launch --resume the old one.
+  if (stopTarget?.cli === 'cursor') refreshCursorPin(id);
   stopping.add(id);
   try { host.pty.kill(); } catch {}
 }
@@ -3390,6 +3393,8 @@ export function stop(id) {
  * shutdown should not leave orphaned PTYs behind holding the workspace.
  */
 export async function stopAll(timeoutMs = 1000) {
+  // Same as stop(): pin each Cursor pane to the chat it holds before it exits.
+  for (const s of list()) if (s.cli === 'cursor' && hosts.has(s.id)) refreshCursorPin(s.id);
   const active = [...hosts.values()];
   for (const host of active) {
     try { host.pty.kill(); } catch {}

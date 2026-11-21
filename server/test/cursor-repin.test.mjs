@@ -83,3 +83,12 @@ test('a stopped or non-cursor session returns its pin and does not throw', () =>
   assert.equal(runner.refreshCursorPin(other.id), other.sessionUuid);
   assert.equal(runner.refreshCursorPin('no-such-session'), undefined);
 });
+
+test('stopping a pane right after a /clear keeps the new chat for the next --resume', async () => {
+  const s = await start();
+  const next = randomUUID();
+  await switchTo(s, next);
+  // No refresh and no watcher beat yet (the first comes 3 s after launch).
+  runner.stop(s.id);
+  assert.equal(sessions.get(s.id).sessionUuid, next);
+});
