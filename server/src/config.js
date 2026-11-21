@@ -294,7 +294,13 @@ const CODEX_CONFIRM = { pasted: /\[PastedContent\d+chars\]/, busy: /esc to inter
 // Expanded by the launching shell, so it follows the key present at launch.
 const AGY_KEY_PROVIDER = `\${GEMINI_API_KEY:+--settings '{"modelProvider":"gemini"}'}`;
 export const agyCommand = (tail = '') => `agy ${AGY_KEY_PROVIDER}${tail ? ` ${tail}` : ''}`;
-const CLAUDE_CONFIRM = { pasted: /\[Pastedtext#\d+/, busy: /esc to interrupt/ };
+// `views`: full-screen views where the session's own composer is not the one
+// on screen, matched per row below the screen's lowest rule (runner.js
+// paneView). Captured from Claude Code 2.1.325 (test/fixtures/claude-screens.json):
+// the detailed transcript view (ctrl+o) drops a paste, and the agents view
+// (left arrow twice) takes it into a composer whose Enter starts a new session.
+const CLAUDE_CONFIRM = { pasted: /\[Pastedtext#\d+/, busy: /esc to interrupt/,
+  views: { 'transcript-view': /^\s*Showing detailed transcript\b/, 'agents-view': /\benter to (?:create|return)\b/ } };
 
 const GEMINI_DEPRECATED = 'Gemini CLI is deprecated: Google replaced it with Antigravity CLI. '
   + 'This session still works; start new ones with Antigravity.';
@@ -458,6 +464,11 @@ export const CLIS = [
   // Test-only primary-screen repaint fixture. Absent from every normal runtime.
   ...(process.env.AM_TEST_REPAINT_CMD
     ? [{ id: 'test-repaint', label: 'Repaint fixture', bin: 'bash', color: '#8aa0ad', run: () => process.env.AM_TEST_REPAINT_CMD, cont: null, resizeMode: 'repaint', promptDetector: true }]
+    : []),
+  // A pane drawing Claude Code's captured screens, read like Claude (claude-pane-view test).
+  ...(process.env.AM_TEST_CLAUDE_CMD
+    ? [{ id: 'test-claude', label: 'Claude screen fixture', bin: 'node', color: '#8aa0ad', run: () => process.env.AM_TEST_CLAUDE_CMD, cont: null,
+      confirmSubmit: CLAUDE_CONFIRM }]
     : []),
   // A fake TUI for the submit-confirmation tests, read like Codex.
   ...(process.env.AM_TEST_SUBMIT_CMD

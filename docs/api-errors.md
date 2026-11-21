@@ -28,7 +28,7 @@ stack, upstream response or new secret-bearing diagnostic is logged here.
 | 403 | `forbidden`, `no-access`, `no-hf-token`, `backup-unavailable` | Expected access/capability refusal |
 | 404 | `not-found`, `api-not-found` | Missing item versus nonexistent API route |
 | 404 | `no-trace`, `unsupported-harness`, `trace-not-user-conversation` | Expected Reader availability, not a failed fetch substituted with empty content |
-| 409 | `conflict`, `not-archived`, `input-not-ready`, `invalid-workspace`, `remote-agent`, `cron-unavailable`, `backup-running`, `no-transcript` | Action cannot run in the current state; not permission to replay it |
+| 409 | `conflict`, `not-archived`, `input-not-ready`, `input-pane-view`, `invalid-workspace`, `remote-agent`, `cron-unavailable`, `backup-running`, `no-transcript` | Action cannot run in the current state; not permission to replay it |
 | 409 | `messenger-offline` | A messenger action needs a connected adapter; reconnecting is the operator's step, not a retry |
 | 409 | `file-changed` | Existing `mtime` preserved; browser also retains `tag`/`currentTag` when supplied by file-save endpoints |
 | 409 | `redaction-blocked` | Existing `hits` rule/count map preserved |

@@ -1,0 +1,948 @@
+{
+ "_about": "Claude Code 2.1.325 screens (120x32), raw PTY output fed through libghostty-vt like runner.js, captured with no model call. Paths scrubbed to /data/workspaces/claude-fixture; an unrelated session row in the agents view replaced. dialog = workspace trust dialog; empty/typed = main composer; placeholder = a 3-newline bracketed paste ([Pasted text #1 +3 lines]); transcript = ctrl+o detailed transcript view (a paste here is dropped); agents = agents view (left arrow twice), whose composer starts a NEW session; agentsPlaceholder = the same paste taken by that composer (footer: enter to create).",
+ "dialog": {
+  "cursorRow": 13,
+  "cursorCol": 1,
+  "isAltScreen": false,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 2,
+    "text": " Accessing workspace:"
+   },
+   {
+    "row": 3,
+    "text": ""
+   },
+   {
+    "row": 4,
+    "text": " /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source"
+   },
+   {
+    "row": 7,
+    "text": " project, or work from your team). If not, take a moment to review what's in this folder first."
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": " Claude Code'll be able to read, edit, and execute files here."
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": " Security guide"
+   },
+   {
+    "row": 12,
+    "text": ""
+   },
+   {
+    "row": 13,
+    "text": " ❯ No, exit"
+   },
+   {
+    "row": 14,
+    "text": "   Yes, I trust this folder"
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": " Enter to confirm · Esc to cancel"
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": ""
+   },
+   {
+    "row": 29,
+    "text": ""
+   },
+   {
+    "row": 30,
+    "text": ""
+   },
+   {
+    "row": 31,
+    "text": ""
+   }
+  ]
+ },
+ "empty": {
+  "cursorRow": 28,
+  "cursorCol": 2,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  Opus 5.5 · Claude    "
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": ""
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": ""
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": ""
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": "                                                                                                    ◐ medium · /effort"
+   },
+   {
+    "row": 27,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 28,
+    "text": "❯ Try \"fix typecheck errors\""
+   },
+   {
+    "row": 29,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 30,
+    "text": "  Opus 5.5"
+   },
+   {
+    "row": 31,
+    "text": "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+   }
+  ]
+ },
+ "typed": {
+  "cursorRow": 28,
+  "cursorCol": 20,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  Opus 5.5 · Claude    "
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": ""
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": ""
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": ""
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": "                                                                                                    ◐ medium · /effort"
+   },
+   {
+    "row": 27,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 28,
+    "text": "❯ half typed thought"
+   },
+   {
+    "row": 29,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 30,
+    "text": "  Opus 5.5"
+   },
+   {
+    "row": 31,
+    "text": "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+   }
+  ]
+ },
+ "placeholder": {
+  "cursorRow": 28,
+  "cursorCol": 27,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  Opus 5.5 · Claude    "
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": ""
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": ""
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": ""
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": "                                                                                          Ctrl+Y to paste deleted text"
+   },
+   {
+    "row": 27,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 28,
+    "text": "❯ [Pasted text #1 +3 lines]"
+   },
+   {
+    "row": 29,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 30,
+    "text": "  Opus 5.5"
+   },
+   {
+    "row": 31,
+    "text": "  paste again to expand"
+   }
+  ]
+ },
+ "transcript": {
+  "cursorRow": 31,
+  "cursorCol": 0,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  Opus 5.5 · Claude    "
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": ""
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": ""
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": ""
+   },
+   {
+    "row": 9,
+    "text": ""
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": ""
+   },
+   {
+    "row": 12,
+    "text": ""
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": ""
+   },
+   {
+    "row": 29,
+    "text": ""
+   },
+   {
+    "row": 30,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 31,
+    "text": "  Showing detailed transcript · ctrl+o to toggle · ↑↓ scroll · v to open in vi · ? for shortcuts                verbose"
+   }
+  ]
+ },
+ "agents": {
+  "cursorRow": 29,
+  "cursorCol": 2,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  New sessions: Opus 5.5 · medium effort"
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": "           1 awaiting input · 0 working · 1 completed"
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": "Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c twice quits"
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": "Needs input"
+   },
+   {
+    "row": 9,
+    "text": " ✻ current session               claude-fi                                                                            0s"
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": "Completed"
+   },
+   {
+    "row": 12,
+    "text": " ∙ Earlier task                  Finished.                                                                            1m"
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 29,
+    "text": "❯ describe a task for a new session"
+   },
+   {
+    "row": 30,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 31,
+    "text": "  ⏵⏵ bypass permissions · enter to return · space to reply · ctrl+x to remove · ? for shortcuts"
+   }
+  ]
+ },
+ "agentsPlaceholder": {
+  "cursorRow": 29,
+  "cursorCol": 27,
+  "isAltScreen": true,
+  "visibleLines": [
+   {
+    "row": 0,
+    "text": ""
+   },
+   {
+    "row": 1,
+    "text": " ▐▛███▛█   Claude Code v2.1.325"
+   },
+   {
+    "row": 2,
+    "text": "▝▜██████▀  New sessions: Opus 5.5 · medium effort"
+   },
+   {
+    "row": 3,
+    "text": " ▝▝   ▝▝   /data/workspaces/claude-fixture"
+   },
+   {
+    "row": 4,
+    "text": "           1 awaiting input · 0 working · 1 completed"
+   },
+   {
+    "row": 5,
+    "text": ""
+   },
+   {
+    "row": 6,
+    "text": "Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c twice quits"
+   },
+   {
+    "row": 7,
+    "text": ""
+   },
+   {
+    "row": 8,
+    "text": "Needs input"
+   },
+   {
+    "row": 9,
+    "text": " ✻ current session               claude-fi                                                                            1s"
+   },
+   {
+    "row": 10,
+    "text": ""
+   },
+   {
+    "row": 11,
+    "text": "Completed"
+   },
+   {
+    "row": 12,
+    "text": " ∙ Earlier task                  Finished.                                                                            1m"
+   },
+   {
+    "row": 13,
+    "text": ""
+   },
+   {
+    "row": 14,
+    "text": ""
+   },
+   {
+    "row": 15,
+    "text": ""
+   },
+   {
+    "row": 16,
+    "text": ""
+   },
+   {
+    "row": 17,
+    "text": ""
+   },
+   {
+    "row": 18,
+    "text": ""
+   },
+   {
+    "row": 19,
+    "text": ""
+   },
+   {
+    "row": 20,
+    "text": ""
+   },
+   {
+    "row": 21,
+    "text": ""
+   },
+   {
+    "row": 22,
+    "text": ""
+   },
+   {
+    "row": 23,
+    "text": ""
+   },
+   {
+    "row": 24,
+    "text": ""
+   },
+   {
+    "row": 25,
+    "text": ""
+   },
+   {
+    "row": 26,
+    "text": ""
+   },
+   {
+    "row": 27,
+    "text": ""
+   },
+   {
+    "row": 28,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 29,
+    "text": "❯ [Pasted text #2 +3 lines]"
+   },
+   {
+    "row": 30,
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+   },
+   {
+    "row": 31,
+    "text": "  ⏵⏵ bypass permissions · enter to create · paste again to expand · esc×2 to clear"
+   }
+  ]
+ }
+}

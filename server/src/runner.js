@@ -2723,6 +2723,56 @@ export function promptInComposer(snapshot, confirm, text) {
     || (shape.scrolled && body.length >= Math.min(24, flat.length) && flat.endsWith(body)) };
 }
 
+/**
+ * The CLI's full-screen view on this pane, or null for its ordinary screen:
+ * a name from `confirm.views` (config.js), e.g. 'agents-view'. Read only from
+ * the rows below the screen's lowest rule — a footer, which in the ordinary
+ * screen sits under the composer — so the same words in the conversation
+ * above can never name a view.
+ */
+export function paneView(snapshot, confirm) {
+  const views = confirm?.views;
+  const lines = snapshot?.visibleLines || [];
+  if (!views) return null;
+  let last = -1;
+  for (let i = lines.length - 1; i >= 0 && last < 0; i--) if (isRule(lines[i].text)) last = i;
+  if (last < 0) return null;
+  const footer = lines.slice(last + 1).map((l) => l.text);
+  for (const [name, row] of Object.entries(views)) if (footer.some((t) => row.test(t))) return name;
+  return null;
+}
+
+/** `[Pasted text #N +L lines]` (whitespace optional) as `{ n, lines }`, else null. */
+export function pastePlaceholder(text) {
+  const m = /^\[Pastedtext#(\d+)(?:\+(\d+)lines)?\]$/.exec(String(text || '').replace(/\s+/g, ''));
+  return m ? { n: Number(m[1]), lines: m[2] ? Number(m[2]) : 0 } : null;
+}
+
+/**
+ * May a prompt be pasted into this pane now? One screen, no pty:
+ *  - a name from `confirm.views` — the CLI's own composer is not on screen;
+ *  - 'not-idle' — the CLI is working, or no composer can be found (an
+ *    unknown view is never taken for a ready one);
+ *  - 'dialog' — a menu or a dialog's key hints instead of a composer;
+ *  - 'placeholder-shown' — the composer holds one collapsed paste, nothing else;
+ *  - 'line-busy' — the composer holds anything else;
+ *  - 'ready' — the session's composer, empty.
+ */
+export function readiness(snapshot, confirm) {
+  if (!snapshot) return 'not-idle';
+  const view = paneView(snapshot, confirm);
+  if (view) return view;
+  const lines = snapshot.visibleLines || [];
+  if (confirm?.busy?.test(lines.map((l) => l.text).join('\n'))) return 'not-idle';
+  const shape = composerShape(snapshot);
+  if (!shape?.located || !shape.cursorInside) {
+    return lines.some((l) => MENU_ROW.test(l.text) || DIALOG_HINT.test(l.text)) ? 'dialog' : 'not-idle';
+  }
+  const body = composerBody(shape).replace(/\s+/g, '');
+  if (!body) return 'ready';
+  return pastePlaceholder(body) ? 'placeholder-shown' : 'line-busy';
+}
+
 // ONE prompt marker, not every glyph that could be one: stripping greedily
 // turned a typed `❯ >` into nothing at all and let the send through.
 const ONE_MARKER = /^[\s\u2502\u2503|]*[>\u276f\u203a\u27e9\u25b6][^\S\r\n]?/;
@@ -2758,6 +2808,15 @@ async function settled(host, quietMs = 250, maxMs = 3000) {
   }
 }
 
+const screenNow = (host) => {
+  try { return host.vt.snapshot({ includeCells: false }); } catch { return null; }
+};
+// What a view does with input, for a refusal that says why (config.js views).
+const VIEW_TEXT = {
+  'agents-view': 'Claude\'s agents view, where Enter starts a new session with what is typed',
+  'transcript-view': 'Claude\'s detailed transcript view, which drops what is typed',
+};
+const viewText = (view) => VIEW_TEXT[view] || `the CLI's ${view}`;
 const shapeNow = (host) => {
   try { return composerShape(host.vt.snapshot({ includeCells: false })); } catch { return null; }
 };
@@ -2952,9 +3011,16 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
     throw new ApiError(409, 'input-line-busy',
       `this session's terminal has unsent text on its input line (${JSON.stringify(shown)}), and sending now would submit both as one message. Send or clear that line in the terminal, then try again.`);
   }
+  // A view whose composer is not the session's (Claude's agents list) would
+  // take the prompt as something else; one that drops input would lose it.
+  const confirm = cliById(host.cli)?.confirmSubmit;
+  const view = confirm?.views ? paneView(screenNow(host), confirm) : null;
+  if (view) {
+    throw new ApiError(409, 'input-pane-view',
+      `this session's terminal shows ${viewText(view)}, so nothing was typed. Go back to the conversation in the terminal (Esc), then try again.`);
+  }
   host.inputRequired.observeInput();
   host.inputSeen = true;
-  const confirm = cliById(host.cli)?.confirmSubmit;
   // OpenCode can paint a stable first screen before its input handler works
   // (below). Until one send to THIS launch has been echoed back, every send
   // checks — whoever started the pane. Deriving it from "did this call start
@@ -3023,15 +3089,20 @@ async function typeAndSubmitSteps(host, id, text, { confirmEcho = false } = {}, 
 async function submitConfirmed(host, id, confirm, text) {
   const look = () => {
     let reading = { body: null, holds: false }, screen = '';
-    try { reading = promptInComposer(host.vt.snapshot({ includeCells: false }), confirm, text); } catch {}
+    const snap = screenNow(host);
+    try { if (snap) reading = promptInComposer(snap, confirm, text); } catch {}
     try { screen = host.vt.getVisibleText(); } catch {}
-    const { body, holds } = reading;
+    const { body } = reading;
+    // In a view whose composer is not the session's, a placeholder there is
+    // not the session holding the prompt, and an empty one is no submit.
+    const view = paneView(snap, confirm);
+    const holds = reading.holds && !view;
     const busy = confirm.busy.test(screen);
     // The notice in its own place, where one is known: a prompt that merely
     // mentions it must not hold the Enter off.
     const starting = confirm.notice ? screen.split('\n').some((row) => confirm.notice.test(row))
       : !!confirm.starting?.test(screen);
-    return { holds, submitted: !holds && (body === '' || busy), starting };
+    return { holds, view, submitted: !view && !holds && (body === '' || busy), starting };
   };
   const until = async (test, ms) => {
     const deadline = Date.now() + ms;
@@ -3048,13 +3119,18 @@ async function submitConfirmed(host, id, confirm, text) {
     lineEmpty.set(id, { alt: false, located: false, typed: '\u0000unsent', full: '\u0000unsent' });
     return new ApiError(409, code, message);
   };
-  if (!await until((v) => v.holds, PASTE_SHOWN_TIMEOUT_MS)) {
+  const inView = (view) => unsent('input-pane-view',
+    `the prompt was typed into this session's terminal, but it now shows ${viewText(view)}, so AM did not press Enter and cannot say it was delivered. Check the terminal: clear what is on that input line.`);
+  if (!await until((v) => v.holds || v.view, PASTE_SHOWN_TIMEOUT_MS)) {
     throw unsent('input-not-confirmed',
       'the prompt was typed into this session\'s terminal, but it never showed in the composer, so AM did not press Enter and cannot say it was delivered. Check the terminal: send or clear what is on its input line.');
   }
   if (confirm.starting) await until((v) => !v.starting, STARTUP_WAIT_MS);
   // The Enter still goes as its own keypress, apart from the paste burst.
   await new Promise((r) => setTimeout(r, 300));
+  // Checked last, right before the Enter: the operator can switch views at any time.
+  const now = look();
+  if (now.view) throw inView(now.view);
   const before = stillScreen(host, confirm);
   host.pty.write('\r');
   let ok = await until((v) => v.submitted, SUBMIT_CONFIRM_TIMEOUT_MS);

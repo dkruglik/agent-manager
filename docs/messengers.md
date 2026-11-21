@@ -102,7 +102,9 @@ never message text. The rules are in `server/src/delivery-outcome.js`.
   `store.update` that writes `pendingPrompt` committed.
 - **pending** (try again later): Codex answered `codex-task-busy` or
   `codex-send-busy`; a pane threw an error that carries no `typed` flag
-  (`input-line-busy`, or `input-not-ready` before the first byte); the privacy
+  (`input-line-busy`, or `input-not-ready` or `input-pane-view` before the
+  first byte; `input-pane-view` is a Claude pane showing its agents or detailed
+  transcript view, see `paneView` in `server/src/runner.js`); the privacy
   lock aborted the send; the session has a `pendingPrompt` the web composer
   stored and has not started (it is never overwritten or extended, and the
   prompt waits until the session has started); a remote has no name.
