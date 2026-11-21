@@ -147,7 +147,7 @@ const requiredFails = runInstaller();
 assert.equal(requiredFails.status, 1, 'a CLI the manager needs still stops the run');
 assert.match(requiredFails.stderr, /claude did not install/);
 
-// The committed file is comments only, so both profiles keep today's set.
+// Default-mode runs use an empty allowlist, which is the historical set.
 const localDefault = plan('local');
 assert.equal(localDefault.status, 0, localDefault.stderr);
 assert.deepEqual(planOf(localDefault), {
@@ -155,11 +155,10 @@ assert.deepEqual(planOf(localDefault), {
   opencode: 'install optional', openclaw: 'install optional',
   cursor: 'skip optional', hermes: 'skip optional', fx: 'skip optional', antigravity: 'skip optional',
 });
-// The committed file is what a real checkout installs: claude and cursor.
+// The committed file is comments only, so a checkout keeps the historical local set.
 const committed = plan('local', { AM_INSTALL_CLIS_FILE: path.join(scripts, '..', 'am-install-clis') });
 assert.equal(committed.status, 0, committed.stderr);
-assert.equal(planOf(committed).cursor, 'install optional');
-assert.equal(planOf(committed).codex, 'skip required');
+assert.deepEqual(planOf(committed), planOf(localDefault));
 const imageDefault = plan('docker');
 assert.equal(imageDefault.status, 0, imageDefault.stderr);
 for (const id of Object.keys(planOf(localDefault))) {
