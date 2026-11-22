@@ -16,3 +16,14 @@ export function touchWheelSteps(rows: number, clientX: number, clientY: number):
     deltaX: 0, deltaY, deltaMode: 1, clientX, clientY, bubbles: true, cancelable: true,
   }));
 }
+
+// Enough for any real scroll-back, small enough that one press of the bottom
+// key cannot flood the PTY.
+export const MAX_BOTTOM_STEPS = 2000;
+
+// How many wheel steps the application is above its bottom after `rows` more
+// (negative = up). Overshooting is harmless because the application stops at
+// its own bottom, so this never goes below 0.
+export function stepsAboveBottom(above: number, rows: number): number {
+  return Math.min(MAX_BOTTOM_STEPS, Math.max(0, above - Math.trunc(rows)));
+}
