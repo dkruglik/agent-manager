@@ -515,7 +515,8 @@ try {
     identity:id=>JSON.stringify(codexInput.agentSource(id)),
     state:delegationState,
     locate:chat=>cursorTranscriptPath(chat),
-    cursorChat:id=>store.get(id)?.sessionUuid ?? null,
+    // Live: re-read the chat the pane holds open rather than wait for the 20 s watcher.
+    cursorChat:id=>refreshCursorPin(id) ?? null,
     assertWritable:()=>{if(isLocked())throw lockedError();},
     prepare:async(parentId,targetId,payload)=>{
       const parent=store.get(parentId),target=store.get(targetId);
