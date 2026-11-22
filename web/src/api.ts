@@ -151,6 +151,14 @@ export interface Info {
   demoMode?: boolean;
   /** Only on a dev-preview Space (AM_DEV_PREVIEW=1); absent everywhere else. */
   devPreview?: DevPreviewSummary;
+  /** The commit this build came from; null when unknown or while locked. */
+  build?: BuildInfo | null;
+}
+/** server/src/build-info.js: a deploy stamp, the checkout's git HEAD, or HF's Space commit. */
+export interface BuildInfo {
+  sha: string;
+  ref: string | null;
+  source: 'stamp' | 'git' | 'space-commit';
 }
 // The lock status reads tell HF's edge refusing an unsigned request (the Space
 // was made private under an open tab) from AM's own answers: lib/edgeRefusal.ts.

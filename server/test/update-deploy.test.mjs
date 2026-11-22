@@ -17,11 +17,15 @@ import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage, deployMessage, UPSTREAM_MARKER } from '../src/update-deploy.js';
+import { BUILD_INFO_FILE } from '../src/build-info.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-update-deploy-'));
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 'am', GIT_AUTHOR_EMAIL: 'am@test', GIT_COMMITTER_NAME: 'am', GIT_COMMITTER_EMAIL: 'am@test' };
 const sh = (args, cwd) => execFileSync('git', args, { cwd, env: ENV, encoding: 'utf8' });
+// A tree's files apart from the build stamp the deploy adds.
+const filesSansStamp = (repo, ref) => sh(['ls-tree', '-r', ref], repo).split('\n')
+  .filter((line) => line && !line.endsWith(`\t${BUILD_INFO_FILE}`)).join('\n');
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 const POINTER = 'version https://git-lfs.github.com/spec/v1\noid sha256:'
   + '0'.repeat(64) + '\nsize 16\n';
@@ -117,8 +121,9 @@ test('deploying the tree puts upstream\'s files in place as one commit', async (
   // in the pushed range for the hook to object to.
   assert.equal(sh(['rev-list', '--count', 'main'], w.own).trim(), '2');
   assert.equal(sh(['rev-parse', 'main^'], w.own).trim(), w.ownSha);
-  assert.equal(sh(['rev-parse', 'main^{tree}'], w.own).trim(),
-    sh(['rev-parse', 'HEAD^{tree}'], w.upstream).trim(), 'the tree is upstream\'s, not a copy of it');
+  assert.equal(filesSansStamp(w.own, 'main'), filesSansStamp(w.upstream, 'HEAD'), 'the files are upstream\'s, nothing else changed');
+  assert.deepEqual(JSON.parse(w.ownFile(BUILD_INFO_FILE)), { sha: w.upstreamSha, ref: 'main' },
+    'plus the stamp naming the upstream commit, so the running app can say what it is');
   assert.ok(!w.calls.some((c) => c.startsWith('push') && c.includes('--force')), 'and no --force was needed');
 });
 
@@ -220,6 +225,8 @@ test('an upstream commit with an identical tree is still recorded as deployed', 
   const again = await w.deploy({ record: (upstream, ownSha) => records.push({ upstream, ownSha }) });
   assert.equal(again.upToDate, true, 'there is nothing to push, and nothing is pushed');
   assert.equal(sh(['rev-list', '--count', 'main'], w.own).trim(), '2', 'no commit just to move a marker');
+  assert.equal(JSON.parse(w.ownFile(BUILD_INFO_FILE)).sha, w.upstreamSha,
+    'nor just to move the stamp: it names a commit with exactly these files');
 
   // …and the deploy says so, so the next check stops offering it. Without
   // this the Space is permanently "behind" something it already runs.
@@ -332,7 +339,7 @@ test('both sides are fetched shallowly into a fresh repo, and the push is a fast
   assert.equal(sh(['rev-parse', 'main^'], w.own).trim(), before);
   assert.equal(sh(['merge-base', '--is-ancestor', before, 'main'], w.own), '');
   assert.equal(sh(['rev-list', '--count', 'main'], w.own).trim(), '5');
-  assert.equal(sh(['rev-parse', 'main^{tree}'], w.own).trim(), sh(['rev-parse', 'HEAD^{tree}'], w.upstream).trim());
+  assert.equal(filesSansStamp(w.own, 'main'), filesSansStamp(w.upstream, 'HEAD'));
   assert.equal(w.ownFile('docs/images/agent-manager.png'), POINTER);
 
   // And the next run, also shallow, is the same-tree no-op.

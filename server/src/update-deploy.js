@@ -10,12 +10,18 @@
 //
 // Pushing one commit whose tree IS upstream's tree, parented on what the Space
 // already has, puts exactly the same files in place with nothing historical in
-// the range. It is also a fast-forward, so `--force` is no longer needed.
+// the range. It is also a fast-forward, so `--force` is no longer needed. The
+// one file added is server/build-info.json, naming the upstream commit, because
+// the image is built without .git and Settings shows what it was built from.
 //
 // LFS objects are a separate transfer and git only sends them from a pre-push
 // hook, which a bare `git push` of a ref we built ourselves does not run. So
 // they go first and explicitly: a tree full of pointers whose objects never
 // arrived is a Space that builds against unreadable files.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { BUILD_INFO_FILE, buildStamp } from './build-info.js';
 
 /** Recorded in the deploy commit so `check` can tell what is deployed. */
 export const UPSTREAM_MARKER = 'Upstream-Commit:';
@@ -28,7 +34,8 @@ export function upstreamShaFromMessage(message) {
 
 export function deployMessage(sha, branch) {
   return `Deploy upstream ${branch} as one commit\n\n`
-    + `The files are upstream's tree verbatim. History is not copied, because a\n`
+    + `The files are upstream's tree verbatim, plus ${BUILD_INFO_FILE} naming\n`
+    + `the commit for the running app. History is not copied, because a\n`
     + `single plain-git binary anywhere in it makes the whole push unacceptable.\n\n`
     + `${UPSTREAM_MARKER} ${sha}\n`;
 }
@@ -77,6 +84,23 @@ export async function exclusively(state, body) {
 }
 
 const fail = (reason, detail) => ({ ok: false, reason, detail: detail ? String(detail).slice(0, 600) : undefined });
+
+// The image is built without .git, so the deployed tree carries the commit it
+// came from (build-info.js) for Settings to show. Both helpers go through the
+// work repo's own index, which nothing else uses: nothing is ever checked out.
+async function withStamp(git, dir, tree, sha, branch) {
+  const file = path.join(dir, '.git', 'am-build-info.json');
+  fs.writeFileSync(file, buildStamp(sha, branch));
+  const blob = String(await git(['hash-object', '-w', file], dir)).trim();
+  await git(['read-tree', tree], dir);
+  await git(['update-index', '--add', '--cacheinfo', `100644,${blob},${BUILD_INFO_FILE}`], dir);
+  return String(await git(['write-tree'], dir)).trim();
+}
+async function withoutStamp(git, dir, tree) {
+  await git(['read-tree', tree], dir);
+  await git(['update-index', '--force-remove', BUILD_INFO_FILE], dir);
+  return String(await git(['write-tree'], dir)).trim();
+}
 
 /**
  * @param git     (args, cwd) => Promise<string>, rejecting with a token-scrubbed
@@ -129,23 +153,30 @@ export async function deployUpstreamTree({ sourceUrl, branch = 'main', ownUrl, d
   }
 
   let upstream;
-  let tree;
+  let files;
   try {
     await git(['fetch', '--quiet', '--depth', '1', 'upstream', `+${head}:refs/remotes/upstream/${branch}`], dir);
   } catch (error) { return fail('upstream-unreachable', error.message); }
   try {
     upstream = one(await git(['rev-parse', `refs/remotes/upstream/${branch}`], dir));
-    tree = one(await git(['rev-parse', `${upstream}^{tree}`], dir));
+    files = one(await git(['rev-parse', `${upstream}^{tree}`], dir));
   } catch (error) { return fail('upstream-unreadable', error.message); }
 
+  // Up to date means the same files, whatever the stamp says: a stamp naming
+  // an older commit with an identical tree is still true about this build, and
+  // moving it would rebuild the Space for nothing (see `record` above).
   if (parent) {
     try {
-      if (one(await git(['rev-parse', `${parent}^{tree}`], dir)) === tree) {
+      if (await withoutStamp(git, dir, one(await git(['rev-parse', `${parent}^{tree}`], dir))) === files) {
         record(upstream, parent);
         return { ok: true, upToDate: true, from: parent, to: upstream };
       }
     } catch (error) { return fail('own-unreadable', error.message); }
   }
+
+  let tree;
+  try { tree = await withStamp(git, dir, files, upstream, branch); }
+  catch (error) { return fail('stamp-failed', error.message); }
 
   let commit;
   try {

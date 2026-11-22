@@ -24,6 +24,7 @@ SPACE="$OWNER/$NAME"
 BUCKET="$OWNER/$NAME-data"
 HOST="$(echo "$SPACE" | tr '/' '-').hf.space"
 SHA="$(git rev-parse --short "$BRANCH")"
+FULL_SHA="$(git rev-parse "$BRANCH")"
 REF="$(git rev-parse --abbrev-ref "$BRANCH" 2>/dev/null || echo detached)"
 
 # git hooks live on the storage bucket, which cannot hold an exec bit, so git
@@ -60,34 +61,37 @@ echo "    pushed $SHA -> $SPACE main"
 
 # 3. Name the card so dev and prod are distinguishable at a glance on the
 #    dashboard. Only on the Space — the repo's own README is left alone, so this
-#    never renames production. The Dockerfile does not COPY README.md, so this
-#    commit rebuilds nothing (all layers cached).
-python3 - "$SPACE" "$NAME" "$REF" "$SHA" <<'PY'
-import os, re, sys
-from huggingface_hub import HfApi
-space, name, ref, sha = sys.argv[1:5]
+#    never renames production. The same commit stamps server/build-info.json
+#    with the commit pushed above (server/src/build-info.js): the image is
+#    built without .git, and Settings shows this. Only the layers from
+#    `COPY server/` on rebuild.
+python3 - "$SPACE" "$NAME" "$REF" "$SHA" "$FULL_SHA" <<'PY'
+import json, os, re, sys
+from huggingface_hub import HfApi, CommitOperationAdd
+space, name, ref, sha, full_sha = sys.argv[1:6]
 api = HfApi(token=os.environ["HF_TOKEN"])
+stamp = {"sha": full_sha, **({"ref": ref} if ref != "detached" else {})}
+ops = [CommitOperationAdd(path_in_repo="server/build-info.json", path_or_fileobj=(json.dumps(stamp) + "\n").encode())]
 md = open("README.md", encoding="utf-8").read()
 fm = re.match(r"^---\n(.*?)\n---\n(.*)$", md, re.S)
-if not fm:
-    print("    !! README has no front-matter; card left as-is"); raise SystemExit(0)
-head, body = fm.group(1), fm.group(2)
-def setkey(h, k, v):
-    pat = re.compile(rf"^{k}:.*$", re.M)
-    return pat.sub(f"{k}: {v}", h) if pat.search(h) else f"{h}\n{k}: {v}"
-head = setkey(head, "title", f"{name} (dev)")
-head = setkey(head, "emoji", "🚧")
-head = setkey(head, "colorFrom", "yellow")
-# The Hub rejects a card whose short_description exceeds 60 chars, and the
-# rejection surfaces as a YAML validation error on the whole commit.
-desc = f"DEV · {ref} @ {sha} · own bucket"
-head = setkey(head, "short_description", desc[:60])
-api.upload_file(
-    path_or_fileobj=f"---\n{head}\n---\n{body}".encode(),
-    path_in_repo="README.md", repo_id=space, repo_type="space",
-    commit_message=f"dev card: {name} on {ref} @ {sha}",
-)
-print(f"    card set to '{name} (dev)' 🚧")
+if fm:
+    head, body = fm.group(1), fm.group(2)
+    def setkey(h, k, v):
+        pat = re.compile(rf"^{k}:.*$", re.M)
+        return pat.sub(f"{k}: {v}", h) if pat.search(h) else f"{h}\n{k}: {v}"
+    head = setkey(head, "title", f"{name} (dev)")
+    head = setkey(head, "emoji", "🚧")
+    head = setkey(head, "colorFrom", "yellow")
+    # The Hub rejects a card whose short_description exceeds 60 chars, and the
+    # rejection surfaces as a YAML validation error on the whole commit.
+    desc = f"DEV · {ref} @ {sha} · own bucket"
+    head = setkey(head, "short_description", desc[:60])
+    ops.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=f"---\n{head}\n---\n{body}".encode()))
+else:
+    print("    !! README has no front-matter; card left as-is")
+api.create_commit(repo_id=space, repo_type="space", operations=ops,
+                  commit_message=f"dev card + build stamp: {name} on {ref} @ {sha}")
+print(f"    build stamped {sha}" + (f", card set to '{name} (dev)' 🚧" if fm else ""))
 PY
 
 [ "$WAIT" = "1" ] || { echo "==> not waiting; watch https://huggingface.co/spaces/$SPACE"; exit 0; }

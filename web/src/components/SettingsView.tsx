@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { isPassive, isRemote, type Cli } from '../types';
 import * as api from '../api';
 import { appRootUrl } from '../lib/appUrl';
+import { buildLabel } from '../lib/buildLabel';
 import { useSaverState } from '../lib/saveQueue';
 import {
   configSaver, secretsSaver, saverFor, settingsSlot, subscribeSettings, noteServerRead,
@@ -113,7 +114,7 @@ function ReadErrorNote({ kind }: { kind: Kind }) {
 }
 
 
-interface Info { dataDir?: string; home?: string; spaceId?: string | null; spaceHost?: string | null; engine?: string; ghostty?: boolean; canRelaunch?: boolean; secrets?: string[]; bucketUnverified?: boolean; devPreview?: api.DevPreviewSummary; }
+interface Info { dataDir?: string; home?: string; spaceId?: string | null; spaceHost?: string | null; engine?: string; ghostty?: boolean; canRelaunch?: boolean; secrets?: string[]; bucketUnverified?: boolean; devPreview?: api.DevPreviewSummary; build?: api.BuildInfo | null; }
 
 function urlBase64ToUint8Array(base64: string) {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
@@ -420,6 +421,7 @@ export default function SettingsView({
 
   // App self-update: version check on open, update on confirm.
   const [upd, setUpd] = useState<api.UpdateCheck | null>(null);
+  const build = buildLabel(info?.build, info?.devPreview?.running);
   const [updState, setUpdState] = useState<{ busy?: boolean; msg?: string; confirm?: boolean }>({});
   useEffect(() => { api.checkUpdate().then(setUpd).catch(() => {}); }, []);
   const doUpdate = async () => {
@@ -1182,6 +1184,7 @@ export default function SettingsView({
               <div><span>Durable storage</span><b className="mono">{info?.dataDir || '—'}</b></div>
               <div><span>Home</span><b className="mono">{info?.home || '—'}</b></div>
               <div><span>terminal</span><b>{info?.ghostty ? 'libghostty' : 'unavailable'}</b></div>
+              <div><span>Build</span><b className="mono" title={build.title} data-testid="build-sha">{build.text}</b></div>
             </div>
 
           </div>
