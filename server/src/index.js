@@ -27,6 +27,7 @@ import { normalizeAgentPermissions, checkAgentPermissions, applyCursorPermission
 import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice } from './model-catalog.js';
 import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
+import { readBuildInfo } from './build-info.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
 import { deliverToSession, readyAfterRevive, bootRevive, commitPendingPrompt } from './delivery-outcome.js';
@@ -1704,6 +1705,10 @@ if (devPreview) {
   });
 }
 
+// The commit this build came from (build-info.js). Read once: it cannot change
+// under a running process.
+const BUILD = readBuildInfo({ appRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..') });
+
 api.get('/api/info', (_req, res) => res.json({
   dataDir: DATA_DIR,
   // Will this survive a restart? On a Space without a bucket the app asks
@@ -1742,6 +1747,9 @@ api.get('/api/info', (_req, res) => res.json({
   welcomeSeen: welcomeSeen(),
   // Demo mode: current sessions hidden from view; forces the welcome to show.
   demoMode: demo.active(),
+  // What commit this build is, for the version label in Settings. Withheld
+  // while locked: a stamp's ref can name a private branch.
+  build: isLocked() ? null : BUILD,
   // Only on a dev-preview Space: what code is running, for the header banner.
   ...(devPreview && !isLocked() ? { devPreview: devPreview.summary() } : {}),
 }));
