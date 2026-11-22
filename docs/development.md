@@ -225,8 +225,9 @@ bash scripts/deploy-dev-space.sh am-dev-2 feat/my-branch
 
 Idempotent, so re-run it to redeploy. It creates the Space **private** and gives
 it **its own bucket** (`<name>-data`) mounted at `/data`, force-pushes the branch
-as the Space's `main` (Spaces only build `main`), names the dashboard card, then
-waits for the build and checks `/api/health` answers JSON.
+as the Space's `main` (Spaces only build `main`), names the dashboard card and
+stamps the commit for Settings ([build version](build-version.md)), then waits
+for the build and checks `/api/health` answers JSON.
 
 Four things it handles that catch people out by hand:
 

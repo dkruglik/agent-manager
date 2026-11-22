@@ -154,6 +154,7 @@ saved, see [state checkpoints](docs/agent-state-checkpoints.md) and
 | Upload files and follow file links | [Uploads](docs/workspace-file-uploads.md) · [File previews](docs/file-links.md) |
 | Inspect session operations | [API log](docs/api-audit-log.md) |
 | Run the source or deploy a development Space | [Development guide](docs/development.md) |
+| See which commit this build came from | [Build version](docs/build-version.md) |
 
 Shared Codex sessions are a work in progress: a draft
 [proposal](docs/proposals/codex-shared-sessions.md) describes the intended
