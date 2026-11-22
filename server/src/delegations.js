@@ -110,6 +110,7 @@ export function traceCheckpoint(file) {
 // A file larger than this is correlated from its tail: the dispatched turn is
 // the newest one, and a match that then disappears fails closed.
 export const CURSOR_SCAN_BYTES=4*1024*1024;
+const FIND_MS=5000;
 function scanCursor(job) {
   const c=job.cursor,max=job.scanBytes||CURSOR_SCAN_BYTES;
   const fd=fs.openSync(c.file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
@@ -161,8 +162,9 @@ export function scanEvidence(job) {
 }
 
 export class Delegations {
-  constructor({dir,identity,state,prepare,dispatch,notify,assertWritable,now=Date.now,scan=scanEvidence,locate=async()=>null,cursorChat=async()=>null}) {
-    Object.assign(this,{dir,identity,state,prepare,dispatch,notify,assertWritable,now,scan,locate,cursorChat});
+  constructor({dir,identity,state,prepare,dispatch,notify,assertWritable,now=Date.now,scan=scanEvidence,locate=async()=>null,cursorChat=async()=>null,findTurn=async()=>null}) {
+    Object.assign(this,{dir,identity,state,prepare,dispatch,notify,assertWritable,now,scan,locate,cursorChat,findTurn});
+    this.lastFind=new Map();
     this.jobs=new Map();this.written=new Map();this.busy=false;this.creating=new Map();
     fs.mkdirSync(dir,{recursive:true,mode:0o700});
     for(const name of fs.readdirSync(dir).filter(n=>/^[a-f0-9-]{36}\.json$/.test(n))) {
@@ -217,6 +219,8 @@ export class Delegations {
     if(j.state==='notifying')throw fail('delegation-notifying','Delivery is in flight; cancellation cannot retract it.');
     if(!terminal.has(j.state)){j.state='cancelled';this.save(j);}return this.view(j);
   }
+  // At most one marker search per job every FIND_MS: it walks the transcripts.
+  dueFind(id){const at=this.lastFind.get(id);if(at!==undefined && this.now()-at<FIND_MS)return false;this.lastFind.set(id,this.now());return true;}
   async tick() {
     if(this.busy)return;this.busy=true;
     try {
@@ -239,6 +243,15 @@ export class Delegations {
               else continue;
             }
             if(!j.evidence.outcome)try {await this.scan(j);}catch {j.evidence.outcome='uncertain';j.evidence.reason='trace-unavailable-or-changed';}
+            // The pane may be on a chat AM cannot see (cursor-agent's fds are not
+            // readable): look for the turn's own marker elsewhere until it matches.
+            if(c && !j.evidence.outcome && !j.evidence.matched && !terminal.has(j.state) && this.dueFind(j.id)){
+              let hit=null;try{hit=await this.findTurn(j);}catch{}
+              if(hit?.file && hit.file!==c.file && !terminal.has(j.state)){
+                Object.assign(c,{file:hit.file,chat:hit.chat||c.chat});
+                try {await this.scan(j);}catch {j.evidence.outcome='uncertain';j.evidence.reason='trace-unavailable-or-changed';}
+              }
+            }
             // Scan first: a turn that ended in the old chat still counts as completed.
             if(c && !j.evidence.outcome && !terminal.has(j.state) && await moved())chatChanged();
             if(terminal.has(j.state))continue;

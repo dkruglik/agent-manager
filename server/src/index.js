@@ -28,6 +28,7 @@ import { startModelCatalog, launchOptions, refreshModelLists, checkLaunchChoice 
 import { createSkillsService, skillTargetDirs } from './skills.js';
 import { deployUpstreamTree, deployedFrom, exclusively, isBehind, upstreamShaFromMessage } from './update-deploy.js';
 import { readBuildInfo } from './build-info.js';
+import { cursorTranscriptWithMarker } from './cursor-conversation.js';
 import { cliUpdateStatus, startCliUpdate, configureCliUpdate } from './cli-update.js';
 import * as remote from './remote.js';
 import { deliverToSession, readyAfterRevive, bootRevive, commitPendingPrompt } from './delivery-outcome.js';
@@ -43,7 +44,7 @@ import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js'
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
   waitForInputReady, promptReady, hasPromptDetector, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
-  installClaudeRepinHook, installOpencodeRepinPlugin, refreshCursorPin,
+  installClaudeRepinHook, installOpencodeRepinPlugin, refreshCursorPin, adoptCursorChat,
 } from './runner.js';
 
 // Control frames ride the terminal socket behind a leading NUL pair, which real
@@ -518,6 +519,12 @@ try {
     locate:chat=>cursorTranscriptPath(chat),
     // Live: re-read the chat the pane holds open rather than wait for the 20 s watcher.
     cursorChat:id=>refreshCursorPin(id) ?? null,
+    // The pane can be on a chat its fds do not reveal (cursor-agent is non-dumpable):
+    // the delivered turn ends with its marker, so find the transcript holding it.
+    findTurn:async job=>{
+      const hit=await cursorTranscriptWithMarker({marker:`[AM delegation ${job.id}]`,since:job.createdAt-5000,exclude:job.cursor?.file||null});
+      return hit && adoptCursorChat(job.targetId,hit.chat) ? hit : null;
+    },
     assertWritable:()=>{if(isLocked())throw lockedError();},
     prepare:async(parentId,targetId,payload)=>{
       const parent=store.get(parentId),target=store.get(targetId);

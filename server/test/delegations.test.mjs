@@ -331,3 +331,33 @@ test('a Cursor job still waiting for a fresh chat transcript ends when the targe
  f.d.cursorChat=async()=>randomUUID();await f.d.tick();
  assert.equal(f.d.get(id,'parent').outcome,'uncertain');assert.equal(f.d.get(id,'parent').outcomeReason,'target-chat-changed');
 });
+test('a Cursor turn that lands in another chat is found by its marker and completes',async t=>{
+ // The pane moved to a new chat AM could not see (its /proc fds are unreadable), so
+ // the pin and the journal still name the old one, and the turn is written elsewhere.
+ const f=fixture(t),OLD=randomUUID(),NEW=randomUUID(),moved=path.join(path.dirname(f.file),'new-chat.jsonl');
+ let payload='',found=0;
+ const write=r=>fs.writeFileSync(moved,r.map(x=>JSON.stringify(x)).join('\n')+'\n');
+ f.d.prepare=async()=>({cli:'cursor',expectedText:'placeholder',cursor:{...traceCheckpoint(f.file),chat:OLD}});
+ f.d.dispatch=async(j,text)=>{payload=text;j.expectedHash=hash(text);write([cursorUser(text)]);};
+ let pin=OLD;f.d.cursorChat=async()=>pin;
+ f.d.findTurn=async j=>{found++;assert.equal(j.cursor.chat,OLD);pin=NEW;return {file:moved,chat:NEW};};
+ const id=await start(f),job=()=>f.d.jobs.get(id);
+ await f.d.tick();
+ assert.equal(found,1);assert.equal(job().cursor.file,moved);assert.equal(job().cursor.chat,NEW);
+ assert.equal(f.d.get(id,'parent').outcome,null,'matched, still working');
+ write([cursorUser(payload),cursorAssistant('answered in the new chat'),{type:'turn_ended',status:'success'}]);
+ f.state.parent='waiting';await f.d.tick();
+ const done=f.d.get(id,'parent');
+ assert.equal(done.outcome,'completed');assert.equal(done.result,'answered in the new chat');
+ assert.equal(found,1,'once matched, it stops looking');
+});
+test('a Cursor job keeps its chat while the marker is nowhere else',async t=>{
+ const c=chatHarness(t);let found=0;
+ c.f.d.findTurn=async()=>{found++;return null;};
+ const id=await start(c.f),chat=c.f.d.jobs.get(id).cursor.chat;
+ c.f.d.cursorChat=async()=>chat;
+ c.write([cursorUser('something else')]);
+ await c.f.d.tick();
+ assert.equal(found,1);assert.equal(c.f.d.jobs.get(id).cursor.file,c.f.file);assert.equal(c.f.d.get(id,'parent').outcome,null);
+ await c.f.d.tick();assert.equal(found,1,'not again within FIND_MS');
+});
