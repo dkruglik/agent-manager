@@ -47,13 +47,16 @@ uncertain. Cursor does not write an in-progress turn, including a command
 approval, until the turn ends, so the delegation stays watching until that
 exchange is on disk. Once it is on disk and caught up, `input-required` is
 blocked and a stopped process with no `turn_ended` is failed. The matched
-exchange has to appear in the transcript's last 4 MiB. A Cursor session with
-no transcript file yet cannot be subscribed.
-Before a follow-up is accepted, AM re-reads which chat the Cursor pane holds
-open, so a `/clear` before the delegation is followed and the job watches the
-current chat's transcript, not the abandoned one.
+exchange has to appear in the transcript's last 4 MiB. The job follows the
+chat the Cursor pane is on. If that chat has no transcript yet (a fresh chat
+after `/clear`, or a new session), the job waits for Cursor to write it with the
+delegated message. If the target moves to another chat before the turn ends, the
+outcome is `uncertain` with reason `target-chat-changed`; a turn that already
+ended in the old chat is still reported as completed.
 
-Read `GET /api/delegations/ID?from=$AM_ID` for status/result. `delivery` is the
+Read `GET /api/delegations/ID?from=$AM_ID` for status/result. Cancel with
+`POST /api/delegations/ID/cancel?from=$AM_ID` (parent only; refused while the
+job is notifying). `delivery` is the
 callback: `delivery.state` (pending, delivered, uncertain or not-delivered),
 `reason`, `attempts` and `lastAttemptAt`. Once the outcome is known and the
 callback has not landed, `reason` is the delivery's (for example

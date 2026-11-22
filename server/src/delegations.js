@@ -161,8 +161,8 @@ export function scanEvidence(job) {
 }
 
 export class Delegations {
-  constructor({dir,identity,state,prepare,dispatch,notify,assertWritable,now=Date.now,scan=scanEvidence}) {
-    Object.assign(this,{dir,identity,state,prepare,dispatch,notify,assertWritable,now,scan});
+  constructor({dir,identity,state,prepare,dispatch,notify,assertWritable,now=Date.now,scan=scanEvidence,locate=async()=>null,cursorChat=async()=>null}) {
+    Object.assign(this,{dir,identity,state,prepare,dispatch,notify,assertWritable,now,scan,locate,cursorChat});
     this.jobs=new Map();this.written=new Map();this.busy=false;this.creating=new Map();
     fs.mkdirSync(dir,{recursive:true,mode:0o700});
     for(const name of fs.readdirSync(dir).filter(n=>/^[a-f0-9-]{36}\.json$/.test(n))) {
@@ -227,7 +227,20 @@ export class Delegations {
           if(this.now()>j.expiresAt){j.state='expired';this.save(j);continue;}
           if(!this.valid(j)){j.state='stale';this.save(j);continue;}
           if(!j.evidence.outcome) {
-            try {await this.scan(j);}catch {j.evidence.outcome='uncertain';j.evidence.reason='trace-unavailable-or-changed';}
+            const c=j.cli==='cursor' && j.cursor?.chat ? j.cursor : null;
+            const moved=async()=>{let now=null;try{now=await this.cursorChat(j.targetId);}catch{}return !!now && now!==c.chat;};
+            const chatChanged=()=>{j.evidence.outcome='uncertain';j.evidence.reason='target-chat-changed';};
+            // A fresh Cursor chat has no transcript until its first message: wait for it,
+            // unless the target has already moved on to another chat.
+            if(c && !c.file){
+              let p=null;try{p=await this.locate(c.chat);}catch{}
+              if(p){c.file=p;this.save(j);}
+              else if(await moved()){chatChanged();this.save(j);}
+              else continue;
+            }
+            if(!j.evidence.outcome)try {await this.scan(j);}catch {j.evidence.outcome='uncertain';j.evidence.reason='trace-unavailable-or-changed';}
+            // Scan first: a turn that ended in the old chat still counts as completed.
+            if(c && !j.evidence.outcome && !terminal.has(j.state) && await moved())chatChanged();
             if(terminal.has(j.state))continue;
             if(!j.evidence.outcome && j.evidence.matched && j.evidence.caughtUp) {
               const state=await this.state(j.targetId);

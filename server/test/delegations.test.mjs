@@ -254,6 +254,52 @@ test('Cursor retry stays one dispatch, a torn rewrite is not final, and the tail
  assert.equal(tail.f.d.get(id3,'parent').outcome,'completed');assert.equal(tail.f.d.get(id3,'parent').result,'tail answer');
 });
 
+test('Cursor job on a chat with no transcript yet waits for it, then completes',async t=>{
+ const f=fixture(t),CHAT=randomUUID(),pending=path.join(path.dirname(f.file),'pending.jsonl');let payload='',located=0;
+ f.d.prepare=async()=>({cli:'cursor',expectedText:'placeholder',cursor:{file:null,chat:CHAT}});
+ f.d.locate=async chat=>{located++;assert.equal(chat,CHAT);return fs.existsSync(pending)?pending:null;};
+ f.d.dispatch=async(j,text)=>{payload=text;j.expectedHash=hash(text);};
+ const id=await start(f),job=()=>f.d.jobs.get(id);
+ assert.deepEqual(job().cursor,{file:null,chat:CHAT});
+ await f.d.tick();await f.d.tick();
+ assert.equal(f.d.get(id,'parent').outcome,null);assert.equal(job().cursor.file,null);assert.ok(located>=1);
+ const write=r=>fs.writeFileSync(pending,r.map(x=>JSON.stringify(x)).join('\n')+'\n');
+ write([cursorUser(payload)]);await f.d.tick();
+ assert.equal(job().cursor.file,pending);assert.equal(f.d.get(id,'parent').outcome,null);
+ write([cursorUser(payload),cursorAssistant('fresh chat answer'),{type:'turn_ended',status:'success'}]);
+ await f.d.tick();
+ assert.equal(f.d.get(id,'parent').outcome,'completed');assert.equal(f.d.get(id,'parent').result,'fresh chat answer');
+});
+
+function chatHarness(t,withChat=true){
+ const c=cursorHarness(t),CHAT=randomUUID();
+ c.f.d.prepare=async()=>({cli:'cursor',expectedText:'placeholder',cursor:withChat?{...traceCheckpoint(c.f.file),chat:CHAT}:traceCheckpoint(c.f.file)});
+ c.f.d.cursorChat=async()=>randomUUID();
+ return c;
+}
+test('Cursor target that moves to another chat ends uncertain, unless the turn already ended',async t=>{
+ const open=chatHarness(t),id=await start(open.f);
+ open.write([cursorUser(open.payload()),cursorAssistant('working')]);
+ await open.f.d.tick();
+ assert.equal(open.f.d.get(id,'parent').outcome,'uncertain');assert.equal(open.f.d.get(id,'parent').outcomeReason,'target-chat-changed');
+
+ const ended=chatHarness(t),id2=await start(ended.f);
+ ended.write([cursorUser(ended.payload()),cursorAssistant('finished'),{type:'turn_ended',status:'success'}]);
+ await ended.f.d.tick();
+ assert.equal(ended.f.d.get(id2,'parent').outcome,'completed');assert.equal(ended.f.d.get(id2,'parent').result,'finished');
+
+ const same=chatHarness(t),id3=await start(same.f),chat=same.f.d.jobs.get(id3).cursor.chat;
+ same.f.d.cursorChat=async()=>chat;same.write([cursorUser(same.payload()),cursorAssistant('working')]);
+ await same.f.d.tick();assert.equal(same.f.d.get(id3,'parent').outcome,null);
+ same.f.d.cursorChat=async()=>null;await same.f.d.tick();assert.equal(same.f.d.get(id3,'parent').outcome,null);
+});
+test('a Cursor job journaled without a chat id ignores the target chat',async t=>{
+ const legacy=chatHarness(t,false),id=await start(legacy.f);
+ legacy.write([cursorUser(legacy.payload()),cursorAssistant('working')]);
+ await legacy.f.d.tick();
+ assert.equal(legacy.f.d.get(id,'parent').outcome,null);
+});
+
 test('a Claude parent callback is pasted once and a typed failure is not repeated',async t=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'am-notify-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  let calls=0;
@@ -273,4 +319,15 @@ test('a Claude parent callback is pasted once and a typed failure is not repeate
  const id3=await start(f3);f3.append(answer());f3.state.parent='waiting';
  await f3.d.tick();assert.equal(f3.d.get(id3,'parent').state,'ready');
  await f3.d.tick();assert.equal(early,2);assert.equal(f3.d.get(id3,'parent').state,'delivered');
+});
+test('a Cursor job still waiting for a fresh chat transcript ends when the target moves on',async t=>{
+ const f=fixture(t),CHAT=randomUUID();
+ f.d.prepare=async()=>({cli:'cursor',expectedText:'placeholder',cursor:{file:null,chat:CHAT}});
+ f.d.locate=async()=>null;
+ f.d.dispatch=async(j,text)=>{j.expectedHash=hash(text);};
+ const id=await start(f);
+ f.d.cursorChat=async()=>CHAT;await f.d.tick();
+ assert.equal(f.d.get(id,'parent').outcome,null,'still waiting while the target is on that chat');
+ f.d.cursorChat=async()=>randomUUID();await f.d.tick();
+ assert.equal(f.d.get(id,'parent').outcome,'uncertain');assert.equal(f.d.get(id,'parent').outcomeReason,'target-chat-changed');
 });
