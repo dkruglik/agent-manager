@@ -164,7 +164,10 @@ try {
     // Sidebar frame states (#242/#244, 2026-11-10): 814,413 -> 816,076 (+1,663)
     // for the row marks, legend, unread wiring and the working -> done hold, all
     // drawn by the sidebar on first paint. Raised to 797.
-    assert.ok(entry.length <= 797 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 797 kB budget`);
+    // Phone drags on the alternate screen (2026-11-21): 815,509 -> 816,204
+    // (+695), 76 over 797, for lib/touchWheel.ts and its wiring in the
+    // terminal's touch handler, which runs on first paint. Raised to 798.
+    assert.ok(entry.length <= 798 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 798 kB budget`);
     // One literal only that panel's module contains — a dynamic import that
     // merely wraps an unchanged graph would leave these in the entry.
     for (const [panel, marker] of [

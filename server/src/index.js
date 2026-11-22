@@ -42,7 +42,7 @@ import { ensureClaudeDialogDefaults, trustWorkspacesRoot } from './first-run.js'
 import {
   attach, agentInfo, deriveState, stop, stopAll, ensureRunning, sendInput, pasteInput, isRunning,
   waitForInputReady, promptReady, hasPromptDetector, runIdOf, capturePane, ghosttyReady, ghosttyError, startedAt, restart as restartSession,
-  installClaudeRepinHook, installOpencodeRepinPlugin,
+  installClaudeRepinHook, installOpencodeRepinPlugin, refreshCursorPin,
 } from './runner.js';
 
 // Control frames ride the terminal socket behind a leading NUL pair, which real
@@ -56,7 +56,7 @@ import { startVisibilityWatch, isLocked, lockState, visibility, onVisibilityChan
 import { kindOfFile, listDirectory, mimeOf, readTextHead, TEXT_MAX } from './preview.js';
 import { startWatchdog, startStallProfiler } from './watchdog.js';
 import { shareSession, shareNamespace, findTrace, shareAccess, grantAccess, revokeAccess,
-         importBundle, listBundles, SHAREABLE_CLIS } from './share.js';
+         importBundle, listBundles, SHAREABLE_CLIS, cursorTranscriptPath } from './share.js';
 import * as backup from './backup.js';
 import { checkpointHealth } from './checkpoint-health.js';
 import {
@@ -514,6 +514,9 @@ try {
     dir:path.join(DATA_DIR,'delegations'),
     identity:id=>JSON.stringify(codexInput.agentSource(id)),
     state:delegationState,
+    locate:chat=>cursorTranscriptPath(chat),
+    // Live: re-read the chat the pane holds open rather than wait for the 20 s watcher.
+    cursorChat:id=>refreshCursorPin(id) ?? null,
     assertWritable:()=>{if(isLocked())throw lockedError();},
     prepare:async(parentId,targetId,payload)=>{
       const parent=store.get(parentId),target=store.get(targetId);
@@ -523,11 +526,15 @@ try {
       if(!['waiting','idle','stopped','unloaded'].includes(await delegationState(targetId)))
         throw new ApiError(409,'delegation-busy','The target is already working or needs input.');
       const shared=sessionRuntime.shared(target),source=codexInput.agentSource(parentId);
-      const file=shared ? await sharedCodexRollout(target) : (await traceLocation(target))?.path;
-      if(!file)throw new ApiError(409,'delegation-trace','A pinned existing native trace is required before delegation.');
+      // A /clear moves a Cursor pane to a new chat, and the 20 s pin watcher may not have run yet.
+      if(!shared&&target.cli==='cursor')refreshCursorPin(targetId);
+      const chat=!shared&&target.cli==='cursor' ? store.get(targetId)?.sessionUuid : null;
+      // A fresh Cursor chat (after /clear) has no transcript until its first message; follow it by chat id.
+      const file=shared ? await sharedCodexRollout(target) : chat ? await cursorTranscriptPath(chat) : (await traceLocation(store.get(targetId)))?.path;
+      if(!file&&!chat)throw new ApiError(409,'delegation-trace','A pinned existing native trace is required before delegation.');
       const name=String(source.name||source.id).replace(/[\x00-\x1f\x7f\[\]]/g,' ');
       const expectedText=shared ? `[message from ${name}:] [AM source ${JSON.stringify({amSessionId:source.id,threadId:source.threadId})}]\n${payload}` : `[message from ${parent.name}:] ${payload}`;
-      return {cli:target.cli,expectedText,cursor:traceCheckpoint(file)};
+      return {cli:target.cli,expectedText,cursor:chat ? {...(file ? traceCheckpoint(file) : {file:null}),chat} : traceCheckpoint(file)};
     },
     dispatch:async(job,payload)=>{
       const target=store.get(job.targetId),parent=store.get(job.parentId);
@@ -2534,10 +2541,16 @@ uncertain. Cursor does not write an in-progress turn, including a command
 approval, until the turn ends, so the delegation stays watching until that
 exchange is on disk. Once it is on disk and caught up, \`input-required\` is
 blocked and a stopped process with no \`turn_ended\` is failed. The matched
-exchange has to appear in the transcript's last 4 MiB. A Cursor session with
-no transcript file yet cannot be subscribed.
+exchange has to appear in the transcript's last 4 MiB. The job follows the
+chat the Cursor pane is on. If that chat has no transcript yet (a fresh chat
+after \`/clear\`, or a new session), the job waits for Cursor to write it with the
+delegated message. If the target moves to another chat before the turn ends, the
+outcome is \`uncertain\` with reason \`target-chat-changed\`; a turn that already
+ended in the old chat is still reported as completed.
 
-Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. \`delivery\` is
+Read \`GET /api/delegations/ID?from=$AM_ID\` for status/result. Cancel with
+\`POST /api/delegations/ID/cancel?from=$AM_ID\` (parent only; refused while the
+job is notifying). \`delivery\` is
 the callback: \`delivery.state\` (pending, delivered, uncertain or not-delivered),
 \`reason\`, \`attempts\` and \`lastAttemptAt\`. Once the outcome is known and the
 callback has not landed, \`reason\` is the delivery's (for example

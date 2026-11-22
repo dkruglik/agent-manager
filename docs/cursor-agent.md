@@ -67,6 +67,11 @@ control. The bracket form from `--help` (`grok-4.7[effort=low]`) was rejected:
 | sign-in | `$XDG_CONFIG_HOME/cursor/auth.json` (default `~/.config/cursor`) | no |
 | folder trust, worker socket and log | `$HOME/.cursor/projects/<slug>/` | no |
 
+The pane's pin follows the chat whose `store.db` the pane's cursor-agent holds
+open, so `/clear` or any new chat in the same process moves the pin with it. It
+is checked every 20 s and before a delegation, never takes a chat another
+session pins, and does nothing when zero or several databases are open.
+
 The slug is the cwd with every non-alphanumeric run replaced by `-`. Long paths
 are truncated and suffixed with a hash. The reader therefore never computes it:
 it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id. A
