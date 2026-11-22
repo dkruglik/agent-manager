@@ -72,6 +72,15 @@ open, so `/clear` or any new chat in the same process moves the pin with it. It
 is checked every 20 s and before a delegation, never takes a chat another
 session pins, and does nothing when zero or several databases are open.
 
+That check reads `/proc/<pid>/fd`, which fails with `EACCES` when cursor-agent's
+sandbox makes the process non-dumpable: even its parent, the AM server, cannot
+list the directory, and the server logs that once. A delegation then finds the
+chat another way. The delivered turn ends with `[AM delegation <id>]`, so while
+the job has no match, AM looks every 5 s for the one transcript written since
+the dispatch that holds that marker. It moves the job, and the pane's pin, to
+that chat (`adoptCursorChat`). A marker found in two transcripts is ambiguous
+and moves nothing.
+
 The slug is the cwd with every non-alphanumeric run replaced by `-`. Long paths
 are truncated and suffixed with a hash. The reader therefore never computes it:
 it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id. A

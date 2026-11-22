@@ -50,7 +50,10 @@ blocked and a stopped process with no `turn_ended` is failed. The matched
 exchange has to appear in the transcript's last 4 MiB. The job follows the
 chat the Cursor pane is on. If that chat has no transcript yet (a fresh chat
 after `/clear`, or a new session), the job waits for Cursor to write it with the
-delegated message. If the target moves to another chat before the turn ends, the
+delegated message. If the turn lands in a chat AM did not know the pane was on
+(cursor-agent's open files are not readable), the job finds it by the turn's
+`[AM delegation <id>]` marker and follows it ([details](cursor-agent.md)).
+If the target moves to another chat before the turn ends, the
 outcome is `uncertain` with reason `target-chat-changed`; a turn that already
 ended in the old chat is still reported as completed.
 
