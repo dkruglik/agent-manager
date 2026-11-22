@@ -21,3 +21,5 @@ __pycache__/
 scripts/sync-ai-rules.mjs
 # Written by a deploy into the Space repo only (server/src/build-info.js).
 server/build-info.json
+# Local helper for pulling from the fork; not part of the repo.
+update-from-fork.sh
