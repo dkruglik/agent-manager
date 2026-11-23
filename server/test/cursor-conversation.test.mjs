@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { cursorChatForPid, cursorRepin } from '../src/cursor-conversation.js';
+import { cursorChatForPid, cursorRepin, cursorTranscriptWithMarker } from '../src/cursor-conversation.js';
 
 const HASH = 'd72f0a1b2c3d4e5f60718293a4b5c6d7';
 const A = 'f4c51f89-1111-4222-8333-444455556666';
@@ -81,4 +81,56 @@ test('cursorRepin moves only to an unclaimed, different chat', () => {
   assert.equal(cursorRepin({ owned: { id: A }, pinned: A, claimed: new Set() }), null);
   assert.equal(cursorRepin({ owned: { id: B }, pinned: A, claimed: new Set([B]) }), null);
   assert.equal(cursorRepin({ owned: null, pinned: A, claimed: new Set() }), null);
+});
+
+// A delegated turn ends with its marker, so the transcript that holds it names the
+// chat the pane really used, without reading the process's fds.
+function projects() {
+  const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-proj-')), 'projects');
+  const write = (slug, id, text, mtime = Date.now()) => {
+    const file = path.join(root, slug, 'agent-transcripts', id, `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text }] } })}\n`);
+    fs.utimesSync(file, mtime / 1000, mtime / 1000);
+    return file;
+  };
+  return { root, write };
+}
+const MARK = '[AM delegation 26adc413-f8c8-462f-907a-3871d700e023]';
+
+test('the transcript holding the marker is found, in any project', async () => {
+  const p = projects();
+  p.write('data-workspaces-a', A, 'old chat, unrelated');
+  const file = p.write('data-workspaces-b', B, `task text\n\n${MARK}`);
+  assert.deepEqual(await cursorTranscriptWithMarker({ root: p.root, marker: MARK, since: Date.now() - 60_000 }), { file, chat: B });
+});
+
+test('a transcript last written before the dispatch is not read', async () => {
+  const p = projects();
+  p.write('data-workspaces-a', A, MARK, Date.now() - 3_600_000);
+  assert.equal(await cursorTranscriptWithMarker({ root: p.root, marker: MARK, since: Date.now() - 60_000 }), null);
+});
+
+test('the excluded file and a quote of the marker in two chats are not a match', async () => {
+  const p = projects();
+  const pinned = p.write('data-workspaces-a', A, MARK);
+  assert.equal(await cursorTranscriptWithMarker({ root: p.root, marker: MARK, since: 0, exclude: pinned }), null, 'already watched');
+  p.write('data-workspaces-b', B, MARK);
+  assert.equal(await cursorTranscriptWithMarker({ root: p.root, marker: MARK, since: 0 }), null, 'two chats is ambiguous: no guess');
+});
+
+test('a missing projects folder is no match, not an error', async () => {
+  assert.equal(await cursorTranscriptWithMarker({ root: path.join(os.tmpdir(), 'no-such-cursor-projects'), marker: MARK, since: 0 }), null);
+});
+
+test('an unreadable fd directory (a non-dumpable process) is no answer, and says so once', (t) => {
+  const f = fixture();
+  f.open(200, [db(f.chatsRoot, A)]);
+  fs.chmodSync(path.join(f.procRoot, '200', 'fd'), 0o000);
+  t.after(() => fs.chmodSync(path.join(f.procRoot, '200', 'fd'), 0o700));
+  const logged = [];
+  t.mock.method(console, 'warn', (...args) => logged.push(args.join(' ')));
+  assert.equal(cursorChatForPid(200, f.opts), null);
+  assert.equal(cursorChatForPid(200, f.opts), null);
+  assert.equal(logged.filter((l) => l.includes('EACCES')).length, 1, logged.join('\n'));
 });

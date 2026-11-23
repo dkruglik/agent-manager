@@ -1987,6 +1987,21 @@ export function refreshCursorPin(sessionId) {
   }
 }
 
+// Moves a running cursor session's pin to `chat`, found by a delegation marker
+// in that chat's transcript (cursorChatForPid cannot see a non-dumpable
+// cursor-agent). Refuses a chat another session already pins.
+export function adoptCursorChat(sessionId, chat) {
+  const all = list();
+  const session = all.find((s) => s.id === sessionId);
+  if (!session || session.cli !== 'cursor' || !isRunning(sessionId)) return false;
+  const claimed = new Set(all.filter((s) => s.id !== sessionId && s.sessionUuid).map((s) => s.sessionUuid));
+  if (session.sessionUuid === chat) return true;
+  if (!cursorRepin({ owned: { id: chat }, pinned: session.sessionUuid, claimed })) return false;
+  console.warn(`[cursor] re-pinning ${sessionId}: ${session.sessionUuid} -> ${chat} (a delegated turn landed in it)`);
+  update(sessionId, { sessionUuid: chat });
+  return true;
+}
+
 function scheduleCursorCapture(session) {
   const prev = cursorCapturing.get(session.id);
   if (prev) clearTimeout(prev);

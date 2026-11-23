@@ -130,5 +130,57 @@ try {
     assert.ok((await inputs(page)).length > atEnd + 2, 'the glide keeps sending wheel reports after touchend');
     await page.close();
   }
+  {
+    // The bottom key on the alternate screen: xterm has no scrollback to jump
+    // through, so it sends the application back down as many wheel steps as the
+    // drags took it up.
+    const page = await openFixture(browser, MOUSE + 'one\r\ntwo\r\n');
+    await drag(page, 200, 500, true);
+    await page.waitForFunction(() => window.sent.some((m) => m.t === 'i'));
+    const upSteps = wheels(await inputs(page)).length;
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.locator('.term-keybar button', { hasText: /^bottom$/ }).dispatchEvent('pointerdown');
+    await page.waitForFunction(() => window.sent.some((m) => m.t === 'i'));
+    await sleep(100);
+    const back = wheels(await inputs(page));
+    assert.equal(back.length, upSteps, `bottom undoes every step the drag went up (${upSteps})`);
+    assert.ok(back.every((r) => /^\x1b\[<65;\d+;\d+M$/.test(r)), 'as wheel down (65) only');
+    assert.equal((await inputs(page)).join('').replace(/\x1b\[<\d+;\d+;\d+M/g, ''), '', 'nothing but wheel reports is sent');
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.locator('.term-keybar button', { hasText: /^bottom$/ }).dispatchEvent('pointerdown');
+    await sleep(150);
+    assert.deepEqual(await inputs(page), [], 'already at the bottom, a second press sends nothing');
+    await page.close();
+  }
+  {
+    // Without mouse tracking the wheel would become arrow keys, which move a
+    // menu or recall history: bottom must not guess.
+    const page = await openFixture(browser, '\x1b[?1000l\x1b[?1006l\x1b[?1049hone\r\ntwo\r\n');
+    await drag(page, 200, 500, true);
+    await page.waitForFunction(() => window.sent.some((m) => m.t === 'i'));
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.locator('.term-keybar button', { hasText: /^bottom$/ }).dispatchEvent('pointerdown');
+    await sleep(150);
+    assert.deepEqual(await inputs(page), [], 'bottom sends no arrow keys');
+    await page.close();
+  }
+  {
+    // Primary screen (Cursor): bottom jumps the scrollback and does not focus
+    // the terminal. On a phone a focus opens the keyboard, and the resize that
+    // follows can throw the scrollback back to the top.
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`).join('\r\n') + '\r\n';
+    const page = await openFixture(browser, lines, { scrollback: true });
+    await drag(page, 200, 600, true);
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.locator('.term-keybar button', { hasText: /^bottom$/ }).dispatchEvent('pointerdown');
+    await page.waitForFunction(() => {
+      const v = document.querySelector('.xterm-viewport');
+      return v.scrollHeight - v.clientHeight - v.scrollTop <= 2;
+    });
+    const focused = await page.evaluate(() => document.activeElement?.classList.contains('xterm-helper-textarea') ?? false);
+    assert.equal(focused, false, 'bottom does not focus the terminal (no keyboard on a phone)');
+    assert.deepEqual(await inputs(page), [], 'and sends nothing on the primary screen');
+    await page.close();
+  }
   console.log('mobile-terminal: alternate-screen drags scroll the application');
 } finally { await browser.close(); }

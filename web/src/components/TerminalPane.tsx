@@ -8,7 +8,7 @@ import { FileLinkScope, useFilePreview } from './FileLinkContent';
 import { installTerminalFileLinks, terminalLinkHandler, openTerminalLink } from '../lib/terminalFileLinks';
 import '@xterm/xterm/css/xterm.css';
 import { touchDebug, installTouchDebug } from '../lib/touchDebug';
-import { touchScrollRoute, touchWheelSteps } from '../lib/touchWheel';
+import { stepsAboveBottom, touchScrollRoute, touchWheelSteps } from '../lib/touchWheel';
 import { PROGRAM_COPY_MS, clipboardPreview, clipboardSize } from '../lib/programCopy';
 import { isMacPlatform, terminalKeyAction } from '../lib/terminalKeys';
 import type { Cli, Session } from '../types';
@@ -1051,6 +1051,14 @@ export default function TerminalPane({
       return false;
     };
     let residual = 0;        // px of gesture not yet worth a whole row
+    // Wheel steps the application is above its bottom, for the bottom key.
+    let appAbove = 0;
+    // Wheel events on the screen, which xterm turns into reports to the application.
+    const sendWheels = (rows: number, x: number, y: number) => {
+      claimControl();
+      const screen = host.querySelector<HTMLElement>('.xterm-screen') ?? term.element;
+      for (const init of touchWheelSteps(rows, x, y)) screen?.dispatchEvent(new WheelEvent('wheel', init));
+    };
     let glideFrame = 0;
     // Speed at release, measured on OUR clock over a trailing window.
     //
@@ -1128,16 +1136,26 @@ export default function TerminalPane({
       residual -= rows * cell;
       userScroll();
       if (touchScrollRoute(term.buffer.active.type) === 'application') {
-        claimControl();
-        const screen = host.querySelector<HTMLElement>('.xterm-screen') ?? term.element;
-        for (const init of touchWheelSteps(rows, pointX, pointY)) screen?.dispatchEvent(new WheelEvent('wheel', init));
+        appAbove = stepsAboveBottom(appAbove, rows);
+        sendWheels(rows, pointX, pointY);
       } else term.scrollLines(rows);
       touchDebug.rows(rows);
       return rows;
     };
     const stopGlide = () => { if (glideFrame) { cancelAnimationFrame(glideFrame); glideFrame = 0; } };
     stopGlideRef.current = stopGlide;
-    jumpToBottomRef.current = () => { stopGlide(); userScroll(); term.scrollToBottom(); };
+    jumpToBottomRef.current = () => {
+      stopGlide(); userScroll();
+      if (touchScrollRoute(term.buffer.active.type) === 'scrollback') { appAbove = 0; term.scrollToBottom(); return; }
+      // The alternate screen has no scrollback; the application scrolls itself.
+      // Send it back down the steps the drags took it up. Without mouse
+      // tracking xterm would turn them into arrow keys, which move menus.
+      const steps = appAbove;
+      appAbove = 0;
+      if (!steps || term.modes.mouseTrackingMode === 'none') return;
+      const box = (host.querySelector<HTMLElement>('.xterm-screen') ?? term.element)?.getBoundingClientRect();
+      if (box) sendWheels(steps, box.left + box.width / 2, box.top + box.height / 2);
+    };
     // Reader mode covers this frame with its own scroller. These listeners sit
     // on .term-host in CAPTURE and preventDefault, so without this guard every
     // drag over the conversation was eaten here and spent on the hidden
@@ -1673,10 +1691,12 @@ export default function TerminalPane({
               onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKeyRef.current(seq); focusTerm(); }}
             >{label}</button>
           ))}
-          {/* Scrolls the xterm buffer, not the PTY: no bytes are sent. */}
+          {/* Scrollback: jumps the xterm buffer, no bytes sent. Alternate screen: wheel reports back down (jumpToBottomRef).
+              No focusTerm: on a phone it opens the keyboard, and that resize could throw the scrollback
+              back to the top. preventDefault already keeps focus where it was. */}
           <button
             className="tk-btn"
-            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); jumpToBottomRef.current(); focusTerm(); }}
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); jumpToBottomRef.current(); }}
           >bottom</button>
           {/* Unlike the key buttons this must NOT preventDefault: the clipboard
               read needs a real click gesture. stopPropagation keeps the bar's
