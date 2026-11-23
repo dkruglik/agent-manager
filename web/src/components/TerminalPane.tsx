@@ -27,6 +27,7 @@ import * as api from '../api';
 import { terminalRetryDelay } from '../terminalRetry';
 import { serverReach } from '../lib/serverReach';
 import { captureTerminalAnchor, restoreTerminalAnchor, type TerminalScrollAnchor } from '../lib/terminalScrollAnchor';
+import { TerminalClearFollow } from '../lib/terminalClearFollow';
 import type { Attachment } from '../api';
 import {
   attachmentFileError, filesFromClipboardItems, filesFromTransfer,
@@ -604,7 +605,8 @@ export default function TerminalPane({
     // Browser layout changes can clamp DOM scrollTop before the server's new
     // grid arrives. Capture before that clamp, and retain through its repaint.
     const preserveViewportAnchor = () => { viewportAnchor ??= captureTerminalAnchor(term); };
-    const userScroll = () => { viewportAnchor = null; };
+    const clearFollow = new TerminalClearFollow(term);
+    const userScroll = () => { viewportAnchor = null; clearFollow.stop(); };
     window.addEventListener('resize', preserveViewportAnchor);
     window.visualViewport?.addEventListener('resize', preserveViewportAnchor);
     host.addEventListener('wheel', userScroll, { passive: true, capture: true });
@@ -859,6 +861,7 @@ export default function TerminalPane({
         const canonical = restoring;
         const resetState = pendingReset; pendingReset = null;
         restoring = false;
+        clearFollow.noteChunk(d);
         term.write(d, () => {
           if (resetState?.anchor) {
             const anchor = resetState.anchor;
@@ -870,8 +873,11 @@ export default function TerminalPane({
             // element keeps scrollTop 0 and xterm follows it back to the top.
             // On a phone that is the keyboard opening and throwing away the
             // whole scrollback.
-            const sub = term.onRender(() => { sub.dispose(); restoreTerminalAnchor(term, anchor); });
+            // A clear queued behind the snapshot wipes the content this anchor
+            // points into; clearFollow owns the position then.
+            const sub = term.onRender(() => { sub.dispose(); if (!clearFollow.following) restoreTerminalAnchor(term, anchor); });
           }
+          clearFollow.afterWrite();
           viewportAnchor = null;
           schedulePreview();
           // An empty canonical snapshot is a terminal that was just started for
@@ -1349,6 +1355,7 @@ export default function TerminalPane({
       dataSub.dispose();
       keySub.dispose();
       scrollSub.dispose();
+      clearFollow.stop();
       selSub.dispose();
       try { ws?.close(); } catch { /* ignore */ }
       term.dispose();

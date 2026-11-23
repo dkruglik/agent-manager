@@ -167,7 +167,10 @@ try {
     // Phone drags on the alternate screen (2026-11-21): 815,509 -> 816,204
     // (+695), 76 over 797, for lib/touchWheel.ts and its wiring in the
     // terminal's touch handler, which runs on first paint. Raised to 798.
-    assert.ok(entry.length <= 798 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 798 kB budget`);
+    // Cursor clear-and-reprint follow (2026-11-23): 816,633 -> 817,625 (+992),
+    // 473 over 798, for lib/terminalClearFollow.ts and its wiring in the
+    // terminal's output handler, which runs on first paint. Raised to 799.
+    assert.ok(entry.length <= 799 * 1024, `entry chunk is ${(entry.length / 1024).toFixed(0)} kB, over the 799 kB budget`);
     // One literal only that panel's module contains — a dynamic import that
     // merely wraps an unchanged graph would leave these in the entry.
     for (const [panel, marker] of [
