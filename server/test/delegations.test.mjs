@@ -384,3 +384,12 @@ test('Cursor target re-pinned to another chat after the match still completes; a
  gone.f.options.identity=null;gone.f.d.identity=()=>{throw Object.assign(Error(),{code:'codex-sender-stale'})};
  await gone.f.d.tick();assert.equal(gone.f.d.get(gid.id,'parent').state,'stale');
 });
+
+test('Cursor match tolerates a leading attached-skills block, but not other text around the query',()=>{
+ const prompt='[message from parent:] review\n\n[AM delegation 456]',expected=hash(prompt);
+ const turn=(pre,body=prompt)=>({role:'user',message:{content:[{type:'text',text:`${pre}<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n<user_query>\n${body}\n</user_query>`}]}});
+ const skills='<manually_attached_skills>\nSkill Name: review-suite\n</manually_attached_skills>\n';
+ const a={};consumeEvidence(a,turn(skills),expected,'cursor');assert.equal(a.matched,true);
+ const b={};consumeEvidence(b,turn(skills,'different task'),expected,'cursor');assert.notEqual(b.matched,true);
+ const c={};consumeEvidence(c,turn('stray text '),expected,'cursor');assert.notEqual(c.matched,true);
+});

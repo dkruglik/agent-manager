@@ -18,9 +18,11 @@ export function inputText(text, cli) {
     return paste ? paste[2].trim() : value;
   }
   // Cursor persists the typed prompt inside <timestamp> and <user_query>.
-  // Strip only a full wrapper, the same way the transcript reader does.
+  // Strip only a full wrapper (and a leading attached-skills block), like the transcript reader.
   if(cli==='cursor'){
-    return value.replace(/^\s*<timestamp>[\s\S]*?<\/timestamp>\s*/,'')
+    // A /name token in the typed text makes cursor-agent inline the skill ahead of the wrapper.
+    return value.replace(/^\s*<manually_attached_skills>[\s\S]*?<\/manually_attached_skills>\s*(?=<timestamp>)/,'')
+      .replace(/^\s*<timestamp>[\s\S]*?<\/timestamp>\s*/,'')
       .replace(/^\s*<user_query>\n?([\s\S]*?)\n?<\/user_query>\s*$/,'$1').trim();
   }
   return value;
