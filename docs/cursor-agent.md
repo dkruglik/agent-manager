@@ -81,6 +81,9 @@ the dispatch that holds that marker. It moves the job, and the pane's pin, to
 that chat (`adoptCursorChat`). A marker found in two transcripts is ambiguous
 and moves nothing.
 
+The move changes the pane's chat id but not the job's validity: the delegation
+compares a Cursor target without its chat id, so it is not marked `stale`.
+
 The slug is the cwd with every non-alphanumeric run replaced by `-`. Long paths
 are truncated and suffixed with a hash. The reader therefore never computes it:
 it finds `projects/*/agent-transcripts/<id>/<id>.jsonl` by the pane's id. A

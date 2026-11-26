@@ -361,3 +361,35 @@ test('a Cursor job keeps its chat while the marker is nowhere else',async t=>{
  assert.equal(found,1);assert.equal(c.f.d.jobs.get(id).cursor.file,c.f.file);assert.equal(c.f.d.get(id,'parent').outcome,null);
  await c.f.d.tick();assert.equal(found,1,'not again within FIND_MS');
 });
+
+test('Cursor target re-pinned to another chat after the match still completes; a different target is stale',async t=>{
+ const ident=(uuid,over={})=>JSON.stringify({id:'target',sessionUuid:uuid,name:'cur',cli:'cursor',threadId:null,binding:null,...over});
+ const c=cursorHarness(t);c.f.identities.target=ident('chat-1');
+ const id=await start(c.f);await c.f.d.tick();
+ c.write([cursorUser(c.payload()),cursorAssistant('working')]);
+ await c.f.d.tick();assert.equal(c.f.d.jobs.get(id).evidence.matched,true);
+ c.f.identities.target=ident('chat-2');
+ c.write([cursorUser(c.payload()),cursorAssistant('The review is done'),{type:'turn_ended',status:'success'}]);
+ c.f.state.parent='waiting';await c.f.d.tick();
+ const done=c.f.d.get(id,'parent');
+ assert.equal(done.outcome,'completed');assert.equal(done.state,'delivered');assert.equal(c.f.counts().notifications,1);
+
+ for(const change of [ident('chat-1',{id:'other'}),ident('chat-1',{name:'renamed'})]){
+  const s=cursorHarness(t);s.f.identities.target=ident('chat-1');
+  const sid=await start(s.f);s.f.identities.target=change;await s.f.d.tick();
+  assert.equal(s.f.d.get(sid,'parent').state,'stale');
+ }
+ const gone=cursorHarness(t);gone.f.identities.target=ident('chat-1');
+ const gid=await gone.f.d.create('parent','target',{requestId:randomUUID(),text:'x'});
+ gone.f.options.identity=null;gone.f.d.identity=()=>{throw Object.assign(Error(),{code:'codex-sender-stale'})};
+ await gone.f.d.tick();assert.equal(gone.f.d.get(gid.id,'parent').state,'stale');
+});
+
+test('Cursor match tolerates a leading attached-skills block, but not other text around the query',()=>{
+ const prompt='[message from parent:] review\n\n[AM delegation 456]',expected=hash(prompt);
+ const turn=(pre,body=prompt)=>({role:'user',message:{content:[{type:'text',text:`${pre}<timestamp>Tuesday, Nov 3, 2026, 5:44 PM (UTC)</timestamp>\n<user_query>\n${body}\n</user_query>`}]}});
+ const skills='<manually_attached_skills>\nSkill Name: review-suite\n</manually_attached_skills>\n';
+ const a={};consumeEvidence(a,turn(skills),expected,'cursor');assert.equal(a.matched,true);
+ const b={};consumeEvidence(b,turn(skills,'different task'),expected,'cursor');assert.notEqual(b.matched,true);
+ const c={};consumeEvidence(c,turn('stray text '),expected,'cursor');assert.notEqual(c.matched,true);
+});
