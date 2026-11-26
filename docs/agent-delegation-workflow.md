@@ -56,6 +56,17 @@ delegated message. If the turn lands in a chat AM did not know the pane was on
 If the target moves to another chat before the turn ends, the
 outcome is `uncertain` with reason `target-chat-changed`; a turn that already
 ended in the old chat is still reported as completed.
+A re-pin of the Cursor pane to another chat (AM following the marker, or the
+normal re-pin) does not make the job stale: a Cursor target's identity is
+compared without its chat id. Deleting the session, a different pane or a
+changed parent still does.
+
+A `/name` token anywhere in the text sent to a Cursor child makes cursor-agent
+attach that skill; refer to skills by file path instead. AM tolerates a leading
+`<manually_attached_skills>` block when the rest of the turn matches. A job
+stuck in `watching` blocks new delegations for the same parent/target pair
+(`delegation-busy`) until it is cancelled (`POST /api/delegations/ID/cancel?from=$AM_ID`)
+or expires after 24 h.
 
 Read `GET /api/delegations/ID?from=$AM_ID` for status/result. Cancel with
 `POST /api/delegations/ID/cancel?from=$AM_ID` (parent only; refused while the
