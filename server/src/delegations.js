@@ -187,7 +187,15 @@ export class Delegations {
   }
   view(j) {return {id:j.id,parentId:j.parentId,targetId:j.targetId,state:j.state,outcome:j.evidence?.outcome || null,reason:reasonOf(j),outcomeReason:j.evidence?.reason || null,delivery:deliveryOf(j),result:j.evidence?.answer || null,createdAt:j.createdAt,updatedAt:j.updatedAt,expiresAt:j.expiresAt,notification:j.notification || null,audit:j.audit || []};}
   get(id,parentId) {const j=this.jobs.get(id);if(!j || j.parentId!==parentId)throw new ApiError(404,'not-found','Delegation not found.');return this.view(j);}
-  valid(j) {try{return this.identity(j.parentId)===j.parentIdentity && this.identity(j.targetId)===j.targetIdentity;}catch(e){if(['codex-sender-stale','codex-sender-archived','codex-unmapped','codex-binding-stale'].includes(e?.code))return false;throw e;}}
+  // A Cursor pane's chat id (sessionUuid) changes when AM follows the turn's marker into a
+  // new chat or re-pins the pane. That is the same pane, so it must not stale the job; the
+  // chat move itself is judged by the cursor evidence (`target-chat-changed`).
+  sameTarget(j,now) {
+    if(j.cli!=='cursor')return now===j.targetIdentity;
+    const bare=v=>{try{const {sessionUuid,...rest}=JSON.parse(v);return JSON.stringify(rest);}catch{return v;}};
+    return bare(now)===bare(j.targetIdentity);
+  }
+  valid(j) {try{return this.identity(j.parentId)===j.parentIdentity && this.sameTarget(j,this.identity(j.targetId));}catch(e){if(['codex-sender-stale','codex-sender-archived','codex-unmapped','codex-binding-stale'].includes(e?.code))return false;throw e;}}
   async create(parentId,targetId,{requestId,text}) {
     if(!uuid(requestId) || typeof text!=='string' || !text.trim() || text.length>40000)throw new ApiError(400,'invalid-input','A stable UUID and text of at most 40000 characters are required.');
     if(parentId===targetId)throw fail('delegation-self','Cannot delegate to yourself.');
