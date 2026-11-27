@@ -20,7 +20,7 @@ import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS
 import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, MESSENGERS, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
-  ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice, chatCredentialValues,
+  ensureDirs, cliCatalog, cliById, slugify, workspacePath, cleanRelPath, refreshVersions, PASSIVE_CLIS, isRemote, launchChoice, chatCredentialValues,
 } from './config.js';
 import { AM_CONFIG_PATH, cursorCliConfigPath, CURSOR_PERMISSIONS_STATE } from './config.js';
 import { normalizeAgentPermissions, checkAgentPermissions, applyCursorPermissions } from './agent-permissions.js';
@@ -61,6 +61,7 @@ import { shareSession, shareNamespace, findTrace, shareAccess, grantAccess, revo
          importBundle, listBundles, SHAREABLE_CLIS, cursorTranscriptPath } from './share.js';
 import * as backup from './backup.js';
 import { checkpointHealth } from './checkpoint-health.js';
+import { diskHealth, startDiskHealthMonitor } from './disk-health.js';
 import {
   formatAttachmentDelivery, formatAttachmentPrelude, pruneAttachmentDirs, receiveAttachment, removeAttachment,
   removeSessionAttachments,
@@ -98,8 +99,10 @@ refreshVersions();
 startModelCatalog();
 store.init();
 crons.init();
-pruneAttachmentDirs(store.list().map((session) => session.id))
-  .catch((e) => console.error('[attachments.prune]', e && e.message));
+if (!store.isPoisoned()) {
+  pruneAttachmentDirs(store.list().map((session) => session.id))
+    .catch((e) => console.error('[attachments.prune]', e && e.message));
+}
 groups.init();
 order.init();
 demo.init();
@@ -140,6 +143,9 @@ for (const s of store.list()) {
 function ensureWorkspaceFolders() {
   for (const s of store.list()) {
     if (s.path) { try { fs.mkdirSync(workspacePath(s.path), { recursive: true }); } catch {} }
+  }
+  for (const g of groups.list()) {
+    if (g.path) { try { fs.mkdirSync(workspacePath(g.path), { recursive: true }); } catch {} }
   }
 }
 ensureWorkspaceFolders();
@@ -820,7 +826,9 @@ api.get('/api/meta', async (req, res) => {
     readMarks.baseline(new Map(sessions.filter((s) => s.output).map((s) => [s.id, s.output])));
     for (const s of sessions) s.read = readMarks.get(s.id);
   }
-  readMarks.retain(new Set(store.list().map((s) => s.id)));
+  if (!store.isPoisoned()) {
+    readMarks.retain(new Set(store.list().map((s) => s.id)));
+  }
   res.json({ sessions, generatedAt: new Date().toISOString() });
 });
 
@@ -1434,13 +1442,19 @@ api.post('/api/agents', promptBody, async (req, res) => {
   if (!cat.available) return res.status(400).json({ error: `${def.label} is not installed here` });
   const prompt = bodyText(req, 'prompt');
   if (!prompt) return res.status(400).json({ error: 'a spawned agent needs a task — send the prompt as the request body' });
-  // Default to the caller's own folder: peers usually work on the same thing.
-  const where = typeof q.path === 'string' && q.path.trim() ? q.path : (from.session.path ?? from.session.id);
   // …and into the caller's own group, by the same reasoning: a peer spawned to
   // work alongside you belongs beside you in the sidebar, not loose at the top
   // of it. ?group= overrides (id or display name); ?group=none opts out.
   const g = groups.resolveSpawnGroup(q.group, from.session.id);
   if (g.error) return res.status(400).json({ error: g.error });
+  // Default to the caller's own folder: peers usually work on the same thing.
+  // When a root-level caller (path: '') spawns into a group with a non-empty
+  // effectivePath, inherit the group's folder instead of the workspaces root.
+  const callerPath = from.session.path ?? from.session.id;
+  const groupFolder = g.groupId ? groups.effectivePath(g.groupId) : undefined;
+  const where = typeof q.path === 'string' && q.path.trim()
+    ? q.path
+    : (callerPath === '' && groupFolder ? groupFolder : callerPath);
   const creation = {
     name: typeof q.name === 'string' ? q.name : '',
     cli,
@@ -1642,7 +1656,8 @@ const BUILD_ENV_KEYS = (() => {
 // after the build-time snapshot, so its vars would otherwise be misdetected as
 // injected secrets. Keep this list in sync with entrypoint.sh.
 const NON_SECRET = new Set([
-  'HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_DURABLE', 'CODEX_HOME', 'CODEX_DURABLE',
+  'HOME', 'AM_DURABLE_HOME', 'AM_LIVE_HOME',
+  'CLAUDE_CONFIG_DIR', 'CLAUDE_DURABLE', 'CODEX_HOME', 'CODEX_DURABLE',
   'GEMINI_CLI_HOME', 'GEMINI_LIVE', 'GEMINI_DURABLE',
   'OPENCLAW_STATE_DIR', 'OPENCLAW_HOME', 'OPENCLAW_DURABLE',
   'OPENCODE_LIVE', 'OPENCODE_DURABLE', 'HERMES_LIVE', 'HERMES_DURABLE',
@@ -1651,7 +1666,7 @@ const NON_SECRET = new Set([
   'AGENT_STATE_SCRIPT', 'AGENT_STATE_CHECKPOINT_SECONDS', 'DATA_DIR',
   'NPM_CONFIG_PREFIX', 'PWD', 'OLDPWD', 'SHLVL', '_', 'HOSTNAME',
   'ACCELERATOR', 'COMMIT_SHA', 'CPU_CORES', 'HF_DATASETS_TRUST_REMOTE_CODE', 'IMAGE_SHA', 'MEMORY', 'OMP_NUM_THREADS',
-  'UV_CACHE_DIR', 'PIP_CACHE_DIR', 'PYTHONPYCACHEPREFIX', 'PYTHONUSERBASE',
+  'HF_HOME', 'UV_CACHE_DIR', 'PIP_CACHE_DIR', 'PYTHONPYCACHEPREFIX', 'PYTHONUSERBASE',
 ]);
 const NON_SECRET_PREFIX = ['SPACE_', 'KUBERNETES_', 'NVIDIA_', 'CUDA_', 'NV_', 'AM_'];
 function injectedEnvKeys() {
@@ -1750,6 +1765,9 @@ api.get('/api/info', (_req, res) => res.json({
   // is being saved, otherwise the adapters that are not and why. Read from
   // local status files. Withheld while locked: the reason names file paths.
   checkpoint: isLocked() ? null : checkpointHealth(),
+  // Local disk headroom (server/src/disk-health.js): null while >= 10 GiB is
+  // free and next-boot restore headroom is safe; cached from an async probe.
+  disk: isLocked() ? null : diskHealth(),
   // First-run welcome: shown once per Space (flag persists on the bucket).
   welcomeSeen: welcomeSeen(),
   // Demo mode: current sessions hidden from view; forces the welcome to show.
@@ -2372,15 +2390,14 @@ alongside plain shells and a file browser.
 
 ## Where you are
 - Your working directory is a **workspace folder** under \`/data/workspaces/\`. Everything you create here is saved.
-- Your home is \`/data/home\` (\`$HOME\`): config, credentials, and shell history persist across restarts.
+- Your live \`$HOME\` (\`$AM_LOCAL/home\`) sits on fast local disk; ordinary dotfiles, credentials, shell history, and skills in \`$HOME\` are restored from and checkpointed to \`/data/home\` (\`$AM_DURABLE_HOME\`) across restarts (caches such as \`~/.cache\` stay local).
 - \`$AM_SESSION\` is your workspace folder (path relative to \`/data/workspaces\`); \`$AM_NAME\` is your display name in the manager; \`$AM_USER\` is the operator.
 
 ## What persists (and what doesn't)
-- \`/data\` is **durable storage** (a mounted bucket). Files under \`/data/workspaces/…\` and \`/data/home/…\` survive restarts and sleep.
+- \`/data\` is **durable storage** (a mounted bucket). Files under \`/data/workspaces/…\` survive restarts and sleep, and ordinary user config in \`$HOME\` is checkpointed to \`/data/home/…\`.
 - **Empty directories are not persisted** — only files. If a folder must exist, keep a file in it.
 - Sessions are held by the Agent Manager backend and keep running when the browser disconnects. A backend restart or Space sleep ends live processes; retained workspace files still persist.
-- \`$AM_LOCAL\` (\`/home/node/local\`) is the container's own disk: fast, and **not durable**. A rebuild or a restart wipes it, along with anything you cloned or built there. It is still the right home for git checkouts and build output — see [Git repos](#git-repos-clone-on-local-disk-push-before-you-stop).
-- Exception: OpenClaw runs with its own \`$HOME\` on local disk for filesystem compatibility; that state is backed up to the bucket every minute.
+- \`$AM_LOCAL\` (\`/home/node/local\`) is the container's own disk: fast, and **not durable** outside the checkpointed agent-state and \`$HOME\` trees. A rebuild or a restart wipes uncheckpointed local checkouts and build output there. It is still the right home for git checkouts and build output — see [Git repos](#git-repos-clone-on-local-disk-push-before-you-stop).
 
 ## You may not be alone
 Manager API writes and remote contact/delivery reads require the non-secret
@@ -3304,18 +3321,7 @@ api.post('/api/files/:id/upload', async (req, res) => {
   }
 });
 
-// Sanitize a client-supplied workspace-relative path: no '..', no absolute
-// paths, must resolve under WORKSPACES_DIR. Returns the normalized relative
-// path ('' = the workspaces root), or null if invalid.
-function cleanRelPath(p) {
-  if (typeof p !== 'string') return null;
-  const parts = p.split('/').map((s) => s.trim()).filter((s) => s && s !== '.');
-  if (parts.some((s) => s === '..')) return null;
-  const rel = parts.join('/');
-  const abs = path.resolve(WORKSPACES_DIR, rel);
-  if (abs !== WORKSPACES_DIR && !abs.startsWith(WORKSPACES_DIR + path.sep)) return null;
-  return rel;
-}
+export { cleanRelPath };
 
 // Folder listing for the location picker (subfolders of one level).
 api.get('/api/folders', (req, res) => {
@@ -3356,14 +3362,18 @@ api.get('/api/tree', (_req, res) => {
     ...groupList.map((g) => ({ ref: `g:${g.id}`, t: g.createdAt || '' })),
     ...loose.map((s) => ({ ref: `s:${s.id}`, t: s.createdAt })),
   ].sort((a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0)); // newest first
-  order.normalize(refsMeta.map((x) => x.ref));
+  if (!store.isPoisoned() && !groups.isPoisoned()) {
+    order.normalize(refsMeta.map((x) => x.ref));
+  }
   let orderList = order.list();
   // Overview-hidden refs, pruned against everything that still exists — every
   // group and EVERY session, before demo mode narrows the view (see hidden.js).
-  hidden.retain(new Set([
-    ...groupList.map((g) => `g:${g.id}`),
-    ...store.list().map((s) => `s:${s.id}`),
-  ]));
+  if (!store.isPoisoned() && !groups.isPoisoned()) {
+    hidden.retain(new Set([
+      ...groupList.map((g) => `g:${g.id}`),
+      ...store.list().map((s) => `s:${s.id}`),
+    ]));
+  }
   const hiddenRefs = hidden.list();
   // Demo mode hides the snapshotted sessions/groups from the view (sessions
   // created after activation aren't in the snapshot, so they show through).
@@ -4090,8 +4100,33 @@ api.delete('/api/sessions/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+api.get('/api/groups', (_req, res) => res.json(groups.list()));
+
 api.post('/api/groups', (req, res) => {
-  const g = groups.create((req.body || {}).name);
+  const b = req.body || {};
+  let groupPath;
+  if (b.path !== undefined && b.path !== null) {
+    if (typeof b.path !== 'string') return res.status(400).json({ error: 'bad path' });
+    groupPath = cleanRelPath(b.path);
+    if (groupPath === null) return res.status(400).json({ error: 'bad path' });
+  }
+  let g = groups.create(b.name, groupPath !== undefined ? { path: groupPath } : undefined);
+  if (Array.isArray(b.sessionIds) || b.layout !== undefined) {
+    if (Array.isArray(b.sessionIds)) {
+      for (const sid of b.sessionIds) order.drop(`s:${sid}`);
+    }
+    g = groups.update(g.id, { sessionIds: b.sessionIds, layout: b.layout }) || g;
+  }
+  if (groupPath === undefined && g.sessionIds.length > 0) {
+    const shared = [...new Set(
+      g.sessionIds
+        .map((id) => store.get(id))
+        .filter((s) => s && !PASSIVE_CLIS.includes(s.cli) && typeof s.path === 'string' && s.path)
+        .map((s) => s.path),
+    )];
+    if (shared.length === 1) g = groups.update(g.id, { path: shared[0] }) || g;
+  }
+  if (g.path) { try { fs.mkdirSync(workspacePath(g.path), { recursive: true }); } catch {} }
   order.prepend(`g:${g.id}`);
   res.status(201).json(g);
 });
@@ -4099,7 +4134,16 @@ api.post('/api/groups', (req, res) => {
 api.put('/api/groups/:id', (req, res) => {
   const existing = groups.get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'not found' });
-  res.json(groups.update(existing.id, { ...(req.body || {}) }));
+  const b = req.body || {};
+  let nextPath = b.path;
+  if (nextPath !== undefined && nextPath !== null) {
+    if (typeof nextPath !== 'string') return res.status(400).json({ error: 'bad path' });
+    nextPath = cleanRelPath(nextPath);
+    if (nextPath === null) return res.status(400).json({ error: 'bad path' });
+  }
+  const updated = groups.update(existing.id, { ...b, path: nextPath });
+  if (updated?.path) { try { fs.mkdirSync(workspacePath(updated.path), { recursive: true }); } catch {} }
+  res.json(updated);
 });
 
 api.delete('/api/groups/:id', (req, res) => {
@@ -4432,6 +4476,7 @@ setTimeout(() => { traceDigests().catch((e) => console.warn('[boot] traceDigests
 // Job to do it on the Hub (docs/bucket-backup.md). Costs nothing when off or
 // when there is no HF_TOKEN — it reads the config and returns.
 backup.startBackupTimer(loadAmConfig);
+startDiskHealthMonitor();
 
 // Off-thread stall detector — must start early so it's watching before the
 // first heavy build. Logs any event-loop wedge to the run logs (see watchdog.js).

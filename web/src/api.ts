@@ -94,14 +94,14 @@ export const deleteSession = (id: string) =>
 export const renameSession = (id: string, name: string) =>
   fetch(`/api/sessions/${id}`, { method: 'PUT', headers: HEADERS, body: JSON.stringify({ name }) }).then(json);
 
-export const createGroup = (name: string): Promise<Group> =>
-  fetch('/api/groups', { method: 'POST', headers: HEADERS, body: JSON.stringify({ name }) }).then(json);
+export const createGroup = (name: string, path?: string): Promise<Group> =>
+  fetch('/api/groups', { method: 'POST', headers: HEADERS, body: JSON.stringify(path !== undefined ? { name, path } : { name }) }).then(json);
 
 export const renameGroup = (id: string, name: string) =>
   fetch(`/api/groups/${id}`, { method: 'PUT', headers: HEADERS, body: JSON.stringify({ name }) }).then(json);
 
 // Generic group patch: pane order (sessionIds) and/or tile layout (null = auto).
-export const updateGroup = (id: string, patch: { sessionIds?: string[]; layout?: { cols: number; rows: number } | null }) =>
+export const updateGroup = (id: string, patch: { sessionIds?: string[]; layout?: { cols: number; rows: number } | null; path?: string | null }) =>
   fetch(`/api/groups/${id}`, { method: 'PUT', headers: HEADERS, body: JSON.stringify(patch) }).then(json);
 
 export const deleteGroup = (id: string) =>
@@ -128,6 +128,14 @@ export interface CheckpointHealth {
   stalled: { lastPassAt: number } | null;
   log: string;
 }
+// Local disk free space / next-boot restore headroom warning; null when healthy.
+// See server/src/disk-health.js.
+export interface DiskHealth {
+  lowDisk: boolean; bootRisk: boolean;
+  freeBytes: number; totalBytes: number; warnFreeBytes: number; usedBytes: number;
+  stateBytes: number | null; bootPeakBytes: number | null; bootFreeBytes: number | null;
+  source: 'space-quota' | 'statfs'; checkedAt: number;
+}
 /** Will this survive a restart? See server/src/storage.js. */
 export interface StorageStatus { persistent: boolean; dataDir: string; reason: string }
 export interface Info {
@@ -147,6 +155,7 @@ export interface Info {
   bucketUnverified?: boolean;
   backup?: BackupHealth | null;
   checkpoint?: CheckpointHealth | null;
+  disk?: DiskHealth | null;
   welcomeSeen?: boolean;
   demoMode?: boolean;
   /** Only on a dev-preview Space (AM_DEV_PREVIEW=1); absent everywhere else. */

@@ -12,6 +12,7 @@ import os from 'node:os';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-'));
 process.env.DATA_DIR = path.join(TMP, 'data');
+process.env.AM_LOCAL = path.join(TMP, 'local'); // keep the local shadow out of the real $AM_LOCAL
 fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 
 const { selectRevivable, isTerminalReply, tellRevived, CONTINUE_TEXT, init, saveRunstate } = await import('../src/runstate.js');
@@ -142,18 +143,16 @@ fs.writeFileSync(runstateFile, '{"tampered":true}');
 saveRunstate();
 check('an unchanged session set is not rewritten', fs.readFileSync(runstateFile, 'utf8'), '{"tampered":true}');
 fs.writeFileSync(runstateFile, '{');
-const warns = [];
-const origWarn = console.warn;
-console.warn = (m) => warns.push(String(m));
-let loaded;
-try { loaded = init(); } finally { console.warn = origWarn; }
-check('a corrupt snapshot warns', warns.some((w) => w.includes('could not read')), true);
-check('a corrupt snapshot loads as none', loaded, null);
+// Upstream #253: a corrupt snapshot is not trusted, and the last good copy in the
+// local shadow ($AM_LOCAL/am-control-plane) is used instead of starting from nothing.
+const loaded = init();
+check('a corrupt snapshot falls back to the local shadow copy', loaded?.sessions, {});
 fs.rmSync(runstateFile, { force: true });
-warns.length = 0;
-console.warn = (m) => warns.push(String(m));
-try { init(); } finally { console.warn = origWarn; }
-check('a missing snapshot is quiet', warns.length, 0);
+const quiet = [];
+const origWarnQuiet = console.warn;
+console.warn = (m) => quiet.push(String(m));
+try { init(); } finally { console.warn = origWarnQuiet; }
+check('a missing snapshot is quiet', quiet.length, 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 fs.rmSync(TMP, { recursive: true, force: true });

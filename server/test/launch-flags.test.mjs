@@ -205,26 +205,28 @@ test('antigravity: flags on fresh, seeded, continue, pinned resume and shared fo
   const f = ['--model', 'gemini-4-argon-high', '--effort', 'xhigh'];
   const key = { GEMINI_API_KEY: 'k' };
   const provider = ['--settings', '{"modelProvider":"gemini"}'];
-  assert.deepEqual(launch(runner.commandFor(make('antigravity', choice)), key).calls, [['agy', ...provider, ...f]]);
-  assert.deepEqual(launch(runner.commandFor(make('antigravity', choice))).calls, [['agy', ...f]], 'no key: no provider, flags kept');
+  // Upstream #252: agy sessions skip its permission prompts (config.js AGY_SKIP_PERMISSIONS).
+  const SKIP = '--dangerously-skip-permissions';
+  assert.deepEqual(launch(runner.commandFor(make('antigravity', choice)), key).calls, [['agy', ...provider, SKIP, ...f]]);
+  assert.deepEqual(launch(runner.commandFor(make('antigravity', choice))).calls, [['agy', SKIP, ...f]], 'no key: no provider, flags kept');
   const q = "fix it; don't $(break)";
   assert.deepEqual(launch(runner.commandFor(make('antigravity', { ...choice, pendingPrompt: q })), key).calls,
-    [['agy', ...provider, ...f, '-i', q]]);
+    [['agy', ...provider, SKIP, ...f, '-i', q]]);
   const alone = make('antigravity', { ...choice, everStarted: true });
-  assert.deepEqual(launch(runner.commandFor(alone), key).calls, [['agy', ...provider, ...f, '-c']]);
+  assert.deepEqual(launch(runner.commandFor(alone), key).calls, [['agy', ...provider, SKIP, ...f, '-c']]);
   assert.deepEqual(launch(runner.commandFor(alone), { ...key, STUB_FAIL: '-c' }).calls,
-    [['agy', ...provider, ...f, '-c'], ['agy', ...provider, ...f]]);
+    [['agy', ...provider, SKIP, ...f, '-c'], ['agy', ...provider, SKIP, ...f]]);
   const ID = '79cd3d9b-b387-44da-91c0-2df98a2ae37e';
   const pinned = make('antigravity', { ...choice, everStarted: true, antigravityConversationId: ID });
-  assert.deepEqual(launch(runner.commandFor(pinned), key).calls, [['agy', ...provider, ...f]], 'conversation gone: fresh, flags kept');
+  assert.deepEqual(launch(runner.commandFor(pinned), key).calls, [['agy', ...provider, SKIP, ...f]], 'conversation gone: fresh, flags kept');
   const conv = path.join(HOME, '.gemini', 'antigravity-cli', 'conversations');
   fs.mkdirSync(conv, { recursive: true });
   fs.writeFileSync(path.join(conv, `${ID}.db`), '');
-  assert.deepEqual(launch(runner.commandFor(pinned), key).calls, [['agy', ...provider, ...f, '--conversation', ID]]);
+  assert.deepEqual(launch(runner.commandFor(pinned), key).calls, [['agy', ...provider, SKIP, ...f, '--conversation', ID]]);
   const a = make('antigravity', { ...choice, everStarted: true, path: 'shared-agy' });
   make('antigravity', { everStarted: true, path: 'shared-agy' });
-  assert.deepEqual(launch(runner.commandFor(a), key).calls, [['agy', ...provider, ...f]], 'shared folder: fresh, flags kept');
-  assert.deepEqual(launch(runner.commandFor(make('antigravity', { everStarted: true })), key).calls, [['agy', ...provider, '-c']], 'no choice: as before');
+  assert.deepEqual(launch(runner.commandFor(a), key).calls, [['agy', ...provider, SKIP, ...f]], 'shared folder: fresh, flags kept');
+  assert.deepEqual(launch(runner.commandFor(make('antigravity', { everStarted: true })), key).calls, [['agy', ...provider, SKIP, '-c']], 'no choice: as before');
 });
 
 test('cursor: every launch resumes its own chat id, flags kept, prompt only on first launch', () => {
