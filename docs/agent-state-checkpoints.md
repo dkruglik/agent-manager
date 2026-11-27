@@ -101,6 +101,12 @@ having all three files is not proof that the copy is a consistent database.
 | fx | `$AM_LOCAL/fx-home` | `/data/state/fx` | file tree; locks and `index.pending` excluded |
 | Antigravity CLI | `$AM_LOCAL/antigravity-home` (`~/.gemini/antigravity-cli` and `~/.gemini/config` link here) | `/data/state/antigravity` | file tree plus an online backup of every changed `*.db`; WAL/SHM, locks, `bin/`, `log/`, `crashes/`, `updater/`, `presence/` excluded |
 | Cursor CLI | `$AM_LOCAL/cursor-home` (`~/.cursor` and `~/.config/cursor` link to `dot-cursor/` and `config/` in it) | `/data/state/cursor` | file tree plus an online backup of every changed `*.db`, at most once per `CURSOR_DB_MIN_INTERVAL` (120 s) per file; WAL/SHM, locks, sockets, `worker.log`, `statsig-cache.json`, `worktrees/` excluded |
+| Home (`$HOME`) | `$AM_LOCAL/home` (`AM_LIVE_HOME`) | `/data/home` (`AM_DURABLE_HOME`) | ordinary user dotfiles and skills; managed harness paths (including Cursor’s `~/.cursor` and `~/.config/cursor`, which checkpoint through their own adapter), `*.pre-agent-state*`, `*.bucket-*`, caches (`~/.cache`, `~/.npm`, `~/.local/share/uv`), locks, WAL/SHM and symlinks excluded |
+
+Live `HOME` itself sits on `$AM_LOCAL/home` rather than `/data/home`, so the
+five harness symlinks (`~/.local/share/opencode`, `~/.hermes`, `~/.fx`,
+`~/.gemini/antigravity-cli`, `~/.gemini/config`) live on ordinary POSIX storage
+where `hf-mount` can never drop them.
 
 Remote agents already use a good object-store pattern: one closed, immutable
 Markdown file per message. Shell sessions have no model transcript; workspace

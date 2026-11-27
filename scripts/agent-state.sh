@@ -68,6 +68,16 @@ ANTIGRAVITY_DURABLE="${ANTIGRAVITY_DURABLE:-$DATA_DIR/state/antigravity}"
 CURSOR_LIVE="${CURSOR_LIVE:-$AM_LOCAL/cursor-home}"
 CURSOR_DURABLE="${CURSOR_DURABLE:-$DATA_DIR/state/cursor}"
 CURSOR_DB_MIN_INTERVAL="${CURSOR_DB_MIN_INTERVAL:-120}"
+# Ordinary user dotfiles and skills in live $HOME ($AM_LOCAL/home) restore from
+# and checkpoint to $AM_DURABLE_HOME ($DATA_DIR/home) when AM_DURABLE_HOME is
+# set and distinct from HOME. Leaving AM_DURABLE_HOME unset keeps the adapter
+# inactive so isolated harness tests never touch the caller's HOME.
+HOME_LIVE="${AM_LIVE_HOME:-${HOME:-}}"
+HOME_DURABLE="${AM_DURABLE_HOME:-}"
+HOME_ENABLED=0
+if [ -n "$HOME_DURABLE" ] && [ -n "$HOME_LIVE" ] && [ "$HOME_DURABLE" != "$HOME_LIVE" ]; then
+  HOME_ENABLED=1
+fi
 
 # rsyncs one tree may run at once when it is copied from the local API mirror.
 # Every one of the nine adapters' trees gets its own pool of that size (the
@@ -400,6 +410,24 @@ rsync_adapter() {
       rsync_tree --exclude '*-wal' --exclude '*-shm' --exclude '*.lock' --exclude '*.sock' \
         --exclude 'worker.log' --exclude 'statsig-cache.json' \
         --exclude '/dot-cursor/worktrees/***' "$@" ;;
+    home)
+      # User dotfiles and skills only. Managed harnesses use their own adapters
+      # and local symlinks; rollback/bucket-relink dirs, ephemeral caches,
+      # locks, SQLite sidecars, and symlinks (--no-links after $@'s -a) never
+      # cross between live $HOME and $AM_DURABLE_HOME.
+      rsync_tree \
+        --exclude '/.gemini/***' \
+        --exclude '/.openclaw/***' --exclude '/.openclaw.pre-symlink/***' \
+        --exclude '/.local/share/opencode/***' \
+        --exclude '/.hermes/***' \
+        --exclude '/.fx/***' --exclude '/.cursor/***' --exclude '/.config/cursor/***' \
+        --exclude '/*.pre-agent-state*' --exclude '/*.pre-agent-state*/***' \
+        --exclude '**/*.pre-agent-state*' --exclude '**/*.pre-agent-state*/***' \
+        --exclude '/*.bucket-*' --exclude '/*.bucket-*/***' \
+        --exclude '**/*.bucket-*' --exclude '**/*.bucket-*/***' \
+        --exclude '/.cache/***' --exclude '/.npm/***' --exclude '/.local/share/uv/***' \
+        --exclude '*-wal' --exclude '*-shm' --exclude '*.lock' \
+        "$@" --no-links ;;
     *-files)
       rsync_tree --exclude 'checkpoints' --exclude '*.db' --exclude '*.db-*' \
         --exclude '*.sqlite*' --exclude '*-wal' --exclude '*-shm' "$@" ;;
@@ -559,6 +587,19 @@ batches0() {
 # them at its end (--delay-updates), so no partial file is ever visible; and
 # `next` is still taken before the tree is listed, so a file changed during
 # the copy is listed again by the next pass.
+find_changed_files() {
+  case "$1" in
+    home)
+      (cd "$2" && find . \( -path ./.gemini -o -path ./.openclaw -o -path ./.openclaw.pre-symlink \
+          -o -path ./.local/share/opencode -o -path ./.hermes -o -path ./.fx \
+          -o -path ./.cache -o -path ./.npm -o -path ./.local/share/uv \
+          -o -name '*.pre-agent-state*' -o -name '*.bucket-*' \) -prune \
+        -o -type f ! -name '*-wal' ! -name '*-shm' ! -name '*.lock' -newer "$3" -print0) ;;
+    *)
+      (cd "$2" && find . -type f -newer "$3" -print0) ;;
+  esac
+}
+
 checkpoint_tree() {
   key="$1" live="$2" durable="$3"
   [ -d "$live" ] || return 0
@@ -584,7 +625,7 @@ checkpoint_tree() {
   [ -s "$retry" ] && (cd "$live" && existing0) < "$retry" > "$ct_work/old"
   LC_ALL=C sort -zu "$ct_work/old" > "$ct_work/old.sorted"
   {
-    (cd "$live" && find . -type f -newer "$stamp" -print0)
+    find_changed_files "$key" "$live" "$stamp"
     [ -s "$untested" ] && (cd "$live" && existing0) < "$untested"
   } | LC_ALL=C sort -zu > "$ct_work/found"
   LC_ALL=C comm -z -23 "$ct_work/found" "$ct_work/old.sorted" > "$ct_work/new"
@@ -1233,6 +1274,13 @@ mirror_filters() {
     antigravity)
       printf '%s\n' '- *-wal' '- *-shm' '- *.lock' '- antigravity-cli/bin/*' '- antigravity-cli/log/*' \
         '- antigravity-cli/crashes/*' '- antigravity-cli/updater/*' '- antigravity-cli/presence/*' ;;
+    home)
+      printf '%s\n' '- .gemini/*' '- .openclaw/*' '- .openclaw.pre-symlink/*' \
+        '- .local/share/opencode/*' '- .hermes/*' '- .fx/*' \
+        '- *.pre-agent-state*' '- *.pre-agent-state*/*' '- */*.pre-agent-state*' '- */*.pre-agent-state*/*' \
+        '- *.bucket-*' '- *.bucket-*/*' '- */*.bucket-*' '- */*.bucket-*/*' \
+        '- .cache/*' '- .npm/*' '- .local/share/uv/*' \
+        '- *-wal' '- *-shm' '- *.lock' ;;
     claude)
       # Only the newest few config backups are restored (restore_claude_backups);
       # fetch just those rather than all ~2,400 — which needs a listing we can
@@ -1280,18 +1328,20 @@ for line in open(plan):
 # EMPTY directory $3. Fails with the reason in $_why.
 mirror_attempt() {
   _key="$1" _prefix="$2" _mirror="$3" _end="$4"
-  _rules="$MIRROR_ROOT/$_key.filters" _plan="$MIRROR_ROOT/$_key.plan.jsonl"
-  rm -rf "${_mirror:?}" "$_plan"
-  mkdir -p "$_mirror"
-  mirror_filters "$_key" "$_prefix" "$_end" > "$_rules" || return 1
+  _rules="$MIRROR_ROOT/$_key.filters" _plan="$MIRROR_ROOT/$_key.plan.jsonl" _xet="$MIRROR_ROOT/.xet-cache/$_key"
+  rm -rf "${_mirror:?}" "$_plan" "${_xet:?}"
+  mkdir -p "$_mirror" "$_xet"
+  mirror_filters "$_key" "$_prefix" "$_end" > "$_rules" || { rm -rf "${_xet:?}"; return 1; }
   # Plan, then apply the plan: the plan carries each file's bucket mtime, which
-  # the download itself does not set.
-  bounded "fetching over the API (plan)" "$_end" hf buckets sync "hf://buckets/$_prefix" "$_mirror" \
+  # the download itself does not set. Keep hf_xet's chunk cache in local mirror
+  # scratch so boot sync never writes Xet chunks onto a FUSE HF_HOME.
+  bounded "fetching over the API (plan)" "$_end" env HF_XET_CACHE="$_xet" hf buckets sync "hf://buckets/$_prefix" "$_mirror" \
     --filter-from "$_rules" --plan "$_plan" --quiet >/dev/null 2>"$_plan.err" \
-    && bounded "fetching over the API (download)" "$_end" hf buckets sync --apply "$_plan" --quiet \
+    && bounded "fetching over the API (download)" "$_end" env HF_XET_CACHE="$_xet" hf buckets sync --apply "$_plan" --quiet \
       >/dev/null 2>>"$_plan.err" \
     && bounded "fetching over the API (mtimes)" "$_end" python3 -c "$SET_MTIMES" "$_plan" "$_mirror" 2>>"$_plan.err"
   _rc=$?
+  rm -rf "${_xet:?}"
   [ "$_rc" -eq 0 ] && return 0
   if [ "$_rc" -eq 124 ] || [ "$_rc" -eq 137 ]; then _why="timed out after ${API_TIMEOUT}s"
   else _why="exit $_rc: $(tail -n 1 "$_plan.err")"; fi
@@ -1312,6 +1362,9 @@ mirror_tree() {
     rm -rf "${_m:?}"
     # Out of budget: no retry, and no fallback either (restore_source).
     [ -e "$WORK/exhausted.$KEY" ] && { echo "$_why" >&2; return 1; }
+    # Out of local disk: retrying another full mirror into $AM_LOCAL will fail
+    # the same way; fall straight back to streaming from $DATA_DIR (0 mirror bytes).
+    case "$_why" in *"No space left on device"*|*"ENOSPC"*) echo "$_why" >&2; return 1 ;; esac
     [ "$_try" -ge 2 ] && { echo "$_why" >&2; return 1; }
     log "$_key: bucket transfer failed, retrying ($_why)" >&3
     _try=$((_try + 1))
@@ -1360,19 +1413,53 @@ restore_opencode() { restore_sqlite_tree "$1" "$OPENCODE_LIVE" opencode.db openc
 restore_hermes() { restore_sqlite_tree "$1" "$HERMES_LIVE" state.db state.db; }
 restore_fx() { restore_tree fx "$1" "$FX_LIVE"; }
 
+# Re-assert the five local harness symlinks inside $HOME_LIVE after restoring
+# ordinary dotfiles so nothing from $HOME_DURABLE can ever shadow or replace a
+# local harness link.
+ensure_home_links() {
+  [ -n "$HOME_LIVE" ] || return 0
+  mkdir -p "$HOME_LIVE/.local/share" "$HOME_LIVE/.gemini" \
+    "$OPENCODE_LIVE" "$HERMES_LIVE" "$FX_LIVE" \
+    "$ANTIGRAVITY_LIVE/antigravity-cli" "$ANTIGRAVITY_LIVE/config"
+  for _pair in \
+    "$HOME_LIVE/.local/share/opencode|$OPENCODE_LIVE" \
+    "$HOME_LIVE/.hermes|$HERMES_LIVE" \
+    "$HOME_LIVE/.fx|$FX_LIVE" \
+    "$HOME_LIVE/.gemini/antigravity-cli|$ANTIGRAVITY_LIVE/antigravity-cli" \
+    "$HOME_LIVE/.gemini/config|$ANTIGRAVITY_LIVE/config"; do
+    _lnk="${_pair%%|*}"; _tgt="${_pair##*|}"
+    if [ -e "$_lnk" ] && [ ! -L "$_lnk" ]; then
+      _aside="$_lnk.pre-home-link.$(date -u +%Y%m%dT%H%M%SZ).$$"
+      mv "$_lnk" "$_aside" || return 1
+    fi
+    ln -sfn "$_tgt" "$_lnk" || return 1
+  done
+}
+
+restore_home() {
+  [ "$HOME_ENABLED" = 1 ] || return 0
+  restore_tree home "$1" "$HOME_LIVE" || return 1
+  [ -n "$DRY_RUN" ] || ensure_home_links
+}
+checkpoint_home() {
+  [ "$HOME_ENABLED" = 1 ] || return 0
+  checkpoint_tree home "$1" "$2"
+}
+
 ADAPTERS="codex claude gemini openclaw opencode hermes fx antigravity cursor"
+[ "$HOME_ENABLED" = 1 ] && ADAPTERS="$ADAPTERS home"
 live_of() {
   case "$1" in
     codex) echo "$CODEX_HOME" ;; claude) echo "$CLAUDE_CONFIG_DIR" ;; gemini) echo "$GEMINI_LIVE" ;;
     openclaw) echo "$OPENCLAW_STATE_DIR" ;; opencode) echo "$OPENCODE_LIVE" ;; hermes) echo "$HERMES_LIVE" ;;
-    fx) echo "$FX_LIVE" ;; antigravity) echo "$ANTIGRAVITY_LIVE" ;; cursor) echo "$CURSOR_LIVE" ;;
+    fx) echo "$FX_LIVE" ;; antigravity) echo "$ANTIGRAVITY_LIVE" ;; cursor) echo "$CURSOR_LIVE" ;; home) echo "$HOME_LIVE" ;;
   esac
 }
 durable_of() {
   case "$1" in
     codex) echo "$CODEX_DURABLE" ;; claude) echo "$CLAUDE_DURABLE" ;; gemini) echo "$GEMINI_DURABLE" ;;
     openclaw) echo "$OPENCLAW_DURABLE" ;; opencode) echo "$OPENCODE_DURABLE" ;; hermes) echo "$HERMES_DURABLE" ;;
-    fx) echo "$FX_DURABLE" ;; antigravity) echo "$ANTIGRAVITY_DURABLE" ;; cursor) echo "$CURSOR_DURABLE" ;;
+    fx) echo "$FX_DURABLE" ;; antigravity) echo "$ANTIGRAVITY_DURABLE" ;; cursor) echo "$CURSOR_DURABLE" ;; home) echo "$HOME_DURABLE" ;;
   esac
 }
 
@@ -1398,7 +1485,11 @@ restore_adapter() {
       return "$_rc" ;;
   esac
   SRC_DESC="the API mirror"
-  "restore_$1" "$_src"
+  "restore_$1" "$_src"; _rc=$?
+  # Reclaim this adapter's API mirror immediately rather than holding every
+  # adapter's mirror on $AM_LOCAL until the entire boot restore finishes.
+  rm -rf "${MIRROR_ROOT:?}/${1:?}"
+  return "$_rc"
 }
 
 # One adapter, start to finish, with its own progress lines. In a dry run its
@@ -1813,8 +1904,11 @@ else
   run_checkpoint hermes checkpoint_sqlite_tree "$HERMES_LIVE" "$HERMES_DURABLE" state.db state.db
   run_checkpoint fx checkpoint_tree fx "$FX_LIVE" "$FX_DURABLE"
   run_checkpoint antigravity checkpoint_antigravity "$ANTIGRAVITY_LIVE" "$ANTIGRAVITY_DURABLE"
-  # Fork-only: upstream has no Cursor adapter; keep its checkpoint (checkpoint_cursor).
+  # Cursor: its own adapter (checkpoint_cursor), kept alongside the home adapter.
   run_checkpoint cursor checkpoint_cursor "$CURSOR_LIVE" "$CURSOR_DURABLE"
+  if [ "$HOME_ENABLED" = 1 ]; then
+    run_checkpoint home checkpoint_home "$HOME_LIVE" "$HOME_DURABLE"
+  fi
   pass_done "$failures"
   publish_log
 fi

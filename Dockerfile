@@ -101,24 +101,75 @@ RUN . /opt/agent-manager/cli-allowlist.sh \
     && if am_cli_install openclaw 1; then \
          npm install -g "$(am_cli_npm_spec openclaw)" || echo "openclaw install failed"; \
        fi
-# fx (Vercel Labs) and Antigravity (`agy`) are pinned prebuilt binaries.
-# Cursor (`cursor-agent`) has no npm package: every image build takes the
-# newest tarball cursor.com/install names, the same way the npm CLIs take
-# @latest. The procedures live in scripts/cli-allowlist.sh (am_install_fx,
-# am_install_agy, am_install_cursor) so the local installer runs the same
-# steps. fx and agy are best-effort: a vendor CDN being down must not fail the
-# build. Cursor is best-effort for a failed lookup or download. Cursor
+# fx (Vercel Labs) and Antigravity CLI (`agy`, Google) each ship as one native
+# binary, not an npm package. Both install the LATEST release at image build,
+# with no version pinned here. To upgrade either one, rebuild the image (any
+# deploy does): nothing in this file needs to change.
+#
+# Why that works: Docker reuses a RUN layer whose text is unchanged, so a RUN
+# that resolves "latest" by itself would keep the first build's version
+# forever. Each install therefore starts with an ADD of the vendor's own
+# "latest" pointer. Docker fetches a remote ADD on every build and invalidates
+# the layer, and the RUN after it, whenever that file's content changes, so a
+# new release rebuilds exactly these steps and an unchanged one stays cached.
+#
+# We read those pointers ourselves rather than piping the vendors' install
+# scripts into a shell: those also edit shell rc files (and agy's runs
+# `agy install`), and they would hide the checksum step we want to see.
+#
+# Both are best-effort like the npm installs above: one vendor CDN being
+# unreachable must not fail the whole image and take the Space down with it. A
+# missing binary is already a first-class state; cliCatalog() reports it
+# unavailable and the launcher greys it out. One limit: Docker has no optional
+# ADD, so if the pointer URL itself is unreachable the build fails (a failed
+# tarball download or checksum only leaves that binary out). Neither binary is
+# writable by the node user, so don't count on agy's background self-update:
+# rebuild instead.
+#
+# fx: latest.txt holds the release tag (e.g. v0.0.17). Each tarball has a
+# .sha256 sidecar on the same host. Checking it catches a truncated or corrupted
+# download; it is not a signature, since it comes from the same origin over the
+# same HTTPS. Apache-2.0 asks that the notices travel with a redistributed
+# binary, hence the two doc files.
+ADD https://releases.fx.sh/latest.txt /tmp/fx-latest.txt
+RUN (v=$(tr -d '[:space:]' < /tmp/fx-latest.txt) \
+      && echo "fx: latest is $v" \
+      && echo "$v" | grep -Eqx 'v[0-9]+[.][0-9]+[.][0-9]+' \
+      && mkdir -p /tmp/fx && cd /tmp/fx \
+      && curl -fsSL "https://releases.fx.sh/$v/fx-linux-x86_64.tar.gz" -o fx-linux-x86_64.tar.gz \
+      && curl -fsSL "https://releases.fx.sh/$v/fx-linux-x86_64.tar.gz.sha256" -o fx.sha256 \
+      && sha256sum -c fx.sha256 \
+      && tar -xzf fx-linux-x86_64.tar.gz fx LICENSE THIRD_PARTY_NOTICES.md \
+      && install -D -m 0755 fx /usr/local/bin/fx \
+      && install -D -m 0644 -t /usr/local/share/doc/fx LICENSE THIRD_PARTY_NOTICES.md \
+      && fx --version) || echo "fx install failed"; \
+    rm -rf /tmp/fx /tmp/fx-latest.txt
+# agy: the manifest is the one Google's install.sh reads (its DOWNLOAD_BASE_URL
+# plus manifests/linux_amd64.json): {version, url, sha512}. The tarball must
+# match that SHA-512 or nothing is installed, and its URL must be on Google's
+# release bucket.
+ADD https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json /tmp/agy-manifest.json
+RUN (m=/tmp/agy-manifest.json \
+      && v=$(jq -er .version "$m") && url=$(jq -er .url "$m") && sha=$(jq -er .sha512 "$m") \
+      && echo "agy: latest is $v ($url)" \
+      && case "$url" in https://storage.googleapis.com/antigravity-public/*) true ;; *) false ;; esac \
+      && echo "$sha" | grep -Eqx '[0-9a-f]{128}' \
+      && mkdir -p /tmp/agy && cd /tmp/agy \
+      && curl -fsSL "$url" -o agy.tar.gz \
+      && echo "$sha  agy.tar.gz" | sha512sum -c - \
+      && tar -xzf agy.tar.gz antigravity \
+      && install -D -m 0755 antigravity /usr/local/bin/agy \
+      && HOME=/tmp/agy/home agy --version) || echo "agy install failed"; \
+    rm -rf /tmp/agy /tmp/agy-manifest.json
+# Cursor (`cursor-agent`) has no npm package: every image build takes the newest
+# tarball cursor.com/install names, the same way the npm CLIs take @latest. The
+# procedure lives in scripts/cli-allowlist.sh (am_install_cursor). It is
+# best-effort: a failed lookup or download does not fail the build. Cursor
 # publishes no checksum, so nothing is hash-checked; a tarball that does not
 # unpack, link or run `--version` fails the build. The result sits in the
-# root-owned /opt; entrypoint.sh puts wrappers for it ahead of any hand
-# install in the durable HOME. An allowlist that omits one of them skips it,
-# and the binary is not written.
-RUN . /opt/agent-manager/cli-allowlist.sh \
-    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
-    && if am_cli_install fx 1; then am_install_fx; fi
-RUN . /opt/agent-manager/cli-allowlist.sh \
-    && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
-    && if am_cli_install antigravity 1; then am_install_agy; fi
+# root-owned /opt; entrypoint.sh puts wrappers for it ahead of any hand install
+# in the durable HOME. An allowlist that omits it skips it, and the binary is
+# not written.
 RUN . /opt/agent-manager/cli-allowlist.sh \
     && am_cli_allowlist_load "$AM_INSTALL_CLIS_FILE" \
     && if am_cli_install cursor 1; then am_install_cursor; fi

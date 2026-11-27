@@ -301,6 +301,14 @@ export const agyCommand = (tail = '') => `agy ${AGY_KEY_PROVIDER}${tail ? ` ${ta
 // (left arrow twice) takes it into a composer whose Enter starts a new session.
 const CLAUDE_CONFIRM = { pasted: /\[Pastedtext#\d+/, busy: /esc to interrupt/,
   views: { 'transcript-view': /^\s*Showing detailed transcript\b/, 'agents-view': /\benter to (?:create|return)\b/ } };
+// Interactive agy sessions approve their own tool calls. agy 1.5 starts in Auto
+// mode only where it has the OS terminal sandbox ("Auto mode is not available:
+// it needs the OS terminal sandbox"), which this container cannot provide (no
+// user namespaces), so it falls back to Default and asks before every command;
+// the old settings.json `toolPermission: "always-proceed"` no longer applies.
+// Sessions only: `agy models` and other subcommands take no such flag.
+const AGY_SKIP_PERMISSIONS = '--dangerously-skip-permissions';
+const agySession = (tail = '') => agyCommand(join(AGY_SKIP_PERMISSIONS, tail));
 
 const GEMINI_DEPRECATED = 'Gemini CLI is deprecated: Google replaced it with Antigravity CLI. '
   + 'This session still works; start new ones with Antigravity.';
@@ -384,13 +392,13 @@ export const CLIS = [
     // under it tells them apart: `? for shortcuts`, or `esc to cancel` while
     // it works (captured from agy 1.4.10).
     promptDetector: { idle: /^\? for shortcuts\b/ },
-    run: (f) => agyCommand(f),
-    cont: (f) => agyCommand(join(f, '-c')),
-    withPrompt: (q, _images, f) => agyCommand(join(f, `-i ${q}`)), // -i = interactive session seeded with the prompt
-    resume: (id, f) => agyCommand(join(f, `--conversation ${id}`)), // id: a uuid, checked by runner.js
+    run: (f) => agySession(f),
+    cont: (f) => agySession(join(f, '-c')),
+    withPrompt: (q, _images, f) => agySession(join(f, `-i ${q}`)), // -i = interactive session seeded with the prompt
+    resume: (id, f) => agySession(join(f, `--conversation ${id}`)), // id: a uuid, checked by runner.js
     launch: { model: true, efforts: AGY_EFFORTS,
       flags: ({ model, effort }) => join(model && `--model ${shq(model)}`, effort && `--effort ${shq(effort)}`) },
-    noUpdate: 'a pinned prebuilt binary from antigravity.google, not an npm package',
+    noUpdate: 'a prebuilt binary from Google, not an npm package. The image installs the newest release when it is built, so Update CLIs (a factory reboot) upgrades it',
     secrets: ['GEMINI_API_KEY'], setup: setupHint('GEMINI_API_KEY') },
   // --trust skips the per-folder trust dialog (workspaces are operator-owned);
   // MCP servers are still not auto-approved, and --yolo is never passed.
@@ -439,7 +447,7 @@ export const CLIS = [
           ? `--provider ${shq(model.slice(0, slash))} -m ${shq(model.slice(slash + 1))}` : `-m ${shq(model)}`;
         return join(m, effort && `--reasoning ${shq(effort)}`);
       } },
-    noUpdate: 'installed by the vendor script from hermes-agent.nousresearch.com, onto its own Python venv',
+    noUpdate: 'installed by the vendor script from hermes-agent.nousresearch.com, onto its own Python venv. Update it from a shell inside the Space',
     secrets: ['HF_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'NOUS_API_KEY'], setup: setupHint('HF_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'NOUS_API_KEY') },
   // `chat` = TUI in --local mode: embedded agent, no gateway/daemon needed.
   // `chat` has no --model (the model is the agent default), only --thinking.
@@ -455,7 +463,7 @@ export const CLIS = [
   { id: 'fx',       label: 'fx',          bin: 'fx',       color: '#626262', resizeMode: 'repaint',
     run: () => 'fx',
     cont: () => 'fx --continue',
-    noUpdate: 'a prebuilt binary from releases.fx.sh, not an npm package',
+    noUpdate: 'a prebuilt binary from releases.fx.sh, not an npm package. The image installs the newest release when it is built, so Update CLIs (a factory reboot) upgrades it',
     resume: (id) => `fx --resume ${id}`,
     // fx has no "start interactive, seeded with this prompt" form: `fx ask` runs
     // one request and exits, which would end the pane instead of opening it. So
@@ -598,4 +606,32 @@ export function slugify(s) {
 
 export function workspacePath(folder) {
   return path.join(WORKSPACES_DIR, folder);
+}
+
+// Sanitize a client-supplied workspace path: no '..', no absolute paths
+// outside WORKSPACES_DIR (an absolute path inside WORKSPACES_DIR has its
+// prefix stripped so it never doubles into WORKSPACES_DIR/data/workspaces/…).
+// Returns the normalized workspace-relative path ('' = root), or null.
+export function cleanRelPath(raw, workspacesDir = WORKSPACES_DIR) {
+  if (typeof raw !== 'string' || raw.includes('\0') || raw.includes('\\')) return null;
+  const root = path.resolve(workspacesDir);
+  const trimmed = raw.trim();
+  const rawSegs = trimmed.split('/').map((s) => s.trim());
+  if (rawSegs.some((s) => s === '..')) return null;
+  if (path.isAbsolute(trimmed)) {
+    const normAbs = path.resolve('/' + rawSegs.filter((s) => s && s !== '.').join('/'));
+    if (normAbs === root) return '';
+    const relFromRoot = path.relative(root, normAbs);
+    if (!relFromRoot || relFromRoot === '..' || relFromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relFromRoot)) return null;
+    return relFromRoot.split(path.sep).join('/');
+  }
+  let rel = rawSegs.filter((s) => s && s !== '.').join('/');
+  const rootRel = root.replace(/^\/+/, '').split(path.sep).join('/');
+  if (rootRel.includes('/')) {
+    if (rel === rootRel) rel = '';
+    else if (rel.startsWith(`${rootRel}/`)) rel = rel.slice(rootRel.length + 1);
+  }
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null;
+  return rel;
 }

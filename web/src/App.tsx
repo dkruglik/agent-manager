@@ -1015,8 +1015,9 @@ export default function App() {
   const newGroup = async (name: string, cart?: { cli: string; count: number }[], path = ROOT_PATH) => {
     let created: string | null = null;
     try {
-      const g = await api.createGroup(name);
+      const g = await api.createGroup(name, path);
       created = g.id;
+      rememberPath(g.path ?? path);
       for (const { cli, count } of cart || []) {
         const base = cliMap[cli]?.label || cli;
         for (let i = 0; i < count; i++) {
@@ -1545,7 +1546,7 @@ export default function App() {
         {/* Visible where you already are, on every view. Rides on /api/info,
             which is polled every 15s, so no new request for the normal case. */}
         {noBucket && !showBucket && <NoBucketBanner onShow={() => { setSettingsOpen(false); setBucketAsked(true); }} />}
-        {(info?.backup || info?.checkpoint) && <Suspense><HealthBanners backup={info.backup} checkpoint={info.checkpoint} onOpenSettings={() => { setSettingsPage('general'); setSettingsOpen(true); }} /></Suspense>}
+        {(info?.backup || info?.checkpoint || info?.disk) && <Suspense><HealthBanners backup={info.backup} checkpoint={info.checkpoint} disk={info.disk} onOpenSettings={() => { setSettingsPage('general'); setSettingsOpen(true); }} /></Suspense>}
         <div className="stage">
           {renderTiles(
             isMobile && !mobileStage
@@ -1584,7 +1585,7 @@ export default function App() {
               >
                 <div className="empty-card">
                   <EmptyPrompt path={activeGroup.name} hints={['create an agent here, or drag one in from the sidebar']} />
-                  <NewSession clis={clis} sessions={tree.sessions} defaultPath={lastPath} onCreate={(n, c, p, l) => newSession(n, c, p, undefined, l)} />
+                  <NewSession clis={clis} sessions={tree.sessions} defaultPath={activeGroup.path !== undefined ? normalizePath(activeGroup.path) : lastPath} onCreate={(n, c, p, l) => newSession(n, c, p, undefined, l)} />
                   <div className="dropline">drop an agent here to add it to this group</div>
                 </div>
               </div>

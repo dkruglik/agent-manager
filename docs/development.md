@@ -112,6 +112,17 @@ by `am-install-clis` and `AM_INSTALL_CLIS` (see above); unset, the image still
 installs the full set. The build's **IMAGE CLI INVENTORY** lists which binaries
 and versions actually installed.
 
+No CLI version is pinned in the image. The npm CLIs install `@latest`, and the
+two native binaries, Antigravity CLI (`agy`) and fx, install whatever their
+vendor's "latest" pointer names at build time (Google's installer manifest,
+`releases.fx.sh/latest.txt`), each checked against the vendor's published
+checksum. Those two steps start with an `ADD` of that pointer, so Docker
+re-runs them only when a new release is out. To upgrade `agy` or fx, rebuild:
+**Update CLIs** in Settings, a factory reboot or any deploy does it, with no
+Dockerfile edit. A failed tarball download or checksum leaves the binary out
+(shown unavailable); an unreachable pointer URL fails the build, since `ADD`
+has no optional form.
+
 ## Architecture
 
 ```

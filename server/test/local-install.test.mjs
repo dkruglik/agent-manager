@@ -255,7 +255,8 @@ if (process.platform === 'linux' && process.arch === 'x64') {
   assert.equal(fs.readFileSync(curlLog, 'utf8'), '', 'a non-linux/x64 host does not download the tarball');
 }
 
-for (const id of ['claude', 'codex', 'gemini', 'opencode', 'openclaw', 'cursor', 'hermes', 'fx', 'antigravity']) {
+// fx and agy are upstream's pinned-pointer installs (ADD + verified RUN), not allowlist-gated.
+for (const id of ['claude', 'codex', 'gemini', 'opencode', 'openclaw', 'cursor', 'hermes']) {
   assert.match(dockerfile, new RegExp(`am_cli_install ${id} 1`), `${id} is gated in the image`);
 }
 // Each RUN is a new shell, so a gate that forgot to load the allowlist would
@@ -266,8 +267,8 @@ for (const chunk of dockerfile.split(/^RUN /m).slice(1)) {
   }
 }
 assert.match(dockerfile, /am_install_cursor/);
-assert.match(dockerfile, /am_install_fx/);
-assert.match(dockerfile, /am_install_agy/);
+assert.match(dockerfile, /ADD https:\/\/releases\.fx\.sh\/latest\.txt/);
+assert.match(dockerfile, /manifests\/linux_amd64\.json/);
 assert.match(dockerfile, /am_install_hermes/);
 assert.match(dockerfile, /am_link_hermes/);
 assert.match(dockerfile, /SKIPPED/, 'the image inventory can say a CLI was left off the allowlist');
